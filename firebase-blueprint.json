@@ -1,0 +1,421 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated workspace owner profile and voice/wake preferences.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Owner Firebase Auth UID."
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 254,
+          "description": "Verified email address (PII, owner-only)."
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Preferred display name."
+        },
+        "photoURL": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Avatar URL."
+        },
+        "preferredVoice": {
+          "type": "string",
+          "enum": ["Kore", "Puck", "Charon", "Fenrir", "Zephyr"],
+          "description": "Selected J.A.R.V.I.S. speech voice persona."
+        },
+        "wakeEnabled": {
+          "type": "boolean",
+          "description": "Whether hands-off wake word standby is armed."
+        },
+        "wakeSensitivity": {
+          "type": "number",
+          "description": "Wake phrase matching sensitivity between 0.0 and 1.0."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "email", "displayName", "photoURL", "preferredVoice", "wakeEnabled", "wakeSensitivity", "createdAt", "updatedAt"]
+    },
+    "JarvisTask": {
+      "title": "JarvisTask",
+      "description": "Persistent cross-device task owned by the user.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "completed": {
+          "type": "boolean"
+        },
+        "assignedDevice": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "category": {
+          "type": "string",
+          "enum": ["coding", "system", "research", "personal", "workflow", "general"]
+        },
+        "priority": {
+          "type": "string",
+          "enum": ["critical", "high", "medium", "low"]
+        },
+        "effortMinutes": {
+          "type": "number"
+        },
+        "analysisId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "title", "completed", "assignedDevice", "category", "priority", "effortMinutes", "analysisId", "createdAt", "updatedAt"]
+    },
+    "TaskAnalysis": {
+      "title": "TaskAnalysis",
+      "description": "Structured Gemini universal task analysis dossier.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "goal": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600
+        },
+        "category": {
+          "type": "string",
+          "enum": ["coding", "system", "research", "personal", "workflow", "general"]
+        },
+        "priority": {
+          "type": "string",
+          "enum": ["critical", "high", "medium", "low"]
+        },
+        "effortMinutes": {
+          "type": "number"
+        },
+        "recommendedDevice": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "safetyLevel": {
+          "type": "string",
+          "enum": ["safe", "moderate", "sensitive"]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1500
+        },
+        "blockers": {
+          "type": "array"
+        },
+        "subtasks": {
+          "type": "array"
+        },
+        "executableSteps": {
+          "type": "array"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "goal", "category", "priority", "effortMinutes", "recommendedDevice", "safetyLevel", "summary", "blockers", "subtasks", "executableSteps", "createdAt"]
+    },
+    "JarvisRoutine": {
+      "title": "JarvisRoutine",
+      "description": "Saved multi-device automation routine.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "goal": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "steps": {
+          "type": "array"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "title", "goal", "steps", "createdAt"]
+    },
+    "JarvisMessage": {
+      "title": "JarvisMessage",
+      "description": "Persistent assistant conversation history message.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "roomId": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 24,
+          "pattern": "^[A-Z0-9-]+$"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["user", "assistant"]
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 20000
+        },
+        "thinkingMode": {
+          "type": "string",
+          "enum": ["fast", "deep"]
+        },
+        "toolCalls": {
+          "type": "array"
+        },
+        "sources": {
+          "type": "array"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "roomId", "role", "text", "thinkingMode", "toolCalls", "sources", "createdAt"]
+    },
+    "JarvisHandoff": {
+      "title": "JarvisHandoff",
+      "description": "Cross-device handoff snippet, URL, or note.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 140
+        },
+        "content": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 450000
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["text", "link", "code", "image"]
+        },
+        "sourceDevice": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "targetDevice": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "label", "content", "kind", "sourceDevice", "targetDevice", "createdAt"]
+    },
+    "BrainNote": {
+      "title": "BrainNote",
+      "description": "Obsidian-style markdown knowledge note in Ray's AI Second Brain.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "slug": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[a-z0-9-]+$"
+        },
+        "folder": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "content": {
+          "type": "string",
+          "maxLength": 50000
+        },
+        "tags": {
+          "type": "array"
+        },
+        "links": {
+          "type": "array"
+        },
+        "source": {
+          "type": "string",
+          "enum": ["user", "jarvis", "obsidian_local"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "title", "slug", "folder", "content", "tags", "links", "source", "createdAt", "updatedAt"]
+    },
+    "AppConnector": {
+      "title": "AppConnector",
+      "description": "User-configured free connector for Notion, Brave, WhatsApp, Instagram, or custom webhooks/apps.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "category": {
+          "type": "string",
+          "enum": ["google", "browser", "notes", "social", "productivity", "automation"]
+        },
+        "connectorType": {
+          "type": "string",
+          "enum": ["notion", "bridge_app", "url_template", "webhook"]
+        },
+        "endpointOrTarget": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "method": {
+          "type": "string",
+          "enum": ["GET", "POST", "PUT", "PATCH", "LAUNCH"]
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 400
+        },
+        "headersJson": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "requiresConfirmation": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "name", "category", "connectorType", "endpointOrTarget", "method", "description", "headersJson", "enabled", "requiresConfirmation", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Owner-isolated profile and J.A.R.V.I.S. preferences."
+    },
+    "/users/{userId}/tasks/{taskId}": {
+      "schema": { "$ref": "#/entities/JarvisTask" },
+      "description": "Persistent cross-device task queue items."
+    },
+    "/users/{userId}/analyses/{analysisId}": {
+      "schema": { "$ref": "#/entities/TaskAnalysis" },
+      "description": "Universal task analysis dossiers generated by Gemini."
+    },
+    "/users/{userId}/routines/{routineId}": {
+      "schema": { "$ref": "#/entities/JarvisRoutine" },
+      "description": "Saved multi-device automation routines."
+    },
+    "/users/{userId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/JarvisMessage" },
+      "description": "Persistent assistant conversation log."
+    },
+    "/users/{userId}/handoffs/{handoffId}": {
+      "schema": { "$ref": "#/entities/JarvisHandoff" },
+      "description": "Persistent cross-device handoff notes, links, and snippets."
+    },
+    "/users/{userId}/brainNotes/{noteId}": {
+      "schema": { "$ref": "#/entities/BrainNote" },
+      "description": "Obsidian-style markdown notes with wikilinks and tags."
+    },
+    "/users/{userId}/connectors/{connectorId}": {
+      "schema": { "$ref": "#/entities/AppConnector" },
+      "description": "Free app connectors and custom endpoints configured by the user."
+    }
+  }
+}
