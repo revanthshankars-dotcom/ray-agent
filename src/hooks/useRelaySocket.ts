@@ -15,7 +15,7 @@ import {
 import { playHudSound } from '../utils/hudAudio';
 import { ensureRoomBootstrap, getStoredRoomToken } from '../utils/roomAuth';
 import { forwardBridgeProxyActionToLocal } from '../services/localBridgeClient';
-import { emitCallEvent } from '../services/callBus';
+import { emitAgentEvent, emitCallEvent } from '../services/callBus';
 
 export type SocketStatus = 'connecting' | 'connected' | 'reconnecting';
 
@@ -447,6 +447,10 @@ export function useRelaySocket(
                   );
                 }
               });
+              break;
+            }
+            case 'agent:update': {
+              emitAgentEvent((msg.data || {}) as Record<string, unknown>);
               break;
             }
             case 'call:signal': {

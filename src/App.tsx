@@ -17,6 +17,7 @@ import { usePushWake } from './hooks/usePushWake';
 import { usePWAInstall } from './hooks/usePWAInstall';
 import { useDeviceCall } from './hooks/useDeviceCall';
 import { CallScreen } from './components/CallScreen';
+import { AgentRunPanel } from './components/AgentRunPanel';
 import { PairDeviceModal } from './components/PairDeviceModal';
 import { CameraModal } from './components/CameraModal';
 import { IncomingCommandBar } from './components/IncomingCommandBar';
@@ -1197,6 +1198,8 @@ export default function App() {
           </div>
         </main>
       </div>
+
+      <AgentRunPanel roomId={roomId} />
 
       <CallScreen
         state={deviceCall.state}

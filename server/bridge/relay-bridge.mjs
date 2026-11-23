@@ -975,6 +975,153 @@ function setNativeClipboard(text, cb) {
 }
 
 // ---------------------------------------------------------------------------
+// Computer use ("give RAY a mouse"): agent screenshots + actions on the PC, and on an
+// Android phone through ADB (USB or Wireless debugging) from this PC.
+// ---------------------------------------------------------------------------
+
+function findAdb() {
+  const cands = [];
+  if (os.platform() === 'win32') {
+    if (process.env.LOCALAPPDATA) cands.push(path.join(process.env.LOCALAPPDATA, 'Android', 'Sdk', 'platform-tools', 'adb.exe'));
+    cands.push(path.join(os.homedir(), 'platform-tools', 'adb.exe'), 'C:\\platform-tools\\adb.exe');
+  } else {
+    cands.push(path.join(os.homedir(), 'Library', 'Android', 'sdk', 'platform-tools', 'adb'), path.join(os.homedir(), 'Android', 'Sdk', 'platform-tools', 'adb'), '/usr/bin/adb', '/usr/local/bin/adb', '/opt/homebrew/bin/adb');
+  }
+  if (process.env.RAY_ADB_PATH) cands.unshift(process.env.RAY_ADB_PATH);
+  for (const c of cands) { try { if (fs.existsSync(c)) return c; } catch {} }
+  return 'adb';
+}
+const ADB = IS_TERMUX ? null : findAdb();
+
+function adbRun(args, opts = {}) {
+  return new Promise((resolve) => {
+    if (!ADB) return resolve({ ok: false, out: 'ADB is only used from the PC bridge.' });
+    execFile(ADB, args, { timeout: opts.timeout || 15000, maxBuffer: 25 * 1024 * 1024, encoding: opts.binary ? 'buffer' : 'utf8' }, (err, stdout, stderr) => {
+      resolve({ ok: !err, out: stdout, err: err ? String(stderr || err.message) : '' });
+    });
+  });
+}
+
+async function adbDevice() {
+  const r = await adbRun(['devices']);
+  if (!r.ok) return null;
+  const line = String(r.out).split('\n').map((l) => l.trim()).find((l) => /\tdevice$/.test(l));
+  return line ? line.split('\t')[0] : null;
+}
+
+/** Screenshot for the agent: JPEG ≤1280px wide + real screen size for coordinate mapping. */
+function agentScreenshot(target, cb) {
+  if (target === 'phone') {
+    return void (async () => {
+      const dev = await adbDevice();
+      if (!dev) return cb({ ok: false, error: 'No Android phone over ADB. On the phone: Developer options → Wireless debugging → pair with this PC (adb pair / adb connect), or plug in USB with USB debugging on.' });
+      const r = await adbRun(['-s', dev, 'exec-out', 'screencap', '-p'], { binary: true, timeout: 20000 });
+      if (!r.ok || !r.out || r.out.length < 100) return cb({ ok: false, error: 'Phone screenshot failed: ' + (r.err || 'empty') });
+      const buf = r.out;
+      const w = buf.readUInt32BE(16);
+      const h = buf.readUInt32BE(20);
+      cb({ ok: true, dataUrl: 'data:image/png;base64,' + buf.toString('base64'), width: w, height: h, screenW: w, screenH: h, device: 'phone' });
+    })();
+  }
+  if (IS_TERMUX) return cb({ ok: false, error: 'Android blocks screen capture from Termux. Control the phone through ADB from the PC bridge instead.' });
+  const plat = os.platform();
+  const tmp = path.join(os.tmpdir(), 'ray-agent-' + Date.now() + '.jpg');
+  const finish = (screenW, screenH) => {
+    try {
+      const buf = fs.readFileSync(tmp);
+      fs.unlinkSync(tmp);
+      const isJpeg = buf[0] === 0xff && buf[1] === 0xd8;
+      let width = screenW, height = screenH;
+      if (!isJpeg && buf.length > 24) { width = buf.readUInt32BE(16); height = buf.readUInt32BE(20); }
+      else if (isJpeg) {
+        // Read JPEG SOF0/2 for the scaled size.
+        for (let i = 2; i < buf.length - 9; ) {
+          if (buf[i] !== 0xff) break;
+          const marker = buf[i + 1];
+          const len = buf.readUInt16BE(i + 2);
+          if (marker === 0xc0 || marker === 0xc2) { height = buf.readUInt16BE(i + 5); width = buf.readUInt16BE(i + 7); break; }
+          i += 2 + len;
+        }
+      }
+      cb({ ok: true, dataUrl: 'data:' + (isJpeg ? 'image/jpeg' : 'image/png') + ';base64,' + buf.toString('base64'), width, height, screenW: screenW || width, screenH: screenH || height, device: 'pc' });
+    } catch (e) {
+      cb({ ok: false, error: 'Screenshot failed: ' + e.message });
+    }
+  };
+  if (plat === 'win32') {
+    const ps = "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; " +
+      "Add-Type 'using System;using System.Runtime.InteropServices;public class RayDpi{[DllImport(\"user32.dll\")]public static extern bool SetProcessDPIAware();}'; [RayDpi]::SetProcessDPIAware() | Out-Null; " +
+      "$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $bmp=New-Object Drawing.Bitmap $b.Width,$b.Height; $g=[Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Location,[Drawing.Point]::Empty,$b.Size); " +
+      "$w=[Math]::Min(1280,$b.Width); $h=[int]($b.Height*$w/$b.Width); $s=New-Object Drawing.Bitmap $bmp,$w,$h; " +
+      "$enc=[Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | ? { $_.MimeType -eq 'image/jpeg' }; $p=New-Object Drawing.Imaging.EncoderParameters 1; $p.Param[0]=New-Object Drawing.Imaging.EncoderParameter ([Drawing.Imaging.Encoder]::Quality),([long]70); " +
+      "$s.Save(" + psQuote(tmp) + ",$enc,$p); Write-Output ($b.Width.ToString()+'x'+$b.Height.ToString())";
+    return execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { timeout: 20000 }, (err, out) => {
+      if (err) return cb({ ok: false, error: 'Screenshot failed: ' + err.message });
+      const [sw, sh] = String(out).trim().split('x').map(Number);
+      finish(sw, sh);
+    });
+  }
+  if (plat === 'darwin') {
+    return execFile('screencapture', ['-x', '-t', 'jpg', tmp], { timeout: 15000 }, (err) => {
+      if (err) return cb({ ok: false, error: 'Screenshot failed (allow Screen Recording for Terminal/Node in System Settings → Privacy).' });
+      execFile('osascript', ['-e', 'tell application "Finder" to get bounds of window of desktop'], { timeout: 5000 }, (e2, out2) => {
+        const parts = String(out2 || '').split(',').map((v) => Number(v.trim()));
+        execFile('sips', ['-Z', '1280', tmp], { timeout: 15000 }, () => finish(parts[2] || 0, parts[3] || 0));
+      });
+    });
+  }
+  execFile('scrot', ['-o', tmp], { timeout: 15000 }, (err) => {
+    if (err) return cb({ ok: false, error: 'Screenshot failed: install scrot (sudo apt install scrot).' });
+    execFile('xdotool', ['getdisplaygeometry'], { timeout: 5000 }, (e2, out2) => {
+      const [sw, sh] = String(out2 || '').trim().split(/\s+/).map(Number);
+      execFile('convert', [tmp, '-resize', '1280x>', '-quality', '70', tmp], { timeout: 15000 }, () => finish(sw || 0, sh || 0));
+    });
+  });
+}
+
+const ADB_KEYS = { back: 'KEYCODE_BACK', home: 'KEYCODE_HOME', enter: 'KEYCODE_ENTER', recent: 'KEYCODE_APP_SWITCH', apps: 'KEYCODE_APP_SWITCH', delete: 'KEYCODE_DEL', backspace: 'KEYCODE_DEL', tab: 'KEYCODE_TAB', search: 'KEYCODE_SEARCH', volume_up: 'KEYCODE_VOLUME_UP', volume_down: 'KEYCODE_VOLUME_DOWN', power: 'KEYCODE_POWER' };
+
+/** One agent action. x/y are SCREEN coordinates (already mapped by the server). */
+function agentAct(target, a, cb) {
+  const action = String(a.action || '');
+  if (target === 'phone') {
+    return void (async () => {
+      const dev = await adbDevice();
+      if (!dev) return cb({ ok: false, error: 'No Android phone connected over ADB.' });
+      const sh = (args) => adbRun(['-s', dev, 'shell', ...args]);
+      const x = String(Math.round(Number(a.x || 0)));
+      const y = String(Math.round(Number(a.y || 0)));
+      let r;
+      if (action === 'click' || action === 'tap') r = await sh(['input', 'tap', x, y]);
+      else if (action === 'double_click') { await sh(['input', 'tap', x, y]); r = await sh(['input', 'tap', x, y]); }
+      else if (action === 'long_press') r = await sh(['input', 'swipe', x, y, x, y, '800']);
+      else if (action === 'type') r = await sh(['input', 'text', String(a.text || '').replace(/ /g, '%s').replace(/(["'`\\$&|;<>()])/g, '\\$1')]);
+      else if (action === 'key' || action === 'hotkey') r = await sh(['input', 'keyevent', ADB_KEYS[String(a.keys || a.key || '').toLowerCase()] || String(a.keys || a.key || 'KEYCODE_ENTER')]);
+      else if (action === 'scroll') {
+        const dy = Number(a.deltaY || 600);
+        r = await sh(['input', 'swipe', x || '540', String(Number(y || 1200) + dy / 2), x || '540', String(Number(y || 1200) - dy / 2), '350']);
+      } else if (action === 'open_app') {
+        const q = String(a.app || '').toLowerCase();
+        let pkg = ANDROID_KNOWN_PACKAGES[q] || q;
+        if (!/\./.test(pkg)) {
+          const list = await sh(['pm', 'list', 'packages']);
+          pkg = String(list.out).split('\n').map((l) => l.replace('package:', '').trim()).find((p) => p.toLowerCase().includes(q)) || pkg;
+        }
+        r = await sh(['monkey', '-p', pkg, '-c', 'android.intent.category.LAUNCHER', '1']);
+      } else if (action === 'move' || action === 'glide') r = { ok: true };
+      else return cb({ ok: false, error: 'Unsupported phone action ' + action });
+      cb({ ok: r.ok, data: 'Phone: ' + action, error: r.ok ? undefined : r.err });
+    })();
+  }
+  if (IS_TERMUX) return cb({ ok: false, error: 'Use the PC bridge (ADB) to control the phone screen.' });
+  const map = { click: 'mouse_click', double_click: 'mouse_double_click', right_click: 'mouse_click', move: 'mouse_move', glide: 'mouse_glide', type: 'type_text', hotkey: 'press_hotkey', key: 'press_hotkey', scroll: 'scroll_screen' };
+  if (action === 'open_app') return launchAppSafely(String(a.app || ''), (out, ok) => cb({ ok, data: out, error: ok ? undefined : out }));
+  const gui = map[action];
+  if (!gui) return cb({ ok: false, error: 'Unsupported action ' + action });
+  executeGuiControl({ ...a, action: gui, button: action === 'right_click' ? 'right' : a.button, keys: a.keys || a.key, target: a.target }, (out) => cb(out));
+}
+
+// ---------------------------------------------------------------------------
 // Calls: ring this device (RAY calling Ray / device-to-device) and dial real numbers
 // ---------------------------------------------------------------------------
 
@@ -1150,11 +1297,16 @@ function executeGuiControl(payload, cb) {
     const header = "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class RayIn { " +
       "[DllImport(\"user32.dll\")] public static extern bool SetCursorPos(int x, int y); " +
       "[DllImport(\"user32.dll\")] public static extern void mouse_event(uint f, uint dx, uint dy, int d, UIntPtr e); " +
-      "[DllImport(\"user32.dll\")] public static extern void keybd_event(byte vk, byte s, uint f, UIntPtr e); }';";
+      "[DllImport(\"user32.dll\")] public static extern void keybd_event(byte vk, byte s, uint f, UIntPtr e); " +
+      "[DllImport(\"user32.dll\")] public static extern bool SetProcessDPIAware(); }'; [RayIn]::SetProcessDPIAware() | Out-Null;";
     const x = Math.round(Number(payload.x || 0));
     const y = Math.round(Number(payload.y || 0));
     const runPs = (body) => runSafeCommand('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', header + body], (m, ok) => cb({ ok, data: ok ? 'Executed ' + action : m }));
     if (action === 'mouse_move') return runPs('[RayIn]::SetCursorPos(' + x + ',' + y + ') | Out-Null');
+    if (action === 'mouse_glide') {
+      // Teach mode: move the pointer smoothly so Ray can follow it.
+      return runPs('Add-Type -AssemblyName System.Windows.Forms; $p=[System.Windows.Forms.Cursor]::Position; for($i=1;$i -le 30;$i++){ [RayIn]::SetCursorPos([int]($p.X+(' + x + '-$p.X)*$i/30),[int]($p.Y+(' + y + '-$p.Y)*$i/30)) | Out-Null; Start-Sleep -Milliseconds 25 }');
+    }
     if (action === 'mouse_click' || action === 'mouse_double_click') {
       const right = payload.button === 'right';
       const down = right ? 8 : 2;
@@ -1405,6 +1557,15 @@ async function runBridgeAction(action, reqData) {
     }
     if (action === 'clipboard_set') {
       return await new Promise((resolve) => setNativeClipboard(String(reqData.content || ''), (msg, ok) => resolve({ ok, data: { message: msg }, error: ok ? undefined : msg })));
+    }
+    if (action === 'agent_screenshot') {
+      return await new Promise((resolve) => agentScreenshot(reqData.target === 'phone' ? 'phone' : 'pc', (out) => resolve({ ok: out.ok, data: out, error: out.error })));
+    }
+    if (action === 'agent_act') {
+      return await new Promise((resolve) => agentAct(reqData.target === 'phone' ? 'phone' : 'pc', reqData.step || {}, (out) => resolve({ ok: out.ok, data: out.data, error: out.error })));
+    }
+    if (action === 'agent_capabilities') {
+      return { ok: true, data: { pc: !IS_TERMUX, phoneViaAdb: Boolean(await adbDevice()), platform: PLATFORM } };
     }
     if (action === 'open_file') {
       // Open a file with its default app — only inside the folders RAY may read, never credential files.
@@ -2046,7 +2207,7 @@ function connect() {
           'adjust_volume', 'obsidian-vault', 'ollama-proxy', 'fs-sandbox', 'wake-on-lan', 'chat-compose', 'calls',
         ];
         if (IS_TERMUX) caps.push('notifications-relay');
-        else caps.push('screen-control', 'clean_slate', 'optimize_system');
+        else caps.push('screen-control', 'clean_slate', 'optimize_system', 'computer-use');
         ws.send(JSON.stringify({
           event: 'device:register',
           data: {

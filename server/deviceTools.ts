@@ -39,6 +39,7 @@ const ACTION_TOOLS: Record<string, RegExp> = {
   optimize_system: /\b(optimi[sz]e|clean|speed up|free up)\b/i,
   browser_tab_action: /\b(close|open|switch|go to|focus|reload|refresh|mute|show|read|bring)\b/i,
   open_file_on_device: /\b(open|show|view|play|launch|display)\b/i,
+  operate_computer: /\b(do|click|open|go|navigate|use|fill|book|set|change|turn|install|play|search|type|send|teach|show|how|complete|finish|operate|help)\b/i,
   execute_protocol: /\b(protocol|run|activate|engage|initiate|start)\b/i,
   call_me: /\b(call|ring|wake|remind|alarm|phone me|buzz)\b/i,
   call_device: /\b(call|ring|connect|talk|link|join)\b/i,
@@ -63,6 +64,8 @@ export function checkActionPolicy(
   // Questions ("did mom message me?", "which apps are open?") never authorize actions,
   // unless they're polite imperatives ("can you send mom a message?").
   const cmd = userCommand.trim();
+  // "How do I …?" asking RAY to TEACH on the screen is a request, not just a question.
+  if (name === 'operate_computer' && /teach|show/i.test(String(args.mode || '')) && /\b(how|teach|show)\b/i.test(cmd)) return null;
   const isQuestion =
     /\?\s*$/.test(cmd) || /^(did|does|do|is|are|was|were|has|have|what|which|who|whom|whose|when|where|why|how|any)\b/i.test(cmd);
   const politeImperative = /^(can|could|would|will)\s+you\b|^please\b/i.test(cmd);

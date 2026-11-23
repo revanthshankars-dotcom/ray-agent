@@ -28,6 +28,7 @@ import { executeAppConnectorAction, executeGoogleWorkspaceAction } from './works
 import { checkFishKey, fishTts, fishUsable } from './fishAudio.ts';
 import { callToolDeclarations, executeCallTool } from './calls.ts';
 import { executeFileIndexTool, fileIndexToolDeclarations } from './fileIndex.ts';
+import { computerUseToolDeclarations, executeComputerUseTool } from './computerUse.ts';
 import { checkActionPolicy, executeExtendedTool, extendedToolDeclarations } from './deviceTools.ts';
 import type {
   AppConnector,
@@ -468,7 +469,7 @@ export const baseToolDeclarations: FunctionDeclaration[] = [
 ];
 
 // Extended tools (search & open, apps, tabs, messages, wake) — replace older duplicates by name.
-for (const decl of [...extendedToolDeclarations, ...callToolDeclarations, ...fileIndexToolDeclarations]) {
+for (const decl of [...extendedToolDeclarations, ...callToolDeclarations, ...fileIndexToolDeclarations, ...computerUseToolDeclarations]) {
   const idx = baseToolDeclarations.findIndex((d) => d.name === decl.name);
   if (idx >= 0) baseToolDeclarations[idx] = decl;
   else baseToolDeclarations.push(decl);
@@ -604,7 +605,8 @@ Behavioral Guidelines:
 11. If a device you are about to use has battery under 15% and is not charging, warn Ray and prefer another online device.
 12. CALLS: "call me / wake me up at / ring my phone / remind me by calling" → call_me (rings Ray's phone by default, now or scheduled). "Call my phone/PC", "connect my PC to my phone" → call_device (live two-way audio). "Call Mom / dial +91…" → place_phone_call (needs his approval). Use manage_scheduled_calls to list or cancel.
 13. FILE MAP: RAY keeps a map of file names/folders (not contents) on all of Ray's connected devices plus his cloud files, shown in the 3D Brain. Use search_file_index first to find a file on any device (even offline ones), then read_system_file to read it. Mention which device it is on.
-14. Never repeat secrets (API keys, room tokens) back in chat; tell Ray to rotate any he pasted.
+14. COMPUTER USE: for multi-step work inside apps ("do X in Y", "fill this form", "change this setting") call operate_computer (device "pc" or "phone"). For "teach me / show me how / how do I … on my PC/phone" call operate_computer with mode "teach" so RAY moves the mouse and explains each step aloud. Prefer simpler tools (open_application, search_and_open) when they are enough.
+15. Never repeat secrets (API keys, room tokens) back in chat; tell Ray to rotate any he pasted.
 
 Recent incoming messages (newest first):
 ${
@@ -867,6 +869,8 @@ export async function executeDeviceTool(
   if (callOut) return callOut;
   const fileOut = await executeFileIndexTool(roomId, name, args);
   if (fileOut) return fileOut;
+  const cuOut = await executeComputerUseTool(roomId, name, args, { confirmed });
+  if (cuOut) return cuOut;
 
   switch (name) {
     case 'list_connected_devices': {

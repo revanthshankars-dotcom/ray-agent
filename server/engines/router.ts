@@ -73,7 +73,7 @@ export interface RouterChatInput {
 // ---------------------------------------------------------------------------
 
 const TOOL_HINTS =
-  /\b(call|ring|dial|wake|alarm|open|launch|start|close|kill|play|search|find|show|list|read|send|message|whatsapp|instagram|text|call|notify|remind|timer|alarm|tab|tabs|app|apps|file|files|folder|screen|screenshot|click|type|press|volume|clipboard|copy|phone|pc|laptop|desktop|device|note|brain|save|calendar|email|gmail|drive|task|todo|protocol|wake)\b/i;
+  /\b(teach|show me|how do i|how to|navigate|fill|settings?|call|ring|dial|wake|alarm|open|launch|start|close|kill|play|search|find|show|list|read|send|message|whatsapp|instagram|text|call|notify|remind|timer|alarm|tab|tabs|app|apps|file|files|folder|screen|screenshot|click|type|press|volume|clipboard|copy|phone|pc|laptop|desktop|device|note|brain|save|calendar|email|gmail|drive|task|todo|protocol|wake)\b/i;
 const CODE_HINTS = /\b(code|function|bug|error|stack ?trace|typescript|javascript|python|java|rust|golang|sql|regex|compile|refactor|api|script|class|component|debug)\b|```/i;
 const REASONING_HINTS =
   /\b(why|analy[sz]e|compare|plan|strategy|design|architecture|prove|derive|step[- ]by[- ]step|pros and cons|trade-?offs?|research|explain in depth|deep dive|evaluate)\b/i;
@@ -105,7 +105,7 @@ const CHAINS: Record<TaskKind, Array<[string, ModelTier]>> = {
   tools: [['groq', 'large'], ['groq', 'fast'], ['openrouter', 'large'], ['cerebras', 'large'], ['opencode', 'large'], ['gemini', 'large'], ['mistral', 'large'], ['github', 'large'], ['nvidia', 'large'], ['sambanova', 'large'], ['deepseek', 'large'], ['zhipu', 'large'], ['dashscope', 'large'], ['custom', 'large'], ['llm7', 'large']],
   code: [['groq', 'code'], ['opencode', 'code'], ['openrouter', 'code'], ['mistral', 'code'], ['cerebras', 'code'], ['github', 'code'], ['groq', 'fast'], ['gemini', 'code'], ['nvidia', 'code'], ['cloudflare', 'code'], ['huggingface', 'code'], ['deepseek', 'code'], ['dashscope', 'code'], ['zhipu', 'code'], ['siliconflow', 'code'], ['custom', 'large'], ['llm7', 'code']],
   reasoning: [['groq', 'reasoning'], ['openrouter', 'reasoning'], ['gemini', 'reasoning'], ['github', 'reasoning'], ['cerebras', 'reasoning'], ['opencode', 'reasoning'], ['mistral', 'reasoning'], ['groq', 'fast'], ['nvidia', 'reasoning'], ['sambanova', 'reasoning'], ['cloudflare', 'reasoning'], ['deepseek', 'reasoning'], ['dashscope', 'reasoning'], ['novita', 'reasoning'], ['custom', 'large'], ['llm7', 'reasoning']],
-  vision: [['openrouter', 'vision'], ['gemini', 'vision'], ['groq', 'vision'], ['mistral', 'vision'], ['github', 'vision'], ['nvidia', 'vision'], ['zhipu', 'vision'], ['dashscope', 'vision']],
+  vision: [['openrouter', 'vision'], ['gemini', 'vision'], ['groq', 'vision'], ['mistral', 'vision'], ['github', 'vision'], ['nvidia', 'vision'], ['zhipu', 'vision'], ['dashscope', 'vision'], ['custom', 'vision']],
 };
 
 function providerById(id: string): ProviderDef | undefined {
@@ -298,6 +298,7 @@ const TOOL_TOPICS: Array<[RegExp, string[]]> = [
   [/\b(protocol|house party|clean slate)\b/i, ['execute_protocol']],
   [/\b(plan|break down|analy[sz]e (this|my) task|prioriti[sz]e)\b/i, ['analyze_task_goal']],
   [/\b(photo|camera|snapshot|picture)\b/i, ['request_device_snapshot']],
+  [/\b(teach|show me how|how do i|how to|click|navigate|do it for me|for me|operate|fill|form|setting|settings|in the app|on my screen|use the mouse|step by step)\b/i, ['operate_computer', 'stop_computer_task', 'open_application']],
   [/\b(call|ring|dial|phone me|wake me|alarm|remind me|connect (my )?(pc|phone|laptop))\b/i, ['call_me', 'call_device', 'place_phone_call', 'manage_scheduled_calls', 'list_connected_devices']],
 ];
 
@@ -557,4 +558,22 @@ export async function getEngineAssignments(): Promise<Record<string, string[]>> 
     out[labels[kind]] = cands.slice(0, 4).map((c) => `${c.p.label} · ${c.model}`);
   }
   return out;
+}
+
+/** One vision call (screenshot + instructions) across the free vision engines, with failover. */
+export async function visionComplete(system: string, userText: string, imageDataUrl: string, maxTokens = 700): Promise<{ text: string; engine: string }> {
+  await loadUsage();
+  const candidates = await buildCandidates('vision', false);
+  if (!candidates.length) throw new Error('No vision-capable engine is configured (Groq, OpenRouter, Gemini, Mistral or Z.ai with a vision model).');
+  const out = await completeWithFailover(
+    candidates,
+    [
+      { role: 'system', content: system },
+      { role: 'user', content: [{ type: 'text', text: userText }, { type: 'image_url', image_url: { url: imageDataUrl } }] },
+    ],
+    undefined,
+    undefined,
+    { maxTokens, timeoutMs: 45000, kind: 'vision' }
+  );
+  return { text: out.content, engine: `${out.provider.label} · ${out.model}` };
 }
