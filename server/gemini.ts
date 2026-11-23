@@ -25,7 +25,7 @@ import {
 } from './hub.ts';
 import { assertSafeExternalUrl, sanitizeErrorMessage, validateScreenControlAction } from './security.ts';
 import { executeAppConnectorAction, executeGoogleWorkspaceAction } from './workspace.ts';
-import { fishTts, getFishKey } from './fishAudio.ts';
+import { checkFishKey, fishTts, fishUsable } from './fishAudio.ts';
 import { checkActionPolicy, executeExtendedTool, extendedToolDeclarations } from './deviceTools.ts';
 import type {
   AppConnector,
@@ -619,7 +619,7 @@ export async function synthesizeSpeech(
   voiceName: VoicePersona = 'Fenrir',
   style?: string
 ): Promise<{ audioBase64: string; mimeType: string; engine: string }> {
-  if (getFishKey()) {
+  if (fishUsable()) {
     try {
       const out = await fishTts(text);
       return { ...out, engine: 'fish-audio' };

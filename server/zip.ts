@@ -25,7 +25,7 @@ export function zipDirectory(dir: string, rootName: string): Buffer {
       const full = path.join(d, e.name);
       const r = rel ? `${rel}/${e.name}` : e.name;
       if (e.isDirectory()) walk(full, r);
-      else files.push({ name: `${rootName}/${r}`, data: fs.readFileSync(full) });
+      else files.push({ name: rootName ? `${rootName}/${r}` : r, data: fs.readFileSync(full) });
     }
   };
   walk(dir, '');

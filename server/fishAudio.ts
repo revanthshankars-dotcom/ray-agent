@@ -66,6 +66,15 @@ export async function checkFishKey(): Promise<FishKeyStatus> {
   return lastStatus;
 }
 
+/** Usable for speech right now: key present, not rejected, and not known to have zero credit. */
+export function fishUsable(): boolean {
+  if (!getFishKey()) return false;
+  if (lastStatus.valid === false) return false;
+  const c = Number(lastStatus.credit);
+  if (lastStatus.credit !== undefined && !Number.isNaN(c) && c <= 0) return false;
+  return true;
+}
+
 /** Text → speech (MP3, base64). Throws on failure so callers can fall back. */
 export async function fishTts(text: string, voiceId?: string): Promise<{ audioBase64: string; mimeType: string }> {
   const key = getFishKey();
@@ -87,6 +96,7 @@ export async function fishTts(text: string, voiceId?: string): Promise<{ audioBa
   if (!r.ok) {
     const err = await r.text().catch(() => '');
     if (r.status === 401 || r.status === 403) lastStatus = { ...lastStatus, configured: true, valid: false, status: r.status };
+    if (r.status === 402) lastStatus = { ...lastStatus, configured: true, credit: 0, status: r.status };
     throw new Error(`Fish Audio TTS failed (${r.status}): ${err.slice(0, 160)}`);
   }
   const buf = Buffer.from(await r.arrayBuffer());

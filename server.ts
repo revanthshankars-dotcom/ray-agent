@@ -88,7 +88,7 @@ import { dailyBudget, getEngineStatus, getKeySources, loadUsage, normalizeProvid
 import { installShutdownFlush, persistenceBackend } from './server/persistence.ts';
 import { getVapidPublicKey, initWakeServices, sendPush } from './server/wake.ts';
 import { zipDirectory } from './server/zip.ts';
-import { checkFishKey, getFishKey, getFishStatus } from './server/fishAudio.ts';
+import { checkFishKey, fishUsable, getFishKey, getFishStatus } from './server/fishAudio.ts';
 import { checkMetaSignature, handleMetaWebhook, metaStatus, verifyMetaWebhook } from './server/meta.ts';
 import type { AppConnector, BrainNote, VoicePersona } from './src/types/relay.ts';
 
@@ -177,11 +177,12 @@ async function startServer() {
     return 0;
   });
   const wake = await initWakeServices();
+  if (getFishKey()) setInterval(() => void checkFishKey(), 6 * 3600_000).unref();
   if (getFishKey()) {
     const fish = await checkFishKey();
     console.log(
       `[RAY] Fish Audio key: ${fish.valid === true ? 'VALID' : fish.valid === false ? 'INVALID (rejected)' : 'could not verify'}` +
-        ` status=${fish.status ?? 'n/a'}${fish.credit !== undefined ? ` credit=${fish.credit}` : ''}${fish.error ? ` error=${fish.error.slice(0, 120)}` : ''}`
+        ` usable=${fishUsable()} status=${fish.status ?? 'n/a'}${fish.credit !== undefined ? ` credit=${fish.credit}` : ''}${fish.error ? ` error=${fish.error.slice(0, 120)}` : ''}`
     );
   }
   console.log(
@@ -341,7 +342,8 @@ async function startServer() {
 
   app.get('/api/extension/ray-tabs.zip', (_req, res) => {
     try {
-      const buf = zipDirectory(path.resolve(process.cwd(), 'extension', 'ray-tabs'), 'ray-tabs');
+      // manifest.json at the zip root: Windows "Extract All" → folder you can pick directly in Load unpacked.
+      const buf = zipDirectory(path.resolve(process.cwd(), 'extension', 'ray-tabs'), '');
       res.setHeader('Content-Type', 'application/zip');
       res.setHeader('Content-Disposition', 'attachment; filename="ray-tabs-extension.zip"');
       res.send(buf);
@@ -351,7 +353,7 @@ async function startServer() {
   });
 
   app.get('/api/voice/capabilities', (_req, res) => {
-    res.json({ live: Boolean(process.env.GEMINI_API_KEY), serverTts: Boolean(process.env.GEMINI_API_KEY || getFishKey()), fishAudio: getFishStatus() });
+    res.json({ live: Boolean(process.env.GEMINI_API_KEY), serverTts: Boolean(process.env.GEMINI_API_KEY || fishUsable()), fishAudio: getFishStatus() });
   });
 
   app.get('/api/push/vapid', (_req, res) => {
