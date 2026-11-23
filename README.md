@@ -63,6 +63,21 @@ Everything cross-device works offline, in both directions: open apps/links on th
 
 RAY keeps a map of the files on every connected device (PC bridges and the Android bridge) — **names, folders, sizes and dates only, never file contents, never credential files** — refreshed when a device connects and every 30 minutes, and stored with RAY's durable state. The **3D Brain** shows it alongside your Second Brain notes and Google Drive files: devices and the cloud are hubs, folders branch off them, files are coloured by type, and notes that mention a file are linked to it. RAY searches the map on its own ("where's my passport scan?") — even for devices that are offline right now — and opens or reads a file only when you ask. Turn it off with `RAY_FILE_INDEX=off`.
 
+## Computer use (RAY gets a mouse)
+
+"Hey Ray, turn on dark mode in Windows settings" / "show me how to add a printer" / "on my phone, open Instagram and like my latest post". RAY looks at the screen, a free vision model decides one step at a time, and the PC bridge clicks, types and scrolls — on the **PC**, and on your **Android phone through ADB** (Developer options → Wireless debugging → pair with the PC, or USB debugging). **Teach mode** glides the pointer to each target and explains every step aloud. Requires **Screen Control armed** + one Approve per task; the RAY Agent panel shows what RAY sees, each step and a **Stop** button. Finished tasks become *Skills* notes RAY reuses next time. It never types passwords/OTPs or confirms payments.
+
+## Coding agents
+
+RAY runs the coding agents installed on your PC — **Claude Code, Codex CLI, Gemini CLI, Aider** — as background jobs in your project folders, several **in parallel** with one approval ("have Claude Code add tests in Documents/app and Codex fix lint in Documents/api"), and notifies every device when each finishes.
+
+## Autonomy clause (self-thinking, self-learning, self-healing)
+
+- **Autopilot** (Connections → Autopilot: Off / Observe / Assist, interval, quiet hours): RAY checks in on its own, notices things (low battery, unread messages, morning brief, failures) and — in Assist — does safe things itself (alerts, spoken reminders outside quiet hours, tasks, notes, waking devices). It **never** messages people, calls, writes/deletes files, uses the mouse or runs coding agents without you. Everything is logged in *System → Autopilot Journal*.
+- **Self-learning**: durable facts from your chats go to *Memory → About Ray* (edit it any time) and are used in every answer; computer-use runs become *Skills*.
+- **Self-healing**: a watchdog re-wakes offline bridges and devices with stuck commands, notices failing engines (RAY already routes around them) and writes *System → System Health*, alerting you only on new problems.
+- **Self-building**: ask RAY to improve itself and it runs a coding agent in your local `ray-agent` folder; you review and push.
+
 ## Highlights
 
 - **Engine router** (`server/engines/`): 13 free providers, per-task model choice, automatic failover on 429/limits, parallel small-agent "swarm" near daily quotas.

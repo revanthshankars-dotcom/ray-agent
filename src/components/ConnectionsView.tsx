@@ -22,6 +22,7 @@ import type { DeviceInfo, EngineSettings, IncomingMessage } from '../types/relay
 import { authFetch, getStoredRoomToken } from '../utils/roomAuth';
 import type { PushWakeStatus } from '../hooks/usePushWake';
 import { ConnectThisDevice } from './ConnectThisDevice';
+import { AutopilotCard } from './AutopilotCard';
 
 interface EngineStatus {
   id: string;
@@ -504,6 +505,8 @@ export function ConnectionsView({
             </details>
           )}
         </Card>
+
+        <AutopilotCard roomId={roomId} />
 
         {/* Messages */}
         <Card>

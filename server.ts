@@ -90,6 +90,7 @@ import { getVapidPublicKey, initWakeServices, sendPush } from './server/wake.ts'
 import { zipDirectory } from './server/zip.ts';
 import { buildInstaller } from './server/installer.ts';
 import { getFileMap, refreshDeviceIndex, startFileIndexScheduler } from './server/fileIndex.ts';
+import { getAutopilot, learnFromTurn, runAutopilot, setAutopilot, startAutonomy } from './server/autopilot.ts';
 import { getIceServers, listScheduledCalls, cancelScheduledCall, startCallScheduler } from './server/calls.ts';
 import { checkFishKey, fishUsable, getFishKey, getFishStatus } from './server/fishAudio.ts';
 import { checkMetaSignature, handleMetaWebhook, metaStatus, verifyMetaWebhook } from './server/meta.ts';
@@ -182,6 +183,7 @@ async function startServer() {
   const wake = await initWakeServices();
   startCallScheduler();
   startFileIndexScheduler();
+  startAutonomy();
   if (getFishKey()) setInterval(() => void checkFishKey(), 6 * 3600_000).unref();
   if (getFishKey()) {
     const fish = await checkFishKey();
@@ -356,6 +358,19 @@ async function startServer() {
     } catch (err) {
       res.status(500).json({ error: sanitizeErrorMessage(err, 'Extension package unavailable') });
     }
+  });
+
+  // Autopilot (self-thinking) settings + manual run.
+  app.get('/api/autopilot', requireRoomAuth, async (req, res) => {
+    res.json(await getAutopilot(normalizeRoomId(String(req.query.room || 'RLY-HOME'))));
+  });
+  app.post('/api/autopilot', requireRoomAuth, async (req, res) => {
+    const { roomId, ...patch } = req.body as { roomId: string; level?: 'off' | 'observe' | 'assist'; intervalMin?: number; quietStart?: number; quietEnd?: number };
+    res.json(await setAutopilot(normalizeRoomId(roomId), patch));
+  });
+  app.post('/api/autopilot/run', aiLimiter, requireRoomAuth, async (req, res) => {
+    const { roomId } = req.body as { roomId: string };
+    res.json({ summary: await runAutopilot(normalizeRoomId(roomId), { force: true }) });
   });
 
   // File map for the 3D Brain (names/folders only, per device).
@@ -964,7 +979,9 @@ async function startServer() {
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
 
+    let lastReplyText = '';
     const sendEvent = (event: { type: string; data: unknown }) => {
+      if (event.type === 'text') lastReplyText = String(event.data || '');
       res.write(`data: ${JSON.stringify(event)}\n\n`);
     };
 
@@ -1218,6 +1235,9 @@ async function startServer() {
       sendEvent({ type: 'error', data: sanitizeErrorMessage(err, 'AI engine request failed') });
     } finally {
       res.end();
+      // Self-learning: remember durable facts from this conversation (background, best-effort).
+      const body = req.body as { roomId?: string; message?: string };
+      if (lastReplyText && body?.message) learnFromTurn(normalizeRoomId(body.roomId), String(body.message), lastReplyText);
     }
   });
 

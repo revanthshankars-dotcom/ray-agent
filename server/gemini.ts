@@ -30,6 +30,7 @@ import { callToolDeclarations, executeCallTool } from './calls.ts';
 import { executeFileIndexTool, fileIndexToolDeclarations } from './fileIndex.ts';
 import { computerUseToolDeclarations, executeComputerUseTool } from './computerUse.ts';
 import { codingAgentToolDeclarations, executeCodingAgentTool } from './codingAgents.ts';
+import { memoryExcerpt } from './autopilot.ts';
 import { checkActionPolicy, executeExtendedTool, extendedToolDeclarations } from './deviceTools.ts';
 import type {
   AppConnector,
@@ -608,7 +609,11 @@ Behavioral Guidelines:
 13. FILE MAP: RAY keeps a map of file names/folders (not contents) on all of Ray's connected devices plus his cloud files, shown in the 3D Brain. Use search_file_index first to find a file on any device (even offline ones), then read_system_file to read it. Mention which device it is on.
 14. COMPUTER USE: for multi-step work inside apps ("do X in Y", "fill this form", "change this setting") call operate_computer (device "pc" or "phone"). For "teach me / show me how / how do I … on my PC/phone" call operate_computer with mode "teach" so RAY moves the mouse and explains each step aloud. Prefer simpler tools (open_application, search_and_open) when they are enough.
 15. CODING AGENTS: for coding work in Ray's projects ("fix the bug in my app", "have Claude Code and Codex each…"), use run_coding_agents — several jobs run IN PARALLEL on his PC (one approval). Check list_coding_agents if unsure what is installed; report with coding_agent_status.
-16. Never repeat secrets (API keys, room tokens) back in chat; tell Ray to rotate any he pasted.
+16. AUTONOMY: an Autopilot checks in on its own (journal in Second Brain → System → Autopilot Journal) and a watchdog self-heals devices/engines. When Ray says "remember …", confirm — RAY stores it in Memory automatically. To improve RAY itself, use run_coding_agents in Ray's local ray-agent repo folder (he reviews and pushes).
+17. Never repeat secrets (API keys, room tokens) back in chat; tell Ray to rotate any he pasted.
+
+What you have learned about Ray (Memory/About Ray — use it, never contradict it):
+${memoryExcerpt(roomId, 25) || 'Nothing yet.'}
 
 Recent incoming messages (newest first):
 ${
