@@ -250,7 +250,7 @@ async function completeWithFailover(
         i--;
         continue;
       }
-      recordFailure(p.id, pe.status, pe.retryAfter, model);
+      recordFailure(p.id, pe.status, pe.retryAfter, model, pe.message);
       errors.push(pe.message);
     }
   }

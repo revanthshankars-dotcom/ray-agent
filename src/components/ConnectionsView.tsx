@@ -35,6 +35,7 @@ interface EngineStatus {
   supportsTools: boolean;
   signupUrl: string;
   notes: string;
+  lastError?: { at: number; status: number; message: string } | null;
 }
 
 interface HubHealth {
@@ -465,6 +466,11 @@ export function ConnectionsView({
                   {e.requestsToday}/{e.dailyLimit} today
                   {e.coolingDownSec > 0 ? ` · cooling down ${e.coolingDownSec}s` : ''}
                 </p>
+                {e.lastError && (
+                  <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-1 break-words" title={e.lastError.message}>
+                    Last error ({e.lastError.status}): {e.lastError.message.slice(0, 120)}
+                  </p>
+                )}
               </div>
             ))}
             {configured.length === 0 && (

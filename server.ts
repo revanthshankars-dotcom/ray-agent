@@ -272,6 +272,7 @@ async function startServer() {
       buildId: SERVER_BUILD_ID,
       uptimeSec: Math.round(process.uptime()),
       enginesConfigured: engines.filter((e) => e.configured).map((e) => e.id),
+      engineErrors: Object.fromEntries(engines.filter((e) => e.lastError).map((e) => [e.id, `${e.lastError!.status} ${e.lastError!.message}`])),
       enginesAvailable: engines.filter((e) => e.available).length,
       budget: dailyBudget(),
       devicesOnline,

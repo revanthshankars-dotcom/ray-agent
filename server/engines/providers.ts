@@ -688,8 +688,15 @@ export function recordUsage(providerId: string, tokens: number): void {
  * Cooldowns are per MODEL for rate/credit/size errors (Groq limits each model separately,
  * OpenRouter free models still work when paid ones lack credit) and per PROVIDER for bad keys.
  */
-export function recordFailure(providerId: string, status: number, retryAfterSec?: number, model?: string): void {
+const lastErrors = new Map<string, { at: number; status: number; message: string }>();
+
+export function recordFailure(providerId: string, status: number, retryAfterSec?: number, model?: string, message?: string): void {
   rollDay();
+  if (message) {
+    // Keep the reason (key/model/limit problem) so Connections and /api/health can show it — never the key itself.
+    const clean = message.replace(/(sk|gsk|csk|oc_sk|cfut|hf|nvapi)[-_][A-Za-z0-9_-]{8,}/g, '[key]').slice(0, 220);
+    lastErrors.set(providerId, { at: Date.now(), status, message: `${model ? `${model}: ` : ''}${clean}` });
+  }
   usage.failures[providerId] = (usage.failures[providerId] || 0) + 1;
   const modelKey = model ? `${providerId}|${model}` : providerId;
   if (status === 401 || status === 403) {
@@ -753,6 +760,7 @@ export function getEngineStatus() {
     quotaUsedPct: Math.round(quotaUsed(p) * 100),
     coolingDownSec: Math.max(0, Math.round(((cooldownUntil.get(p.id) || 0) - Date.now()) / 1000)),
     supportsTools: p.supportsTools,
+    lastError: lastErrors.get(p.id) || null,
     signupUrl: p.signupUrl,
     notes: p.notes,
   }));
