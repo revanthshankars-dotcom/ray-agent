@@ -73,7 +73,7 @@ export interface RouterChatInput {
 // ---------------------------------------------------------------------------
 
 const TOOL_HINTS =
-  /\b(teach|show me|how do i|how to|navigate|fill|settings?|call|ring|dial|wake|alarm|open|launch|start|close|kill|play|search|find|show|list|read|send|message|whatsapp|instagram|text|call|notify|remind|timer|alarm|tab|tabs|app|apps|file|files|folder|screen|screenshot|click|type|press|volume|clipboard|copy|phone|pc|laptop|desktop|device|note|brain|save|calendar|email|gmail|drive|task|todo|protocol|wake)\b/i;
+  /\b(codex|claude code|aider|coding agents?|teach|show me|how do i|how to|navigate|fill|settings?|call|ring|dial|wake|alarm|open|launch|start|close|kill|play|search|find|show|list|read|send|message|whatsapp|instagram|text|call|notify|remind|timer|alarm|tab|tabs|app|apps|file|files|folder|screen|screenshot|click|type|press|volume|clipboard|copy|phone|pc|laptop|desktop|device|note|brain|save|calendar|email|gmail|drive|task|todo|protocol|wake)\b/i;
 const CODE_HINTS = /\b(code|function|bug|error|stack ?trace|typescript|javascript|python|java|rust|golang|sql|regex|compile|refactor|api|script|class|component|debug)\b|```/i;
 const REASONING_HINTS =
   /\b(why|analy[sz]e|compare|plan|strategy|design|architecture|prove|derive|step[- ]by[- ]step|pros and cons|trade-?offs?|research|explain in depth|deep dive|evaluate)\b/i;
@@ -298,6 +298,7 @@ const TOOL_TOPICS: Array<[RegExp, string[]]> = [
   [/\b(protocol|house party|clean slate)\b/i, ['execute_protocol']],
   [/\b(plan|break down|analy[sz]e (this|my) task|prioriti[sz]e)\b/i, ['analyze_task_goal']],
   [/\b(photo|camera|snapshot|picture)\b/i, ['request_device_snapshot']],
+  [/\b(claude code|codex|gemini cli|aider|coding agents?|my (project|repo|app|code)|in parallel|sub-?agents?)\b/i, ['run_coding_agents', 'coding_agent_status', 'list_coding_agents']],
   [/\b(teach|show me how|how do i|how to|click|navigate|do it for me|for me|operate|fill|form|setting|settings|in the app|on my screen|use the mouse|step by step)\b/i, ['operate_computer', 'stop_computer_task', 'open_application']],
   [/\b(call|ring|dial|phone me|wake me|alarm|remind me|connect (my )?(pc|phone|laptop))\b/i, ['call_me', 'call_device', 'place_phone_call', 'manage_scheduled_calls', 'list_connected_devices']],
 ];

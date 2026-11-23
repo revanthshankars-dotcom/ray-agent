@@ -1122,6 +1122,68 @@ function agentAct(target, a, cb) {
 }
 
 // ---------------------------------------------------------------------------
+// Coding agents on this machine (Claude Code, Codex, Gemini CLI, Aider) as background jobs.
+// The task is passed on STDIN (never on the command line) so no prompt can inject shell code.
+// ---------------------------------------------------------------------------
+
+const CODING_AGENTS = {
+  claude: { bin: 'claude', args: ['-p', '--permission-mode', 'acceptEdits', '--output-format', 'text'], label: 'Claude Code' },
+  codex: { bin: 'codex', args: ['exec', '-'], label: 'Codex CLI' },
+  gemini: { bin: 'gemini', args: [], label: 'Gemini CLI' },
+  aider: { bin: 'aider', args: ['--yes-always', '--no-pretty', '--message-file', '{PROMPT_FILE}'], label: 'Aider' },
+};
+const codingJobs = new Map();
+
+function whichBin(bin) {
+  return new Promise((resolve) => {
+    execFile(os.platform() === 'win32' ? 'where' : 'which', [bin], { timeout: 5000 }, (err, out) => resolve(!err && String(out).trim() ? String(out).trim().split(/\r?\n/)[0] : null));
+  });
+}
+
+async function listCodingAgents() {
+  const out = [];
+  for (const [id, a] of Object.entries(CODING_AGENTS)) {
+    const where = await whichBin(a.bin);
+    out.push({ id, label: a.label, installed: Boolean(where), path: where || undefined });
+  }
+  return out;
+}
+
+async function startCodingJob(agentId, prompt, cwdRaw) {
+  const agent = CODING_AGENTS[agentId];
+  if (!agent) throw new Error('Unknown coding agent: ' + agentId);
+  if (!(await whichBin(agent.bin))) throw new Error(agent.label + ' is not installed on ' + DEVICE_NAME + '.');
+  const rawDir = String(cwdRaw || 'Documents').replace(/^~[\\/]?/, '');
+  const cwd = resolveSafeFsPath(path.isAbsolute(rawDir) ? rawDir : path.join(os.homedir(), rawDir), true);
+  if (!fs.statSync(cwd).isDirectory()) throw new Error('Folder not found: ' + cwd);
+  const id = crypto.randomUUID().slice(0, 8);
+  const promptFile = path.join(os.tmpdir(), 'ray-agent-prompt-' + id + '.txt');
+  fs.writeFileSync(promptFile, String(prompt), 'utf8');
+  const args = agent.args.map((a) => (a === '{PROMPT_FILE}' ? promptFile : a));
+  const child = spawn(agent.bin, args, { cwd, shell: os.platform() === 'win32', windowsHide: true, env: { ...process.env, CI: '1' } });
+  const job = { id, agent: agent.label, cwd, prompt: String(prompt).slice(0, 300), status: 'running', startedAt: Date.now(), output: '', code: null };
+  codingJobs.set(id, job);
+  const append = (d) => { job.output = (job.output + String(d)).slice(-24000); };
+  child.stdout.on('data', append);
+  child.stderr.on('data', append);
+  if (!agent.args.includes('{PROMPT_FILE}')) { child.stdin.write(String(prompt)); }
+  child.stdin.end();
+  const killer = setTimeout(() => { try { child.kill(); } catch {} job.status = 'timeout'; }, 20 * 60_000);
+  child.on('close', (code) => {
+    clearTimeout(killer);
+    try { fs.unlinkSync(promptFile); } catch {}
+    if (job.status === 'running') job.status = code === 0 ? 'done' : 'failed';
+    job.code = code;
+    job.endedAt = Date.now();
+    if (activeWs && activeWs.readyState === WebSocket.OPEN) {
+      activeWs.send(JSON.stringify({ event: 'bridge:job_done', data: { jobId: id, agent: job.agent, status: job.status, cwd, summary: job.output.trim().slice(-600) } }));
+    }
+  });
+  child.on('error', (e) => { job.status = 'failed'; append('\n' + e.message); });
+  return job;
+}
+
+// ---------------------------------------------------------------------------
 // Calls: ring this device (RAY calling Ray / device-to-device) and dial real numbers
 // ---------------------------------------------------------------------------
 
@@ -1557,6 +1619,21 @@ async function runBridgeAction(action, reqData) {
     }
     if (action === 'clipboard_set') {
       return await new Promise((resolve) => setNativeClipboard(String(reqData.content || ''), (msg, ok) => resolve({ ok, data: { message: msg }, error: ok ? undefined : msg })));
+    }
+    if (action === 'list_coding_agents') {
+      return { ok: true, data: { device: DEVICE_NAME, agents: await listCodingAgents() } };
+    }
+    if (action === 'run_coding_agent') {
+      try {
+        const job = await startCodingJob(String(reqData.agent || 'claude'), String(reqData.prompt || ''), reqData.cwd);
+        return { ok: true, data: { jobId: job.id, agent: job.agent, cwd: job.cwd } };
+      } catch (e) {
+        return { ok: false, error: e.message };
+      }
+    }
+    if (action === 'coding_agent_status') {
+      const jobs = Array.from(codingJobs.values()).filter((j) => !reqData.jobId || j.id === reqData.jobId).slice(-10);
+      return { ok: true, data: { jobs: jobs.map((j) => ({ ...j, output: j.output.slice(reqData.jobId ? -12000 : -1500) })) } };
     }
     if (action === 'agent_screenshot') {
       return await new Promise((resolve) => agentScreenshot(reqData.target === 'phone' ? 'phone' : 'pc', (out) => resolve({ ok: out.ok, data: out, error: out.error })));
@@ -2204,7 +2281,7 @@ function connect() {
         const caps = [
           'notify', 'clipboard', 'open_url', 'speak', 'timers', 'apps',
           'os-bridge', 'open_application', 'close_application', 'kill_process',
-          'adjust_volume', 'obsidian-vault', 'ollama-proxy', 'fs-sandbox', 'wake-on-lan', 'chat-compose', 'calls',
+          'adjust_volume', 'obsidian-vault', 'ollama-proxy', 'fs-sandbox', 'wake-on-lan', 'chat-compose', 'calls', 'coding-agents',
         ];
         if (IS_TERMUX) caps.push('notifications-relay');
         else caps.push('screen-control', 'clean_slate', 'optimize_system', 'computer-use');

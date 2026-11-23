@@ -1274,6 +1274,24 @@ export function handleSocketConnection(ws: WebSocket, roomId: string): void {
           break;
         }
 
+        case 'bridge:job_done': {
+          // A coding agent finished on a bridge: tell Ray on every app device.
+          broadcastRoomEvent(room.roomId, 'agent:job', data);
+          const deviceName = registeredDeviceId ? room.devices.get(registeredDeviceId)?.name || 'PC' : 'PC';
+          void dispatchDeviceCommand({
+            roomId: room.roomId,
+            type: 'notify',
+            targetQuery: 'all',
+            source: 'assistant',
+            payload: {
+              title: `${String(data.agent || 'Coding agent')} ${data.status === 'done' ? 'finished' : String(data.status || 'stopped')}`,
+              message: `${deviceName} · ${String(data.cwd || '')}\n${String(data.summary || '').slice(-200)}`,
+            },
+            waitForAckMs: 500,
+          });
+          break;
+        }
+
         case 'device:ping': {
           if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ event: 'device:pong', data: { t: Date.now() } }));
           break;

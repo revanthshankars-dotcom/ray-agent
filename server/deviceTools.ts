@@ -39,6 +39,7 @@ const ACTION_TOOLS: Record<string, RegExp> = {
   optimize_system: /\b(optimi[sz]e|clean|speed up|free up)\b/i,
   browser_tab_action: /\b(close|open|switch|go to|focus|reload|refresh|mute|show|read|bring)\b/i,
   open_file_on_device: /\b(open|show|view|play|launch|display)\b/i,
+  run_coding_agents: /\b(code|coding|build|fix|implement|refactor|write|create|run|agent|agents|test|tests|deploy|debug|claude|codex|gemini|aider|project|repo|parallel)\b/i,
   operate_computer: /\b(do|click|open|go|navigate|use|fill|book|set|change|turn|install|play|search|type|send|teach|show|how|complete|finish|operate|help)\b/i,
   execute_protocol: /\b(protocol|run|activate|engage|initiate|start)\b/i,
   call_me: /\b(call|ring|wake|remind|alarm|phone me|buzz)\b/i,
