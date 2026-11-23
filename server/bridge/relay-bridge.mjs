@@ -30,7 +30,8 @@ import http from 'http';
 import dgram from 'dgram';
 import { execFile, spawn } from 'child_process';
 import { fileURLToPath } from 'url';
-import WebSocket from 'ws';
+import crypto from 'crypto';
+import WebSocket, { WebSocketServer } from 'ws';
 
 const BRIDGE_VERSION = '3.0';
 const IS_TERMUX = Boolean(process.env.PREFIX && process.env.PREFIX.includes('com.termux')) || fs.existsSync('/data/data/com.termux');
@@ -40,6 +41,10 @@ const ROOM_ID = process.env.RELAY_ROOM_ID || "__RAY_ROOM_ID__";
 const DEFAULT_ROOM_TOKEN = "__RAY_ROOM_TOKEN__";
 const OLLAMA_HOST = (process.env.OLLAMA_HOST || 'http://127.0.0.1:11434').replace('://localhost', '://127.0.0.1');
 const LOCAL_PORT = Number(process.env.RELAY_LOCAL_PORT || 17345);
+// Offline mode: PC bridges host a LAN hub so the phone can reach RAY with NO internet
+// (same Wi-Fi, or the phone's hotspot). Discovery over UDP; everything token-protected.
+const LAN_PORT = Number(process.env.RAY_LAN_PORT || 17346);
+const LAN_DISCOVERY_PORT = Number(process.env.RAY_LAN_DISCOVERY_PORT || 17347);
 const VAULT_ROOT_RAW = process.env.RELAY_VAULT_DIR || path.join(os.homedir(), 'Documents', 'RAY-Brain');
 const DEVICE_ID = 'bridge-' + os.hostname().toLowerCase().replace(/[^a-z0-9]/g, '');
 const DEVICE_NAME = process.env.RELAY_DEVICE_NAME || (IS_TERMUX ? 'Android Phone (RAY Bridge)' : os.hostname() + ' (OS Bridge)');
@@ -131,6 +136,25 @@ function runSyncExec(cmd, args, cwd) {
 
 async function handleCliFlags() {
   const args = process.argv.slice(2);
+  const askIdx = args.indexOf('--ask');
+  if (askIdx >= 0) {
+    // Used by the "Ask RAY" home-screen button: hand the question to the running bridge.
+    const question = args.slice(askIdx + 1).join(' ').trim();
+    if (!question) process.exit(0);
+    try {
+      const r = await fetch('http://127.0.0.1:' + LOCAL_PORT + '/ask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Relay-Room-Token': String(process.env.RELAY_ROOM_TOKEN || loadSavedBridgeConfig().roomToken || DEFAULT_ROOM_TOKEN) },
+        body: JSON.stringify({ text: question, speak: true }),
+        signal: AbortSignal.timeout(120000),
+      });
+      const j = await r.json();
+      console.log(j.answer || j.error || 'No answer');
+    } catch (e) {
+      console.log('RAY bridge is not running on this device. Start it first.');
+    }
+    process.exit(0);
+  }
   const setTokenIdx = args.indexOf('--set-token');
   if (setTokenIdx >= 0) {
     const newToken = String(args[setTokenIdx + 1] || '').trim();
@@ -182,6 +206,17 @@ async function handleCliFlags() {
         'termux-wake-lock\n' +
         'while true; do "' + process.execPath + '" "' + loc.scriptTarget + '" --foreground >> "' + loc.logFile + '" 2>&1; sleep 5; done\n';
       fs.writeFileSync(loc.startupFile, sh, { mode: 0o755 });
+      // "Ask RAY" button for the home screen (Termux:Widget): speak → RAY answers, online or offline.
+      const shortcutsDir = path.join(os.homedir(), '.shortcuts');
+      fs.mkdirSync(shortcutsDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(shortcutsDir, 'Ask RAY'),
+        '#!/data/data/com.termux/files/usr/bin/sh\n' +
+          'TEXT=$(termux-speech-to-text)\n' +
+          '[ -n "$TEXT" ] && "' + process.execPath + '" "' + loc.scriptTarget + '" --ask "$TEXT"\n',
+        { mode: 0o755 }
+      );
+      console.log('[RAY Bridge] Added "Ask RAY" shortcut — add the Termux:Widget widget to your home screen.');
       spawn('sh', [loc.startupFile], { detached: true, stdio: 'ignore' }).unref();
       console.log('[RAY Bridge] Installed Termux:Boot launcher:', loc.startupFile);
       console.log('[RAY Bridge] Running in background now. Open the Termux:Boot app once so Android allows it to start on boot.');
@@ -233,7 +268,7 @@ async function handleCliFlags() {
   const selfPath = fileURLToPath(import.meta.url);
   const loc0 = getStartupLocations();
   const runningInstalledCopy = path.resolve(selfPath) === path.resolve(loc0.scriptTarget);
-  if (!args.includes('--foreground') && !args.includes('--status') && !runningInstalledCopy && !process.env.RAY_NO_AUTOSTART) {
+  if (!args.includes('--foreground') && !args.includes('--status') && !args.includes('--ask') && !runningInstalledCopy && !process.env.RAY_NO_AUTOSTART) {
     console.log('[RAY Bridge] First run: installing background service so RAY stays connected (use --foreground to skip)...');
     process.argv.push('--install-startup');
     return handleCliFlags();
@@ -1413,6 +1448,18 @@ function startLocalDirectBridge() {
       return;
     }
 
+    if (req.method === 'POST' && urlObj.pathname === '/ask') {
+      let body = '';
+      for await (const c of req) { body += c; if (body.length > 20000) break; }
+      let parsed = {};
+      try { parsed = JSON.parse(body || '{}'); } catch {}
+      const out = await askRay(String(parsed.text || ''));
+      speakIfAsked(out.answer, parsed.speak);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(out));
+      return;
+    }
+
     if (req.method === 'GET' && urlObj.pathname === '/health') {
       await pingOllamaOnce();
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1522,6 +1569,148 @@ function readChatNotifications(includeSeen = false) {
       resolve(out);
     });
   });
+}
+
+// ---------------------------------------------------------------------------
+// Offline local mode (no internet): PC = local hub with Ollama, phone discovers it on the LAN
+// ---------------------------------------------------------------------------
+
+const ROOM_TAG = crypto.createHash('sha256').update('ray-lan:' + ROOM_ID).digest('hex').slice(0, 12);
+let lanPeer = null; // phone side: socket to the PC hub
+const lanPending = new Map();
+
+function speakIfAsked(text, speak) {
+  if (speak && text) speakNative(String(text).slice(0, 600), () => {});
+}
+
+/** Answer a question with NO cloud: quick device intents first, then local Ollama on this PC. */
+async function answerLocally(text) {
+  const q = String(text || '').trim();
+  const open = q.match(/^(?:open|launch|start)\s+(.+?)(?:\s+on\s+(?:my\s+)?(?:pc|computer|laptop))?$/i);
+  if (open) {
+    return await new Promise((resolve) => launchAppSafely(open[1], (out, ok) => resolve(ok ? 'Opening ' + open[1] + ' on ' + DEVICE_NAME + '.' : 'I could not open ' + open[1] + ': ' + out)));
+  }
+  if (/\b(time|date)\b/i.test(q) && q.length < 40) return 'It is ' + new Date().toLocaleString() + '.';
+  const up = await ensureOllamaRunning(true);
+  if (!up || !ollamaState.models.length) {
+    return "I'm offline and this computer has no local model running. Install Ollama and pull a small model (for example: ollama pull llama3.2) so I can answer without internet.";
+  }
+  const model = ollamaState.models.find((m) => /llama3\.2|qwen|gemma|phi|mistral/i.test(m)) || ollamaState.models[0];
+  const out = await runBridgeAction('ollama_chat', {
+    body: {
+      model,
+      stream: false,
+      messages: [
+        { role: 'system', content: 'You are RAY, a concise personal assistant running OFFLINE on the user\'s computer. Answer in 1-3 short spoken sentences.' },
+        { role: 'user', content: q },
+      ],
+    },
+  });
+  return out.ok ? String(out.data?.message?.content || '').trim() || 'Done.' : 'Local model error: ' + out.error;
+}
+
+/** Ask path used by the phone/PC: cloud RAY when online → PC hub over LAN → local answer. */
+async function askRay(text) {
+  if (activeWs && activeWs.readyState === WebSocket.OPEN) {
+    try {
+      const r = await fetch(RAY_WEB_ORIGIN + '/api/ai/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Relay-Room-Token': ROOM_TOKEN },
+        body: JSON.stringify({ roomId: ROOM_ID, sourceDeviceName: DEVICE_NAME, message: text + '\n\n(Voice: answer in 1-3 short spoken sentences.)', engine: { provider: 'auto' } }),
+        signal: AbortSignal.timeout(60000),
+      });
+      const raw = await r.text();
+      let answer = '';
+      for (const chunk of raw.split('\n\n')) {
+        if (!chunk.startsWith('data: ')) continue;
+        try {
+          const ev = JSON.parse(chunk.slice(6));
+          if (ev.type === 'text') answer = String(ev.data || '');
+          if (ev.type === 'error' && !answer) answer = 'Sorry: ' + ev.data;
+        } catch {}
+      }
+      if (answer) return { answer, via: 'cloud' };
+    } catch {}
+  }
+  if (lanPeer && lanPeer.readyState === WebSocket.OPEN) {
+    const id = crypto.randomUUID();
+    const answer = await new Promise((resolve) => {
+      const t = setTimeout(() => { lanPending.delete(id); resolve('Your PC did not answer in time.'); }, 90000);
+      lanPending.set(id, (a) => { clearTimeout(t); resolve(a); });
+      lanPeer.send(JSON.stringify({ type: 'ask', id, text }));
+    });
+    return { answer, via: 'pc-offline' };
+  }
+  if (!IS_TERMUX) return { answer: await answerLocally(text), via: 'local' };
+  return { answer: "I'm offline and can't reach your PC. Connect the phone and PC to the same Wi-Fi or turn on your phone's hotspot for the PC.", via: 'none' };
+}
+
+/** PC side: LAN hub (WebSocket, token-protected) + UDP discovery responder. */
+function startLanHub() {
+  if (IS_TERMUX || /^(0|false|off)$/i.test(process.env.RAY_LAN || '')) return;
+  try {
+    const wss = new WebSocketServer({ host: '0.0.0.0', port: LAN_PORT });
+    wss.on('connection', (sock, req) => {
+      const u = new URL(req.url || '/', 'http://lan');
+      if (u.searchParams.get('token') !== ROOM_TOKEN) return sock.close(4001, 'bad token');
+      console.log('[RAY LAN] Phone connected over the local network (offline mode available).');
+      sock.on('message', async (raw) => {
+        let m = {};
+        try { m = JSON.parse(String(raw)); } catch { return; }
+        if (m.type === 'ask') {
+          const answer = await answerLocally(m.text);
+          sock.send(JSON.stringify({ type: 'answer', id: m.id, text: answer }));
+        } else if (m.type === 'notify') {
+          showNativeNotification(String(m.title || 'RAY'), String(m.message || ''), () => {});
+        }
+      });
+    });
+    wss.on('error', (e) => console.warn('[RAY LAN] hub not started:', e.message));
+    const udp = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+    udp.on('message', (msg, rinfo) => {
+      if (String(msg) === 'RAY-DISCOVER ' + ROOM_TAG) udp.send('RAY-HERE ' + ROOM_TAG + ' ' + LAN_PORT, rinfo.port, rinfo.address);
+    });
+    udp.on('error', () => {});
+    udp.bind(LAN_DISCOVERY_PORT);
+    console.log('[RAY LAN] Offline hub listening on port ' + LAN_PORT + ' (discovery ' + LAN_DISCOVERY_PORT + ').');
+  } catch (e) {
+    console.warn('[RAY LAN] could not start:', e.message);
+  }
+}
+
+/** Phone side: find the PC hub on the LAN and stay connected (used when there is no internet). */
+function startLanClient() {
+  if (!IS_TERMUX || /^(0|false|off)$/i.test(process.env.RAY_LAN || '')) return;
+  const discover = () => {
+    if (lanPeer && (lanPeer.readyState === WebSocket.OPEN || lanPeer.readyState === WebSocket.CONNECTING)) return;
+    const udp = dgram.createSocket('udp4');
+    udp.on('error', () => { try { udp.close(); } catch {} });
+    udp.on('message', (msg, rinfo) => {
+      const parts = String(msg).split(' ');
+      if (parts[0] !== 'RAY-HERE' || parts[1] !== ROOM_TAG) return;
+      try { udp.close(); } catch {}
+      const ws = new WebSocket('ws://' + rinfo.address + ':' + (Number(parts[2]) || LAN_PORT) + '/?token=' + encodeURIComponent(ROOM_TOKEN));
+      lanPeer = ws;
+      ws.on('open', () => console.log('[RAY LAN] Connected to PC hub at ' + rinfo.address + ' (works without internet).'));
+      ws.on('message', (raw) => {
+        try {
+          const m = JSON.parse(String(raw));
+          if (m.type === 'answer' && lanPending.has(m.id)) { lanPending.get(m.id)(m.text); lanPending.delete(m.id); }
+        } catch {}
+      });
+      ws.on('close', () => { if (lanPeer === ws) lanPeer = null; });
+      ws.on('error', () => {});
+    });
+    udp.bind(() => {
+      try {
+        udp.setBroadcast(true);
+        udp.send('RAY-DISCOVER ' + ROOM_TAG, LAN_DISCOVERY_PORT, '255.255.255.255');
+      } catch {}
+      setTimeout(() => { try { udp.close(); } catch {} }, 3000);
+    });
+  };
+  discover();
+  setInterval(discover, 20000);
 }
 
 let activeWs = null;
@@ -1724,5 +1913,7 @@ setInterval(() => {
 }, 20000);
 
 startLocalDirectBridge();
+startLanHub();
+startLanClient();
 startNotificationRelay();
 connect();

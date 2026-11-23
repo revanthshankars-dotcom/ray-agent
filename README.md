@@ -53,6 +53,10 @@ RAY assigns every request to an engine automatically — you never have to choos
 - **Device ↔ device** — "call my phone" (or the phone icon next to a device) rings the other device; answering connects a live two-way audio call (WebRTC, with Cloudflare TURN relay for mobile data).
 - **Call someone** — "call Mom": the Android bridge dials the contact from your phone (always asks you to approve first); on a PC the dialer opens through Windows Phone Link.
 
+## Offline mode (no internet)
+
+When the phone and PC share any local network — home Wi-Fi without internet, or the phone's hotspot — the PC bridge acts as a local hub: the phone bridge discovers it automatically (UDP 17347, WebSocket 17346, room-token protected). The **Ask RAY** home-screen button (Termux:Widget) uses Android's on-device speech recognition; RAY answers from the cloud when online, otherwise from the PC's local Ollama, and can still open PC apps. Install Ollama + a small model (`ollama pull llama3.2`) on the PC for offline answers. On Windows, allow the bridge on *Private networks* when the firewall asks. With no internet *and* no shared network, nothing can link two devices; RAY says so instead of failing silently.
+
 ## Highlights
 
 - **Engine router** (`server/engines/`): 13 free providers, per-task model choice, automatic failover on 429/limits, parallel small-agent "swarm" near daily quotas.
