@@ -18,6 +18,10 @@ PROJECT_ID=my-project REGION=asia-south1 ./deploy/cloudrun.sh
 
 Deploys with `min-instances=1` (never sleeps), stores the Second Brain + device state in a GCS bucket, and creates a permanent `RELAY_MASTER_SECRET` so devices never need re-pairing. Put your API keys in Secret Manager afterwards.
 
+## Cloudflare Pages (front door, auto-deploys from GitHub)
+
+Pages builds the web app from `main` (`npm ci --legacy-peer-deps && npx vite build`, output `dist`). The Pages Functions in `functions/` forward `/api/*`, `/ws` and `/live-jarvis` (WebSockets included) to the RAY hub, because Pages can't run the Node server itself. Set `RAY_BACKEND_URL` in the Pages project to your hub URL (for example your Render URL).
+
 ## Connect your devices (RAY → **Connections**)
 
 | Device | How | What RAY can do |
