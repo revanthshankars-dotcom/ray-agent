@@ -24,9 +24,30 @@ export interface ProviderDef {
   tiers: Partial<Record<ModelTier, { prefer: RegExp[]; fallback: string }>>;
   /** Optional filter for the live model list (e.g. OpenRouter ":free" only). */
   modelFilter?: (id: string) => boolean;
+  /** Max output tokens to request (per model regex, first match wins). Keeps us under TPM/credit limits. */
+  outputCaps?: Array<[RegExp, number]>;
   extraHeaders?: () => Record<string, string>;
   signupUrl: string;
   notes: string;
+}
+
+let discoveredCloudflareAccount = '';
+
+/** Find the Cloudflare account id from the API token when CLOUDFLARE_ACCOUNT_ID isn't set. */
+async function discoverCloudflareAccount(): Promise<void> {
+  const token = env('CLOUDFLARE_API_TOKEN');
+  if (!token || env('CLOUDFLARE_ACCOUNT_ID') || discoveredCloudflareAccount) return;
+  try {
+    const r = await fetch('https://api.cloudflare.com/client/v4/accounts?per_page=5', {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    const j = (await r.json()) as { result?: Array<{ id?: string }> };
+    discoveredCloudflareAccount = j.result?.[0]?.id || '';
+    if (!discoveredCloudflareAccount) console.warn('[RAY engines] Cloudflare token works but lists no account; set CLOUDFLARE_ACCOUNT_ID.');
+  } catch (err) {
+    console.warn('[RAY engines] Could not discover Cloudflare account id:', (err as Error).message);
+  }
 }
 
 function env(name: string): string | null {
@@ -44,15 +65,20 @@ export const PROVIDERS: ProviderDef[] = [
     rpd: 14400,
     rpm: 30,
     supportsTools: true,
+    // Live test 23 Nov 2026: gpt-oss-120b / 20b correct on maths, JSON and code (~3.6 s).
+    // allam-2-7b gave wrong JSON; safeguard/whisper/orpheus/prompt-guard are not chat models.
     tiers: {
-      fast: { prefer: [/llama-3\.1-8b-instant/, /gpt-oss-20b/], fallback: 'llama-3.1-8b-instant' },
-      large: { prefer: [/gpt-oss-120b/, /llama-3\.3-70b-versatile/, /kimi-k2/], fallback: 'llama-3.3-70b-versatile' },
-      reasoning: { prefer: [/gpt-oss-120b/, /qwen3-32b/, /deepseek-r1/], fallback: 'openai/gpt-oss-120b' },
-      code: { prefer: [/kimi-k2/, /qwen.*coder/, /gpt-oss-120b/], fallback: 'llama-3.3-70b-versatile' },
+      fast: { prefer: [/openai\/gpt-oss-20b$/], fallback: 'openai/gpt-oss-20b' },
+      large: { prefer: [/openai\/gpt-oss-120b$/], fallback: 'openai/gpt-oss-120b' },
+      reasoning: { prefer: [/openai\/gpt-oss-120b$/], fallback: 'openai/gpt-oss-120b' },
+      code: { prefer: [/openai\/gpt-oss-120b$/], fallback: 'openai/gpt-oss-120b' },
       vision: { prefer: [/llama-4-scout/, /llama-4-maverick/], fallback: 'meta-llama/llama-4-scout-17b-16e-instruct' },
     },
+    modelFilter: (id) => !/(allam|safeguard|whisper|orpheus|prompt-guard|guard|tts|distil)/i.test(id),
+    // Groq free tier: 8K tokens/min on gpt-oss; qwen3.x output budget ~1K/min.
+    outputCaps: [[/qwen/i, 700], [/gpt-oss/i, 900], [/.*/, 800]],
     signupUrl: 'https://console.groq.com/keys',
-    notes: 'Fastest inference, 14.4K requests/day.',
+    notes: 'Fastest inference; gpt-oss-120b is RAY’s default brain.',
   },
   {
     id: 'cerebras',
@@ -131,20 +157,43 @@ export const PROVIDERS: ProviderDef[] = [
     label: 'OpenRouter (free models)',
     baseUrl: () => 'https://openrouter.ai/api/v1',
     apiKey: () => env('OPENROUTER_API_KEY'),
-    rpd: 50,
+    rpd: 1000,
+    rpm: 20,
+    supportsTools: true,
+    // Pinned from the live test (23 Nov 2026). "openrouter/free" is NOT used: it is an
+    // auto-router that stalled and can pick paid/image models.
+    tiers: {
+      fast: { prefer: [/recursive\/flint-v1\.0:free/, /nemotron-3\.5-super-vl:free/, /nemotron-3\.5-lightning:free/], fallback: 'nvidia/nemotron-3.5-lightning:free' },
+      large: { prefer: [/nemotron-3\.5-lightning:free/, /gemma-4-26b-a4b-it:free/, /gemma-4-31b-it:free/], fallback: 'nvidia/nemotron-3.5-lightning:free' },
+      reasoning: { prefer: [/nemotron-3-ultra-550b.*:free/, /gemma-4-31b-it:free/, /nemotron-3-nano-omni.*reasoning:free/], fallback: 'google/gemma-4-31b-it:free' },
+      code: { prefer: [/nemotron-3\.5-lightning:free/, /gemma-4-31b-it:free/], fallback: 'nvidia/nemotron-3.5-lightning:free' },
+      vision: { prefer: [/nemotron-3\.5-super-vl:free/, /gemma-4-26b-a4b-it:free/], fallback: 'nvidia/nemotron-3.5-super-vl:free' },
+    },
+    modelFilter: (id) => id.endsWith(':free') && !/(lfm-3-1\.7b|ernie)/i.test(id),
+    // The account can afford ~3.5K output tokens; free models are capped too so nothing asks for 65K.
+    outputCaps: [[/ultra/i, 1500], [/.*/, 1024]],
+    extraHeaders: () => ({ 'HTTP-Referer': process.env.APP_URL || 'https://ray.local', 'X-Title': 'RAY Assistant' }),
+    signupUrl: 'https://openrouter.ai/keys',
+    notes: '26 free models verified; pinned to the reliable ones.',
+  },
+  {
+    id: 'opencode',
+    label: 'OpenCode Zen',
+    // OpenCode Zen is an OpenAI-compatible gateway (keys start with "oc_sk_").
+    baseUrl: () => (env('OPENCODE_BASE_URL') || 'https://opencode.ai/zen/v1').replace(/\/+$/, ''),
+    apiKey: () => env('OPENCODE_API_KEY'),
+    rpd: 1000,
     rpm: 20,
     supportsTools: true,
     tiers: {
-      fast: { prefer: [/llama-3\.3-70b.*:free/, /gemma.*:free/, /mistral.*:free/], fallback: 'openrouter/free' },
-      large: { prefer: [/deepseek-chat.*:free/, /qwen3.*235b.*:free/, /llama-3\.3-70b.*:free/], fallback: 'openrouter/free' },
-      reasoning: { prefer: [/deepseek-r1.*:free/, /qwen3.*thinking.*:free/], fallback: 'openrouter/free' },
-      code: { prefer: [/qwen.*coder.*:free/, /deepseek.*:free/], fallback: 'openrouter/free' },
-      vision: { prefer: [/llama-4.*:free/, /gemma-3.*:free/, /qwen.*vl.*:free/], fallback: 'openrouter/free' },
+      fast: { prefer: [/big-pickle/, /-free$/, /mini|flash/i], fallback: process.env.OPENCODE_MODEL || 'big-pickle' },
+      large: { prefer: [/big-pickle/, /-free$/], fallback: process.env.OPENCODE_MODEL || 'big-pickle' },
+      reasoning: { prefer: [/big-pickle/, /-free$/], fallback: process.env.OPENCODE_MODEL || 'big-pickle' },
+      code: { prefer: [/big-pickle/, /coder.*-free$|-free$/], fallback: process.env.OPENCODE_MODEL || 'big-pickle' },
     },
-    modelFilter: (id) => id.endsWith(':free') || id === 'openrouter/free',
-    extraHeaders: () => ({ 'HTTP-Referer': process.env.APP_URL || 'https://ray.local', 'X-Title': 'RAY Assistant' }),
-    signupUrl: 'https://openrouter.ai/keys',
-    notes: '30+ free models; 50 req/day free (1000/day after a one-time $10 top-up).',
+    outputCaps: [[/.*/, 1500]],
+    signupUrl: 'https://opencode.ai/zen',
+    notes: 'Free "big-pickle" coding/chat model via OpenCode Zen.',
   },
   {
     id: 'nvidia',
@@ -168,10 +217,11 @@ export const PROVIDERS: ProviderDef[] = [
     id: 'cloudflare',
     label: 'Cloudflare Workers AI',
     baseUrl: () => {
-      const acct = env('CLOUDFLARE_ACCOUNT_ID');
+      const acct = env('CLOUDFLARE_ACCOUNT_ID') || discoveredCloudflareAccount;
       return acct ? `https://api.cloudflare.com/client/v4/accounts/${acct}/ai/v1` : null;
     },
-    apiKey: () => (env('CLOUDFLARE_ACCOUNT_ID') ? env('CLOUDFLARE_API_TOKEN') : null),
+    // A Cloudflare user token ("cfut_…") is enough: the account id is discovered automatically.
+    apiKey: () => env('CLOUDFLARE_API_TOKEN'),
     rpd: 1000,
     rpm: 50,
     supportsTools: false,
@@ -340,6 +390,7 @@ function today(): string {
 export async function loadUsage(): Promise<void> {
   if (usageLoaded) return;
   usageLoaded = true;
+  await discoverCloudflareAccount();
   const stored = await loadJson<UsageDay & Record<string, unknown>>('engine-usage');
   if (stored && stored.day === today()) usage = { ...usage, ...stored };
 }
@@ -358,14 +409,36 @@ export function recordUsage(providerId: string, tokens: number): void {
   scheduleSave('engine-usage', () => ({ ...usage }), 4000);
 }
 
-export function recordFailure(providerId: string, status: number, retryAfterSec?: number): void {
+/**
+ * Cooldowns are per MODEL for rate/credit/size errors (Groq limits each model separately,
+ * OpenRouter free models still work when paid ones lack credit) and per PROVIDER for bad keys.
+ */
+export function recordFailure(providerId: string, status: number, retryAfterSec?: number, model?: string): void {
   rollDay();
   usage.failures[providerId] = (usage.failures[providerId] || 0) + 1;
+  const modelKey = model ? `${providerId}|${model}` : providerId;
+  if (status === 401 || status === 403) {
+    cooldownUntil.set(providerId, Date.now() + 3600_000); // bad key – stop hammering
+    return;
+  }
   let cool = 0;
-  if (status === 429) cool = Math.max(20, Math.min(3600, retryAfterSec || 60));
-  else if (status === 401 || status === 403) cool = 3600; // bad key – stop hammering
-  else if (status >= 500 || status === 0) cool = 30;
-  if (cool) cooldownUntil.set(providerId, Date.now() + cool * 1000);
+  if (status === 429) cool = Math.max(10, Math.min(3600, retryAfterSec || 60));
+  else if (status === 402) cool = 6 * 3600; // needs credit – skip for hours
+  else if (status === 413) cool = Math.max(30, retryAfterSec || 60); // request too large for TPM
+  else if (status === 404) cool = 24 * 3600; // model gone
+  else if (status >= 500 || status === 0 || status === 408) cool = 30;
+  if (cool) cooldownUntil.set(modelKey, Date.now() + cool * 1000);
+}
+
+export function isModelAvailable(p: ProviderDef, model: string): boolean {
+  return isAvailable(p) && (cooldownUntil.get(`${p.id}|${model}`) || 0) <= Date.now();
+}
+
+/** Output-token cap for a model (never the 65K some providers default to). */
+export function maxTokensFor(p: ProviderDef, model: string, kind: string): number {
+  const cap = p.outputCaps?.find(([re]) => re.test(model))?.[1] ?? 1024;
+  const want = kind === 'quick' ? 400 : kind === 'reasoning' || kind === 'code' ? 1500 : 800;
+  return Math.min(cap, want);
 }
 
 /** 0..1 share of today's free quota already used. */
@@ -374,8 +447,17 @@ export function quotaUsed(p: ProviderDef): number {
   return (usage.requests[p.id] || 0) / Math.max(1, p.rpd);
 }
 
+/** Server-enforced daily budget across all engines (RAY_DAILY_TOKEN_CAP, 0 = unlimited). */
+export function dailyBudget(): { usedTokens: number; capTokens: number; exceeded: boolean } {
+  rollDay();
+  const usedTokens = Object.values(usage.tokens).reduce((a, b) => a + b, 0);
+  const capTokens = Number(process.env.RAY_DAILY_TOKEN_CAP || 0) || 0;
+  return { usedTokens, capTokens, exceeded: capTokens > 0 && usedTokens >= capTokens };
+}
+
 export function isAvailable(p: ProviderDef): boolean {
   if (!isProviderConfigured(p)) return false;
+  if (p.id !== 'custom' && dailyBudget().exceeded) return false;
   if ((cooldownUntil.get(p.id) || 0) > Date.now()) return false;
   if (quotaUsed(p) >= 0.98) return false;
   const win = (minuteWindow.get(p.id) || []).filter((t) => Date.now() - t < 60_000);

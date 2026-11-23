@@ -267,6 +267,10 @@ export interface ChatMessage {
   sources?: GroundingSource[];
   createdAt: number;
   thinkingMode?: 'fast' | 'deep';
+  /** Which engine/model produced this reply (e.g. "Groq · openai/gpt-oss-120b"). */
+  engineLabel?: string;
+  /** error replies are shown as errors, not saved as normal answers. */
+  kind?: 'normal' | 'error';
 }
 
 export type VoicePersona = 'Kore' | 'Puck' | 'Charon' | 'Fenrir' | 'Zephyr';

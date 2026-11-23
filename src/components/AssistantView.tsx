@@ -688,6 +688,7 @@ export const AssistantView: React.FC<AssistantViewProps> = ({
     let latestToolCalls: ToolCallEvent[] = [];
     let latestSources: GroundingSource[] = [];
     let finalReplyText = '';
+    let finalReplyKind: 'normal' | 'error' = 'normal';
 
     try {
       const apiAttachments = currentAttachments.map((att) => {
@@ -747,11 +748,20 @@ export const AssistantView: React.FC<AssistantViewProps> = ({
         }
       }
 
+      // Abort if the stream goes silent for 45s so the UI never hangs on "processing".
+      const streamAbort = new AbortController();
+      let idleTimer = window.setTimeout(() => streamAbort.abort(), 45000);
+      const bumpIdle = () => {
+        window.clearTimeout(idleTimer);
+        idleTimer = window.setTimeout(() => streamAbort.abort(), 45000);
+      };
+      let engineLabel = '';
       const res = await authFetch(
         '/api/ai/chat',
         roomId,
         {
           method: 'POST',
+          signal: streamAbort.signal,
           body: JSON.stringify({
             roomId,
             sourceDeviceName: localDeviceName,
@@ -781,8 +791,15 @@ export const AssistantView: React.FC<AssistantViewProps> = ({
       let buffer = '';
 
       while (true) {
-        const { value, done } = await reader.read();
+        let chunkRead: ReadableStreamReadResult<Uint8Array>;
+        try {
+          chunkRead = await reader.read();
+        } catch {
+          throw new Error('RAY timed out waiting for the AI engine (45s with no response). Try again — RAY will use a different engine.');
+        }
+        const { value, done } = chunkRead;
         if (done) break;
+        bumpIdle();
         buffer += decoder.decode(value, { stream: true });
 
         const lines = buffer.split('\n\n');
@@ -796,7 +813,14 @@ export const AssistantView: React.FC<AssistantViewProps> = ({
 
           const evt = JSON.parse(dataLine.slice(6)) as { type: string; data: unknown };
 
-          if (evt.type === 'tool_start') {
+          if (evt.type === 'engine') {
+            const d = evt.data as { answeredBy?: string; provider?: string; model?: string };
+            const label = d.answeredBy || (d.provider ? `${d.provider}${d.model ? ` · ${d.model}` : ''}` : '');
+            if (label) {
+              engineLabel = label;
+              setMessages((prev) => prev.map((m) => (m.id === assistantMsgId ? { ...m, engineLabel } : m)));
+            }
+          } else if (evt.type === 'tool_start') {
             const toolEvt = evt.data as ToolCallEvent;
             latestToolCalls = [...latestToolCalls, toolEvt];
             setMessages((prev) =>
@@ -827,6 +851,7 @@ export const AssistantView: React.FC<AssistantViewProps> = ({
               )
             );
           } else if (evt.type === 'error') {
+            finalReplyKind = 'error';
             finalReplyText = `Error: ${String(evt.data || 'Assistant error')}`;
             setMessages((prev) =>
               prev.map((m) =>
@@ -837,30 +862,31 @@ export const AssistantView: React.FC<AssistantViewProps> = ({
         }
       }
 
-      onUpdatePersistedMessage({
-        ...assistantPlaceholder,
-        text: finalReplyText || 'Completed.',
-        toolCalls: latestToolCalls,
-        sources: latestSources,
-      });
+      window.clearTimeout(idleTimer);
+      setMessages((prev) => prev.map((m) => (m.id === assistantMsgId ? { ...m, kind: finalReplyKind } : m)));
+      // Errors stay visible in the chat but are not saved as normal answers/briefings.
+      if (finalReplyKind !== 'error') {
+        onUpdatePersistedMessage({
+          ...assistantPlaceholder,
+          text: finalReplyText || 'Completed.',
+          toolCalls: latestToolCalls,
+          sources: latestSources,
+          engineLabel: engineLabel || undefined,
+        });
+      }
 
-      if (autoSpeak && finalReplyText) {
+      if (autoSpeak && finalReplyText && finalReplyKind !== 'error') {
         void speakMessage(assistantMsgId, finalReplyText);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Request failed';
       finalReplyText = `Error: ${msg}`;
+      // Shown as an error bubble only — not saved into history/briefings (#22).
       setMessages((prev) =>
         prev.map((m) =>
-          m.id === assistantMsgId ? { ...m, text: finalReplyText } : m
+          m.id === assistantMsgId ? { ...m, text: finalReplyText, kind: 'error' } : m
         )
       );
-      onUpdatePersistedMessage({
-        ...assistantPlaceholder,
-        text: finalReplyText,
-        toolCalls: latestToolCalls,
-        sources: latestSources,
-      });
     } finally {
       setSending(false);
     }
@@ -1844,6 +1870,15 @@ export const AssistantView: React.FC<AssistantViewProps> = ({
                       <div className="text-xs text-slate-500 dark:text-slate-400">
                         RAY is processing and coordinating devices...
                       </div>
+                    )}
+
+                    {msg.kind === 'error' && (
+                      <div className="text-[11px] font-semibold text-red-600 dark:text-red-400 rounded-md bg-red-500/10 border border-red-500/30 px-2 py-1">
+                        Request failed. Check the tool steps above for anything that already ran; retrying uses another engine.
+                      </div>
+                    )}
+                    {msg.role === 'assistant' && msg.engineLabel && (
+                      <div className="text-[10px] font-mono text-slate-400 dark:text-slate-500">answered by {msg.engineLabel}</div>
                     )}
 
                     {msg.sources && msg.sources.length > 0 && (

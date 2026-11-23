@@ -60,8 +60,8 @@ const DEFAULT_ENGINE_SETTINGS: EngineSettings = {
   settingsVersion: 2,
   ollamaUrl: 'http://127.0.0.1:11434',
   ollamaModel: 'llama3.2',
-  openrouterModel: 'openrouter/free',
-  groqModel: 'llama-3.3-70b-versatile',
+  openrouterModel: 'nvidia/nemotron-3.5-lightning:free',
+  groqModel: 'openai/gpt-oss-120b',
   anthropicModel: 'claude-3-5-sonnet-20241022',
   openaiModel: 'gpt-4o',
   hfModel: 'meta-llama/Meta-Llama-3-8B-Instruct',
@@ -91,7 +91,7 @@ function loadInitialEngineSettings(): EngineSettings {
     const rawOrModel =
       typeof parsed.openrouterModel === 'string' && parsed.openrouterModel.trim()
         ? parsed.openrouterModel.trim()
-        : 'openrouter/free';
+        : 'nvidia/nemotron-3.5-lightning:free';
     return {
       provider,
       routerMode: typeof parsed.routerMode === 'string' ? parsed.routerMode : 'auto',
@@ -99,8 +99,14 @@ function loadInitialEngineSettings(): EngineSettings {
       ollamaUrl: typeof parsed.ollamaUrl === 'string' && parsed.ollamaUrl.trim() ? parsed.ollamaUrl : 'http://127.0.0.1:11434',
       ollamaModel: typeof parsed.ollamaModel === 'string' && parsed.ollamaModel.trim() ? parsed.ollamaModel : 'llama3.2',
       openrouterModel:
-        rawOrModel === 'meta-llama/llama-3.3-70b-instruct:free' ? 'openrouter/free' : rawOrModel,
-      groqModel: typeof parsed.groqModel === 'string' && parsed.groqModel.trim() ? parsed.groqModel : 'llama-3.3-70b-versatile',
+        // openrouter/free stalled in testing (auto-router that can pick paid/image models).
+        rawOrModel === 'meta-llama/llama-3.3-70b-instruct:free' || rawOrModel === 'openrouter/free'
+          ? 'nvidia/nemotron-3.5-lightning:free'
+          : rawOrModel,
+      groqModel:
+        typeof parsed.groqModel === 'string' && parsed.groqModel.trim() && !/allam|safeguard|whisper|orpheus|guard/i.test(parsed.groqModel)
+          ? parsed.groqModel
+          : 'openai/gpt-oss-120b',
       anthropicModel: typeof parsed.anthropicModel === 'string' && parsed.anthropicModel.trim() ? parsed.anthropicModel : 'claude-3-5-sonnet-20241022',
       openaiModel: typeof parsed.openaiModel === 'string' && parsed.openaiModel.trim() ? parsed.openaiModel : 'gpt-4o',
       hfModel: typeof parsed.hfModel === 'string' && parsed.hfModel.trim() ? parsed.hfModel : 'meta-llama/Meta-Llama-3-8B-Instruct',

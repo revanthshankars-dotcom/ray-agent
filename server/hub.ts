@@ -304,7 +304,15 @@ function rememberRoomId(roomId: string): void {
 
 function applyPersistedRoom(room: RoomState, p: PersistedRoom): void {
   if (Array.isArray(p.brainNotes) && p.brainNotes.length > 0) room.brainNotes = p.brainNotes;
-  if (Array.isArray(p.connectors)) room.connectors = p.connectors;
+  if (Array.isArray(p.connectors)) {
+    const seen = new Set<string>();
+    room.connectors = p.connectors.filter((c) => {
+      const k = c.name.trim().toLowerCase();
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  }
   if (Array.isArray(p.tasks)) room.tasks = p.tasks;
   if (Array.isArray(p.routines)) room.routines = p.routines;
   if (Array.isArray(p.handoffs)) room.handoffs = p.handoffs;
@@ -424,6 +432,10 @@ export async function hydrateRoomsFromStorage(): Promise<number> {
     }
   }
   return count;
+}
+
+export function listRoomIds(): string[] {
+  return Array.from(rooms.keys());
 }
 
 export function getRoomDevices(roomId: string): DeviceInfo[] {
@@ -630,6 +642,10 @@ export function getRoomConnectors(roomId: string): AppConnector[] {
 
 export function upsertRoomConnector(roomId: string, connector: AppConnector): AppConnector {
   const room = getOrCreateRoom(roomId);
+  // Unique by name: re-saving "WhatsApp" updates the existing connector instead of duplicating it.
+  const nameKey = connector.name.trim().toLowerCase();
+  const sameName = room.connectors.find((c) => c.id !== connector.id && c.name.trim().toLowerCase() === nameKey);
+  if (sameName) connector = { ...connector, id: sameName.id };
   const idx = room.connectors.findIndex((c) => c.id === connector.id);
   if (idx >= 0) {
     room.connectors[idx] = connector;
@@ -1195,6 +1211,17 @@ export function handleSocketConnection(ws: WebSocket, roomId: string): void {
             pushEnabled: Boolean(room.pushSubscriptions[deviceId]),
           };
           room.devices.set(deviceId, device);
+          // Same device re-registering under a new id (cleared storage, reinstall): drop the stale offline twin.
+          for (const [otherId, other] of room.devices) {
+            if (otherId !== deviceId && !other.online && other.name === device.name && other.type === device.type) {
+              room.devices.delete(otherId);
+              delete room.queuedCommands[otherId];
+            }
+          }
+          // Forget devices that have been offline for 14 days.
+          for (const [otherId, other] of room.devices) {
+            if (!other.online && Date.now() - other.lastSeen > 14 * 86400_000) room.devices.delete(otherId);
+          }
           const previous = room.sockets.get(deviceId);
           if (previous && previous !== ws && previous.readyState === WebSocket.OPEN) {
             try {

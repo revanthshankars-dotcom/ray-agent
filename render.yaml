@@ -1,0 +1,46 @@
+# Render Blueprint for RAY (Dashboard → New → Blueprint → pick this repo).
+# Secrets are declared with sync:false — Render asks for their values; they are never stored in git.
+services:
+  - type: web
+    name: ray-hub
+    runtime: node
+    plan: free            # use "starter" to remove sleeping entirely
+    buildCommand: npm ci --legacy-peer-deps --include=dev && npx vite build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: NODE_ENV
+        value: production
+      - key: RELAY_MASTER_SECRET
+        generateValue: true        # permanent pairing across restarts
+      - key: RAY_DAILY_TOKEN_CAP
+        value: "2000000"
+      # ---- AI engines (fill the ones you have) ----
+      - key: GROQ_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENCODE_API_KEY      # oc_sk_… (OpenCode Zen)
+        sync: false
+      - key: CLOUDFLARE_API_TOKEN  # cfut_… (Workers AI + KV storage)
+        sync: false
+      - key: CLOUDFLARE_ACCOUNT_ID # optional, auto-discovered from the token
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: CEREBRAS_API_KEY
+        sync: false
+      - key: MISTRAL_API_KEY
+        sync: false
+      - key: GITHUB_MODELS_TOKEN
+        sync: false
+      - key: HUGGINGFACE_API_KEY
+        sync: false
+      # ---- Optional durable storage on Google Cloud instead of Cloudflare KV ----
+      - key: RAY_GCS_BUCKET
+        sync: false
+      - key: GCP_SERVICE_ACCOUNT_JSON
+        sync: false

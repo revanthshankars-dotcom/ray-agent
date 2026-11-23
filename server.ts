@@ -23,6 +23,7 @@ import {
   getPushSubscriptions,
   getRoomDevices,
   hasStableRoomSecret,
+  listRoomIds,
   hydrateRoomsFromStorage,
   markMessagesRead,
   onIncomingMessage,
@@ -82,7 +83,7 @@ import {
 } from './server/security.ts';
 import { executeAppConnectorAction, executeGoogleWorkspaceAction } from './server/workspace.ts';
 import { runAutoChatTurn } from './server/engines/router.ts';
-import { getEngineStatus, loadUsage } from './server/engines/providers.ts';
+import { dailyBudget, getEngineStatus, loadUsage } from './server/engines/providers.ts';
 import { installShutdownFlush, persistenceBackend } from './server/persistence.ts';
 import { getVapidPublicKey, initWakeServices, sendPush } from './server/wake.ts';
 import { zipDirectory } from './server/zip.ts';
@@ -109,6 +110,35 @@ function extractBearerToken(req: Request): string {
 function extractNotionToken(req: Request): string {
   const h = req.headers['x-notion-token'];
   return typeof h === 'string' ? h.trim() : '';
+}
+
+/** 503 when no bridge is online / it timed out (temporary), 400 for real request errors (#14). */
+function bridgeErrorStatus(err?: string): number {
+  return /no online|not open|timed out|unreachable|bridge/i.test(err || '') ? 503 : 400;
+}
+
+/** Strip API keys / tokens users paste into chat so they never reach an AI provider or storage (#23). */
+const SECRET_PATTERNS: RegExp[] = [
+  /\boc_sk_[A-Za-z0-9_-]{16,}/g, // OpenCode Zen
+  /\bcfut_[A-Za-z0-9]{20,}/g, // Cloudflare user token
+  /\bsk-(?:or-|ant-|proj-)?[A-Za-z0-9_-]{20,}/g, // OpenAI / OpenRouter / Anthropic
+  /\bgsk_[A-Za-z0-9]{20,}/g, // Groq
+  /\bAIza[0-9A-Za-z_-]{30,}/g, // Google
+  /\bgh[pousr]_[A-Za-z0-9]{30,}/g, // GitHub
+  /\bhf_[A-Za-z0-9]{30,}/g, // Hugging Face
+  /\bcsk-[A-Za-z0-9]{20,}/g, // Cerebras
+  /\b[0-9a-f]{48}\b/g, // RAY room tokens
+];
+function redactSecrets(text: string): { text: string; found: boolean } {
+  let found = false;
+  let out = text;
+  for (const re of SECRET_PATTERNS) {
+    out = out.replace(re, () => {
+      found = true;
+      return '[REDACTED-SECRET]';
+    });
+  }
+  return { text: out, found };
 }
 
 function requireRoomAuth(req: Request, res: Response, next: NextFunction): void {
@@ -207,9 +237,20 @@ async function startServer() {
     }
   });
 
-  app.get('/api/health', (_req, res) => {
+  app.get('/api/health', async (_req, res) => {
+    await loadUsage();
+    const engines = getEngineStatus();
+    const devicesOnline = listRoomIds().reduce((n, r) => n + getRoomDevices(r).filter((d) => d.online).length, 0);
+    const bridgesOnline = listRoomIds().reduce((n, r) => n + getRoomDevices(r).filter((d) => d.online && d.type === 'bridge').length, 0);
     res.json({
       ok: true,
+      uptimeSec: Math.round(process.uptime()),
+      enginesConfigured: engines.filter((e) => e.configured).map((e) => e.id),
+      enginesAvailable: engines.filter((e) => e.available).length,
+      budget: dailyBudget(),
+      devicesOnline,
+      bridgesOnline,
+      googleOAuthClient: Boolean(process.env.GOOGLE_CLIENT_ID),
       hasGeminiKey: Boolean(process.env.GEMINI_API_KEY),
       hasOpenRouterKey: hasOpenRouterConfigured(),
       storage: persistenceBackend(),
@@ -220,7 +261,7 @@ async function startServer() {
 
   app.get('/api/engines/status', requireRoomAuth, async (_req, res) => {
     await loadUsage();
-    res.json({ engines: getEngineStatus() });
+    res.json({ engines: getEngineStatus(), budget: dailyBudget() });
   });
 
   // Meta (WhatsApp Cloud API / Instagram Messaging) webhook
@@ -403,7 +444,7 @@ async function startServer() {
       const { roomId } = req.body as { roomId: string };
       const out = await dispatchBridgeProxyCall(normalizeRoomId(roomId), { action: 'screen_capture' }, 12000);
       if (!out.ok) {
-        res.status(400).json({ error: out.error || 'Screen capture failed' });
+        res.status(bridgeErrorStatus(out.error)).json({ error: out.error || 'Screen capture failed' });
         return;
       }
       res.json(out.data);
@@ -435,7 +476,7 @@ async function startServer() {
         8000
       );
       if (!out.ok) {
-        res.status(400).json({ error: out.error || 'Screen control execution failed' });
+        res.status(bridgeErrorStatus(out.error)).json({ error: out.error || 'Screen control execution failed' });
         return;
       }
       res.json({ ok: true, result: out.data });
@@ -449,7 +490,7 @@ async function startServer() {
       const { roomId } = req.body as { roomId: string };
       const out = await dispatchBridgeProxyCall(normalizeRoomId(roomId), { action: 'active_window' }, 6000);
       if (!out.ok) {
-        res.status(400).json({ error: out.error || 'Active window inspection failed' });
+        res.status(bridgeErrorStatus(out.error)).json({ error: out.error || 'Active window inspection failed' });
         return;
       }
       res.json(out.data);
@@ -463,7 +504,7 @@ async function startServer() {
       const { roomId } = req.body as { roomId: string };
       const out = await dispatchBridgeProxyCall(normalizeRoomId(roomId), { action: 'fs_list_roots' }, 6000);
       if (!out.ok) {
-        res.status(400).json({ error: out.error || 'Desktop OS Bridge unreachable' });
+        res.status(bridgeErrorStatus(out.error)).json({ error: out.error || 'Desktop OS Bridge unreachable' });
         return;
       }
       res.json(out.data);
@@ -481,7 +522,7 @@ async function startServer() {
         7000
       );
       if (!out.ok) {
-        res.status(400).json({ error: out.error || 'Directory listing failed' });
+        res.status(bridgeErrorStatus(out.error)).json({ error: out.error || 'Directory listing failed' });
         return;
       }
       res.json(out.data);
@@ -504,7 +545,7 @@ async function startServer() {
         7000
       );
       if (!out.ok) {
-        res.status(400).json({ error: out.error || 'File read failed' });
+        res.status(bridgeErrorStatus(out.error)).json({ error: out.error || 'File read failed' });
         return;
       }
       res.json(out.data);
@@ -522,7 +563,7 @@ async function startServer() {
         10000
       );
       if (!out.ok) {
-        res.status(400).json({ error: out.error || 'File search failed' });
+        res.status(bridgeErrorStatus(out.error)).json({ error: out.error || 'File search failed' });
         return;
       }
       res.json(out.data);
@@ -549,7 +590,7 @@ async function startServer() {
         7000
       );
       if (!out.ok) {
-        res.status(400).json({ error: out.error || 'File write failed' });
+        res.status(bridgeErrorStatus(out.error)).json({ error: out.error || 'File write failed' });
         return;
       }
       res.json(out.data);
@@ -843,7 +884,8 @@ async function startServer() {
     };
 
     try {
-      const {
+      // eslint-disable-next-line prefer-const
+      let {
         roomId,
         sourceDeviceName,
         targetDeviceHint,
@@ -870,7 +912,7 @@ async function startServer() {
         userLocation?: { latitude: number; longitude: number };
         preferredVoice?: VoicePersona;
         engine?: {
-          provider?: 'auto' | 'gemini' | 'openrouter' | 'ollama' | 'groq' | 'anthropic' | 'openai' | 'huggingface';
+          provider?: 'auto' | 'gemini' | 'openrouter' | 'ollama' | 'groq' | 'anthropic' | 'openai' | 'huggingface' | 'opencode' | 'cerebras' | 'mistral';
           routerMode?: string;
           ollamaUrl?: string;
           ollamaModel?: string;
@@ -885,6 +927,16 @@ async function startServer() {
       const normalizedRoom = normalizeRoomId(roomId);
       const googleAccessToken = extractBearerToken(req);
       const notionToken = extractNotionToken(req);
+
+      const redacted = redactSecrets(message || '');
+      if (redacted.found) {
+        message = redacted.text;
+        sendEvent({
+          type: 'engine',
+          data: { phase: 'security', reason: 'A secret key was removed from your message before it reached any AI. Rotate that key and add it as a server environment variable instead.' },
+        });
+      }
+      history = (history || []).map((h) => ({ ...h, text: redactSecrets(h.text || '').text }));
 
       const toolExecutor = (toolName: string, toolArgs: Record<string, unknown>) =>
         executeDeviceTool(normalizedRoom, sourceDeviceName || 'Web Client', toolName, toolArgs, preferredVoice || 'Fenrir', {
@@ -913,7 +965,12 @@ async function startServer() {
           onEvent: sendEvent,
         });
 
-      if (!engine?.provider || engine.provider === 'auto') {
+      // Explicit Groq / OpenRouter / Hugging Face / OpenCode choices go through the router pinned to
+      // that provider: same output caps, 30s timeouts and automatic fallback instead of raw 429s.
+      const pinnable = ['groq', 'openrouter', 'huggingface', 'opencode', 'cerebras', 'mistral'];
+      const routerMode =
+        engine?.provider && pinnable.includes(engine.provider) ? engine.provider : engine?.routerMode || 'auto';
+      if (!engine?.provider || engine.provider === 'auto' || pinnable.includes(engine.provider)) {
         const sysPrompt = buildJarvisSystemInstruction(normalizedRoom, sourceDeviceName || 'Web Client', targetDeviceHint, false, {
           hasGoogleToken: Boolean(googleAccessToken),
           customConnectors,
@@ -929,7 +986,15 @@ async function startServer() {
             tools: getOllamaToolDeclarations(),
             executeTool: toolExecutor,
             onEvent: sendEvent,
-            mode: engine?.routerMode || 'auto',
+            mode: routerMode,
+            pinnedModel:
+              routerMode === 'groq'
+                ? engine?.groqModel
+                : routerMode === 'openrouter' && engine?.openrouterModel !== 'openrouter/free'
+                ? engine?.openrouterModel
+                : routerMode === 'huggingface'
+                ? engine?.hfModel
+                : undefined,
             deepThinking: Boolean(deepThinking),
           });
         } catch (routerErr) {
@@ -983,7 +1048,7 @@ async function startServer() {
           message: message || '',
           history: history || [],
           attachments: attachments || [],
-          openrouterModel: engine.openrouterModel || 'openrouter/free',
+          openrouterModel: engine.openrouterModel && engine.openrouterModel !== 'openrouter/free' ? engine.openrouterModel : 'nvidia/nemotron-3.5-lightning:free',
           systemInstruction: sysPrompt,
           tools: getOllamaToolDeclarations(),
           executeTool: toolExecutor,
@@ -1007,7 +1072,7 @@ async function startServer() {
           message: message || '',
           history: history || [],
           attachments: attachments || [],
-          groqModel: engine.groqModel || 'llama-3.3-70b-versatile',
+          groqModel: engine.groqModel || 'openai/gpt-oss-120b',
           systemInstruction: sysPrompt,
           tools: getOllamaToolDeclarations(),
           executeTool: toolExecutor,
@@ -1098,13 +1163,13 @@ async function startServer() {
           ? await analyzeTaskGoalWithOpenRouter({
               roomId: normalized,
               goal: cleanGoal,
-              openrouterModel: engine.openrouterModel || 'openrouter/free',
+              openrouterModel: engine.openrouterModel && engine.openrouterModel !== 'openrouter/free' ? engine.openrouterModel : 'nvidia/nemotron-3.5-lightning:free',
             })
           : engine?.provider === 'groq'
           ? await analyzeTaskGoalWithGroq({
               roomId: normalized,
               goal: cleanGoal,
-              groqModel: engine.groqModel || 'llama-3.3-70b-versatile',
+              groqModel: engine.groqModel || 'openai/gpt-oss-120b',
             })
           : engine?.provider === 'huggingface'
           ? await analyzeTaskGoalWithHf({
@@ -1214,6 +1279,16 @@ async function startServer() {
     app.get('*', (_req, res) => {
       res.sendFile(path.join(distDir, 'index.html'));
     });
+  }
+
+  // Render's free plan sleeps after ~15 min without traffic: ping our own public URL every
+  // 10 min so "Hey Ray" never hits a cold start (#26). Disable with RAY_KEEPALIVE=false.
+  const publicUrl = (process.env.RENDER_EXTERNAL_URL || process.env.RAY_PUBLIC_URL || '').replace(/\/+$/, '');
+  if (publicUrl && !/^(0|false|off)$/i.test(process.env.RAY_KEEPALIVE || '')) {
+    setInterval(() => {
+      fetch(`${publicUrl}/api/health`, { signal: AbortSignal.timeout(15000) }).catch(() => {});
+    }, 10 * 60_000).unref();
+    console.log(`[RAY] keep-alive pinging ${publicUrl}/api/health every 10 min`);
   }
 
   const PORT = Number(process.env.PORT || 3000);

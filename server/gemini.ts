@@ -531,17 +531,19 @@ export function buildJarvisSystemInstruction(
   const snapshot = getRoomSnapshot(roomId);
   const devicesSummary =
     snapshot.devices
+      .filter((d) => d.online)
+      .slice(0, 10)
       .map(
         (d) =>
           `- ${d.name} [id=${d.id}, type=${d.type}, online=${d.online}, os=${d.os}, battery=${
             d.telemetry.batteryLevel != null ? `${d.telemetry.batteryLevel}%` : 'n/a'
           }${d.telemetry.cpuPercent != null ? `, cpu=${d.telemetry.cpuPercent}%` : ''}]`
       )
-      .join('\n') || 'None registered yet';
+      .join('\n') || 'No device online right now (commands will be queued)';
 
   const notesSummary =
     snapshot.brainNotes
-      ?.slice(0, 12)
+      ?.slice(0, 8)
       .map((n) => `- [[${n.title}]] (${n.folder}) tags=${n.tags.map((t) => `#${t}`).join(' ')}`)
       .join('\n') || 'None';
 
@@ -594,6 +596,10 @@ Behavioral Guidelines:
 6. ACCESS POLICY: you may READ by yourself (files, installed apps, browser tabs, screen, incoming messages, web) whenever useful, and briefly tell Ray what you looked at. You may only WRITE or ACT (write files, send messages, close apps/tabs, type/click, change volume) when Ray's current command explicitly asks for it. If a tool returns BLOCKED_BY_POLICY, tell Ray what you would do and ask.
 7. If a target device is offline, still issue the command: RAY queues it, wakes the device (push / Wake-on-LAN) and runs it on reconnect — tell Ray that.
 8. For messages: use read_incoming_messages to brief Ray; use send_chat_message only when he tells you to message someone.
+9. HONESTY: only say something is done if the tool result confirms it. If a tool returns an error, BLOCKED, NOT_AUTHORIZED, "offline" or REQUIRES_CONFIRMATION, say exactly that. Never describe buttons or confirmations that don't exist.
+10. Plain questions (maths, JSON, writing, facts) are answered directly — do not call tools for them.
+11. If a device you are about to use has battery under 15% and is not charging, warn Ray and prefer another online device.
+12. Never repeat secrets (API keys, room tokens) back in chat; tell Ray to rotate any he pasted.
 
 Recent incoming messages (newest first):
 ${

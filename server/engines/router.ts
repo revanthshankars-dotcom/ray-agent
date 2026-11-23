@@ -22,8 +22,11 @@ import {
   type ModelTier,
   type ProviderDef,
   type TaskKind,
+  dailyBudget,
   isAvailable,
+  isModelAvailable,
   isProviderConfigured,
+  maxTokensFor,
   loadUsage,
   quotaUsed,
   recordFailure,
@@ -42,6 +45,8 @@ export interface RouterChatInput {
   onEvent: (event: { type: string; data: unknown }) => void;
   /** 'auto' (default) | 'swarm' (force parallel sub-agents) | provider id to pin. */
   mode?: string;
+  /** Exact model chosen in the UI for the pinned provider (tried first). */
+  pinnedModel?: string;
   deepThinking?: boolean;
 }
 
@@ -74,13 +79,15 @@ export function classifyTask(
   return { kind, needsTools, needsWeb };
 }
 
+// Ordered from the live test (23 Nov 2026): Groq gpt-oss-120b → gpt-oss-20b → OpenRouter
+// nemotron-3.5-lightning:free → gemma-4-26b:free, then every other configured free engine.
 const CHAINS: Record<TaskKind, Array<[string, ModelTier]>> = {
-  quick: [['groq', 'fast'], ['cerebras', 'fast'], ['gemini', 'fast'], ['mistral', 'fast'], ['sambanova', 'fast'], ['nvidia', 'fast'], ['github', 'fast'], ['cloudflare', 'fast'], ['openrouter', 'fast'], ['custom', 'large'], ['llm7', 'fast']],
-  chat: [['groq', 'large'], ['cerebras', 'large'], ['gemini', 'large'], ['mistral', 'large'], ['github', 'large'], ['nvidia', 'large'], ['sambanova', 'large'], ['openrouter', 'large'], ['cohere', 'large'], ['cloudflare', 'large'], ['huggingface', 'large'], ['custom', 'large'], ['llm7', 'large']],
-  tools: [['groq', 'large'], ['cerebras', 'large'], ['gemini', 'large'], ['mistral', 'large'], ['github', 'large'], ['nvidia', 'large'], ['openrouter', 'large'], ['sambanova', 'large'], ['custom', 'large'], ['llm7', 'large']],
-  code: [['mistral', 'code'], ['cerebras', 'code'], ['github', 'code'], ['groq', 'code'], ['gemini', 'code'], ['nvidia', 'code'], ['openrouter', 'code'], ['cloudflare', 'code'], ['huggingface', 'code'], ['custom', 'large'], ['llm7', 'code']],
-  reasoning: [['gemini', 'reasoning'], ['github', 'reasoning'], ['cerebras', 'reasoning'], ['groq', 'reasoning'], ['mistral', 'reasoning'], ['nvidia', 'reasoning'], ['sambanova', 'reasoning'], ['openrouter', 'reasoning'], ['cloudflare', 'reasoning'], ['custom', 'large'], ['llm7', 'reasoning']],
-  vision: [['gemini', 'vision'], ['mistral', 'vision'], ['groq', 'vision'], ['github', 'vision'], ['nvidia', 'vision'], ['openrouter', 'vision']],
+  quick: [['groq', 'fast'], ['openrouter', 'fast'], ['cerebras', 'fast'], ['groq', 'large'], ['gemini', 'fast'], ['mistral', 'fast'], ['opencode', 'fast'], ['sambanova', 'fast'], ['nvidia', 'fast'], ['github', 'fast'], ['cloudflare', 'fast'], ['custom', 'large'], ['llm7', 'fast']],
+  chat: [['groq', 'large'], ['groq', 'fast'], ['openrouter', 'large'], ['cerebras', 'large'], ['opencode', 'large'], ['gemini', 'large'], ['mistral', 'large'], ['github', 'large'], ['nvidia', 'large'], ['sambanova', 'large'], ['cohere', 'large'], ['cloudflare', 'large'], ['huggingface', 'large'], ['custom', 'large'], ['llm7', 'large']],
+  tools: [['groq', 'large'], ['groq', 'fast'], ['openrouter', 'large'], ['cerebras', 'large'], ['opencode', 'large'], ['gemini', 'large'], ['mistral', 'large'], ['github', 'large'], ['nvidia', 'large'], ['sambanova', 'large'], ['custom', 'large'], ['llm7', 'large']],
+  code: [['groq', 'code'], ['opencode', 'code'], ['openrouter', 'code'], ['mistral', 'code'], ['cerebras', 'code'], ['github', 'code'], ['groq', 'fast'], ['gemini', 'code'], ['nvidia', 'code'], ['cloudflare', 'code'], ['huggingface', 'code'], ['custom', 'large'], ['llm7', 'code']],
+  reasoning: [['groq', 'reasoning'], ['openrouter', 'reasoning'], ['gemini', 'reasoning'], ['github', 'reasoning'], ['cerebras', 'reasoning'], ['opencode', 'reasoning'], ['mistral', 'reasoning'], ['groq', 'fast'], ['nvidia', 'reasoning'], ['sambanova', 'reasoning'], ['cloudflare', 'reasoning'], ['custom', 'large'], ['llm7', 'reasoning']],
+  vision: [['openrouter', 'vision'], ['gemini', 'vision'], ['groq', 'vision'], ['mistral', 'vision'], ['github', 'vision'], ['nvidia', 'vision']],
 };
 
 function providerById(id: string): ProviderDef | undefined {
@@ -98,7 +105,7 @@ async function buildCandidates(kind: TaskKind, needsTools: boolean, pinned?: str
     if (!p || !isAvailable(p)) continue;
     if (needsTools && !p.supportsTools) continue;
     const model = await resolveModel(p, tier);
-    if (model) out.push({ p, model, tier });
+    if (model && isModelAvailable(p, model) && !out.some((c) => c.p.id === p.id && c.model === model)) out.push({ p, model, tier });
   }
   return out;
 }
@@ -132,13 +139,14 @@ async function callCompletion(
   model: string,
   messages: ChatMessage[],
   tools?: RouterChatInput['tools'],
-  opts?: { maxTokens?: number; timeoutMs?: number }
+  opts?: { maxTokens?: number; timeoutMs?: number; kind?: string }
 ): Promise<CompletionResult> {
   const base = p.baseUrl();
   const key = p.apiKey();
   if (!base || !key) throw new ProviderError(`${p.label} not configured`, 401);
   const body: Record<string, unknown> = { model, messages, temperature: 0.4 };
-  if (opts?.maxTokens) body.max_tokens = opts.maxTokens;
+  // Always cap output: providers default to huge budgets (65K) that exceed free credit/TPM.
+  body.max_tokens = Math.min(opts?.maxTokens || 1024, maxTokensFor(p, model, opts?.kind || 'chat'));
   if (tools && tools.length && p.supportsTools) {
     body.tools = tools;
     body.tool_choice = 'auto';
@@ -149,10 +157,11 @@ async function callCompletion(
       method: 'POST',
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', ...(p.extraHeaders?.() || {}) },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(opts?.timeoutMs || 45000),
+      signal: AbortSignal.timeout(opts?.timeoutMs || 30000),
     });
   } catch (err) {
-    throw new ProviderError(`${p.label} network error: ${sanitizeErrorMessage(err)}`, 0);
+    const timedOut = err instanceof Error && /timeout|aborted/i.test(`${err.name} ${err.message}`);
+    throw new ProviderError(`${p.label} ${timedOut ? 'timed out after 30s' : `network error: ${sanitizeErrorMessage(err)}`}`, timedOut ? 408 : 0);
   }
   const json = (await resp.json().catch(() => ({}))) as {
     choices?: Array<{ message?: { content?: string | null; tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: string } }> } }>;
@@ -161,8 +170,14 @@ async function callCompletion(
   };
   if (!resp.ok) {
     const errMsg = typeof json.error === 'string' ? json.error : json.error?.message || `HTTP ${resp.status}`;
-    const ra = Number(resp.headers.get('retry-after') || '') || undefined;
-    throw new ProviderError(`${p.label}: ${errMsg}`.slice(0, 300), resp.status, ra);
+    // Retry-After header, or "Please try again in 7.5s" / "in 1m2.3s" inside the message (Groq).
+    let ra = Number(resp.headers.get('retry-after') || '') || undefined;
+    const m = errMsg.match(/try again in (?:(\d+)m)?([\d.]+)s/i);
+    if (!ra && m) ra = Math.ceil(Number(m[1] || 0) * 60 + Number(m[2] || 0));
+    let status = resp.status;
+    if (status === 400 && /credit|afford|max_tokens|insufficient/i.test(errMsg)) status = 402;
+    if (/request too large|tokens per minute|TPM/i.test(errMsg) && status !== 429) status = 413;
+    throw new ProviderError(`${p.label} (${model}): ${errMsg}`.slice(0, 300), status, ra);
   }
   const msg = json.choices?.[0]?.message || {};
   const rawCalls = msg.tool_calls || [];
@@ -186,12 +201,12 @@ async function completeWithFailover(
   messages: ChatMessage[],
   tools: RouterChatInput['tools'] | undefined,
   onSwitch?: (info: { provider: string; model: string; reason?: string }) => void,
-  opts?: { maxTokens?: number; timeoutMs?: number }
+  opts?: { maxTokens?: number; timeoutMs?: number; kind?: string }
 ): Promise<CompletionResult & { provider: ProviderDef; model: string }> {
   const errors: string[] = [];
   for (let i = 0; i < candidates.length; i++) {
     const { p, model } = candidates[i];
-    if (!isAvailable(p)) continue;
+    if (!isModelAvailable(p, model)) continue;
     onSwitch?.({ provider: p.label, model, reason: i === 0 ? undefined : errors[errors.length - 1] });
     try {
       let out: CompletionResult;
@@ -207,7 +222,7 @@ async function completeWithFailover(
       return { ...out, provider: p, model };
     } catch (err) {
       const pe = err instanceof ProviderError ? err : new ProviderError(sanitizeErrorMessage(err), 0);
-      recordFailure(p.id, pe.status, pe.retryAfter);
+      recordFailure(p.id, pe.status, pe.retryAfter, model);
       errors.push(pe.message);
     }
   }
@@ -227,6 +242,40 @@ function sanitizeTools(tools: RouterChatInput['tools']): RouterChatInput['tools'
     }
     return { ...t, function: { ...t.function, parameters: { ...t.function.parameters, properties: fixed } } };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Send only the tools a message plausibly needs. The full list is ~2.5K tokens, which
+// alone eats a third of Groq's 8K tokens/minute — and extra tools tempt models into
+// calling irrelevant ones (e.g. analyze_task_goal on a plain JSON question).
+// ---------------------------------------------------------------------------
+
+const TOOL_TOPICS: Array<[RegExp, string[]]> = [
+  [/\b(open|play|watch|listen|search|google|youtube|spotify|show me|pull up|go to|website|link|url)\b/i, ['search_and_open', 'open_url_on_device', 'web_search']],
+  [/\b(app|apps|launch|start|open|installed|close|quit)\b/i, ['open_application', 'list_installed_apps', 'close_application']],
+  [/\b(tab|tabs|browser|chrome|edge)\b/i, ['list_browser_tabs', 'browser_tab_action', 'open_url_on_device']],
+  [/\b(file|files|folder|document|downloads|desktop|read|write|save|pdf|txt)\b/i, ['list_system_files', 'search_system_files', 'read_system_file', 'write_system_file']],
+  [/\b(screen|screenshot|window|click|type|press|scroll|mouse|keyboard)\b/i, ['capture_screen_snapshot', 'inspect_active_screen_and_window', 'control_screen_input']],
+  [/\b(message|messages|whatsapp|instagram|dm|sms|text|telegram|reply|inbox|chat)\b/i, ['read_incoming_messages', 'send_chat_message']],
+  [/\b(note|notes|brain|remember|memory|obsidian|wikilink)\b/i, ['search_second_brain', 'read_brain_note', 'upsert_brain_note', 'link_brain_notes']],
+  [/\b(device|devices|phone|pc|laptop|computer|battery|online|offline|wake)\b/i, ['list_connected_devices', 'get_device_telemetry', 'wake_device']],
+  [/\b(notify|notification|alert|remind|speak|say|announce)\b/i, ['send_device_notification', 'speak_on_device']],
+  [/\b(clipboard|copy|paste|handoff|send to)\b/i, ['push_clipboard_handoff']],
+  [/\b(timer|countdown|alarm)\b/i, ['set_device_timer']],
+  [/\b(task|tasks|todo|to-do)\b/i, ['manage_shared_task']],
+  [/\b(gmail|email|mail|calendar|meeting|event|drive|docs|sheets|contacts)\b/i, ['google_workspace_action']],
+  [/\b(notion|connector|webhook)\b/i, ['invoke_app_connector']],
+  [/\b(volume|mute|louder|quieter)\b/i, ['adjust_volume']],
+  [/\b(kill|process|optimi[sz]e|cpu|memory usage|slow)\b/i, ['kill_process', 'optimize_system', 'get_device_telemetry']],
+  [/\b(protocol|house party|clean slate)\b/i, ['execute_protocol']],
+  [/\b(plan|break down|analy[sz]e (this|my) task|prioriti[sz]e)\b/i, ['analyze_task_goal']],
+  [/\b(photo|camera|snapshot|picture)\b/i, ['request_device_snapshot']],
+];
+
+export function selectRelevantTools(message: string, tools: RouterChatInput['tools']): RouterChatInput['tools'] {
+  const wanted = new Set<string>();
+  for (const [re, names] of TOOL_TOPICS) if (re.test(message)) names.forEach((n) => wanted.add(n));
+  return tools.filter((t) => wanted.has(t.function.name)).slice(0, 14);
 }
 
 // ---------------------------------------------------------------------------
@@ -349,15 +398,25 @@ export async function runAutoChatTurn(input: RouterChatInput): Promise<{ handled
   const candidates = await buildCandidates(needsTools ? 'tools' : kind, needsTools, pinned);
   // Always keep a tool-capable fallback list when tools are involved.
   const fallbackTools = needsTools ? candidates : await buildCandidates('tools', true);
-  const all = [...candidates, ...fallbackTools.filter((c) => !candidates.some((x) => x.p.id === c.p.id))];
+  let all = [...candidates, ...fallbackTools.filter((c) => !candidates.some((x) => x.p.id === c.p.id && x.model === c.model))];
+  const pinnedProvider = pinned ? providerById(pinned) : undefined;
+  if (pinnedProvider && input.pinnedModel && isModelAvailable(pinnedProvider, input.pinnedModel)) {
+    all = [{ p: pinnedProvider, model: input.pinnedModel, tier: 'large' as ModelTier }, ...all.filter((c) => !(c.p.id === pinned && c.model === input.pinnedModel))];
+  }
   if (all.length === 0) {
+    const b = dailyBudget();
+    if (b.exceeded) {
+      input.onEvent({ type: 'error', data: `Daily AI budget reached (${b.usedTokens.toLocaleString()} / ${b.capTokens.toLocaleString()} tokens). It resets at midnight UTC, or raise RAY_DAILY_TOKEN_CAP.` });
+      input.onEvent({ type: 'done', data: { toolCalls: [], sources: [] } });
+      return { handled: true };
+    }
     return { handled: false };
   }
 
-  const tools = sanitizeTools(input.tools);
+  const tools = needsTools ? selectRelevantTools(input.message, sanitizeTools(input.tools)) : [];
   const messages: ChatMessage[] = [
     { role: 'system', content: input.systemInstruction },
-    ...input.history.slice(-10).map((h) => ({ role: h.role, content: h.text }) as ChatMessage),
+    ...input.history.slice(-10).map((h) => ({ role: h.role, content: h.text.slice(0, 1500) }) as ChatMessage),
   ];
   const images = (input.attachments || []).filter((a) => a.mimeType.startsWith('image/'));
   messages.push(
@@ -385,11 +444,23 @@ export async function runAutoChatTurn(input: RouterChatInput): Promise<{ handled
         lastProvider = info.provider;
         emitEngine({ provider: info.provider, model: info.model, reason: info.reason ? `failover: ${info.reason}` : undefined });
       }
-    });
+    }, { kind });
 
     if (out.toolCalls.length === 0) {
-      input.onEvent({ type: 'text', data: out.content || 'Done, Ray.' });
-      input.onEvent({ type: 'done', data: { toolCalls: toolLogs, sources: [] } });
+      // Never let the model claim success the tools didn't report (#21).
+      const failed = toolLogs.filter(
+        (t) =>
+          t.status === 'error' ||
+          /^(BLOCKED|REQUIRES_CONFIRMATION|Could not|No online|No device|Error|Failed|.*not configured)/i.test(String(t.result || ''))
+      );
+      let text = out.content || (toolLogs.length ? (failed.length ? 'Some actions did not complete.' : 'Done.') : '');
+      if (failed.length) {
+        text += `\n\n⚠️ Not completed: ${failed.map((t) => `${t.name} — ${String(t.result || t.status).slice(0, 160)}`).join(' · ')}`;
+      }
+      const answeredBy = `${out.provider.label} · ${out.model}`;
+      emitEngine({ answeredBy });
+      input.onEvent({ type: 'text', data: text });
+      input.onEvent({ type: 'done', data: { toolCalls: toolLogs, sources: [], answeredBy } });
       return { handled: true };
     }
 

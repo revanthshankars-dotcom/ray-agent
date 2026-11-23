@@ -1,3 +1,16 @@
+/** Normalise a date argument (ISO string, epoch number, Date, or {dateTime|date} object) to ISO-8601. */
+export function toIsoDate(v: unknown): string | null {
+  if (v == null || v === '') return null;
+  let raw: unknown = v;
+  if (typeof v === 'object' && !(v instanceof Date)) {
+    const o = v as Record<string, unknown>;
+    raw = o.dateTime ?? o.date ?? o.iso ?? o.value ?? o.start ?? null;
+    if (raw == null) return null;
+  }
+  const d = raw instanceof Date ? raw : new Date(typeof raw === 'number' ? raw : String(raw));
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
 import type { AppConnector, ConfirmationRequest } from '../src/types/relay.ts';
 import { createConfirmationRequest } from './capabilities.ts';
 import { broadcastHudSound, dispatchDeviceCommand } from './hub.ts';
@@ -55,14 +68,14 @@ export async function executeGoogleWorkspaceAction(params: {
   if (!token) {
     return {
       result:
-        'Google Workspace is not authorized yet for this session. Ask Ray to click "Connect Google Workspace" in the Apps tab or top bar to grant in-memory OAuth access.',
+        'NOT_AUTHORIZED: Google Workspace is not authorized yet for this session. Ask Ray to click "Connect Google Workspace" in the Apps tab or top bar to grant in-memory OAuth access.',
     };
   }
 
   if (MUTATING_WORKSPACE_ACTIONS.has(action) && !params.confirmed) {
     const summaryMap: Record<string, string> = {
       gmail_send_email: `Send email via Gmail to "${String(params.args.to || '')}" with subject "${String(params.args.subject || '')}".`,
-      calendar_create_event: `Create Google Calendar event "${String(params.args.summary || 'New Event')}" starting ${String(params.args.start || '')}.`,
+      calendar_create_event: `Create Google Calendar event "${String(params.args.summary || 'New Event')}" starting ${toIsoDate(params.args.start) || 'in one hour'}.`,
       calendar_delete_event: `Delete Google Calendar event ID "${String(params.args.eventId || '')}".`,
       drive_create_doc: `Create Google Doc "${String(params.args.title || 'Untitled Document')}" in Google Drive.`,
       sheets_append_row: `Append row to Google Sheet "${String(params.args.spreadsheetId || '')}" range "${String(params.args.range || 'Sheet1!A1')}".`,
@@ -157,8 +170,9 @@ export async function executeGoogleWorkspaceAction(params: {
 
     case 'calendar_create_event': {
       const summary = String(params.args.summary || 'RAY Scheduled Event').slice(0, 200);
-      const start = String(params.args.start || new Date(Date.now() + 3600_000).toISOString());
-      const end = String(params.args.end || new Date(new Date(start).getTime() + 3600_000).toISOString());
+      // Models sometimes send {dateTime: …} objects or epoch numbers — String() of those gave "[object Object]".
+      const start = toIsoDate(params.args.start) || new Date(Date.now() + 3600_000).toISOString();
+      const end = toIsoDate(params.args.end) || new Date(new Date(start).getTime() + 3600_000).toISOString();
       const created = await googleFetch(
         'https://www.googleapis.com/calendar/v3/calendars/primary/events',
         token,
