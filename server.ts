@@ -967,7 +967,7 @@ async function startServer() {
 
       // Explicit Groq / OpenRouter / Hugging Face / OpenCode choices go through the router pinned to
       // that provider: same output caps, 30s timeouts and automatic fallback instead of raw 429s.
-      const pinnable = ['groq', 'openrouter', 'huggingface', 'opencode', 'cerebras', 'mistral'];
+      const pinnable = ['groq', 'openrouter', 'huggingface', 'opencode', 'cerebras', 'mistral', 'deepseek', 'zhipu', 'siliconflow', 'dashscope', 'novita'];
       const routerMode =
         engine?.provider && pinnable.includes(engine.provider) ? engine.provider : engine?.routerMode || 'auto';
       if (!engine?.provider || engine.provider === 'auto' || pinnable.includes(engine.provider)) {

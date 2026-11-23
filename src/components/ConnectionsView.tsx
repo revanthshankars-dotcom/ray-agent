@@ -53,6 +53,11 @@ const ENV_KEY: Record<string, string> = {
   nvidia: 'NVIDIA_API_KEY',
   cloudflare: 'CLOUDFLARE_API_TOKEN',
   opencode: 'OPENCODE_API_KEY',
+  deepseek: 'DEEPSEEK_API_KEY',
+  zhipu: 'ZHIPU_API_KEY',
+  siliconflow: 'SILICONFLOW_API_KEY',
+  dashscope: 'DASHSCOPE_API_KEY',
+  novita: 'NOVITA_API_KEY',
   sambanova: 'SAMBANOVA_API_KEY',
   huggingface: 'HUGGINGFACE_API_KEY',
   cohere: 'COHERE_API_KEY',
@@ -325,6 +330,7 @@ export function ConnectionsView({
                 { id: 'groq', label: 'Groq' },
                 { id: 'cerebras', label: 'Cerebras' },
                 { id: 'gemini', label: 'Gemini' },
+                { id: 'deepseek', label: 'DeepSeek' },
               ].map((m) => {
                 const active = engineSettings.provider === 'auto' && (engineSettings.routerMode || 'auto') === m.id;
                 return (
