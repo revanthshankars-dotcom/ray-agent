@@ -58,6 +58,8 @@ import type { LocalBridgeMonitorState } from '../hooks/useLocalBridgeMonitor';
 import { RayCoreFace } from './RayCoreFace';
 
 interface AssistantViewProps {
+  /** Compact pop-up window: hide the workspace toolbar. */
+  compact?: boolean;
   roomId: string;
   userName: string;
   localDeviceName: string;
@@ -116,20 +118,20 @@ const VOICES: VoicePersona[] = ['Fenrir', 'Charon', 'Puck', 'Kore', 'Zephyr'];
 
 const QUICK_PROMPTS = [
   {
-    title: 'House Party Protocol',
-    prompt: 'Initiate House Party Protocol and brief me on every connected device.',
+    title: 'Research in the browser',
+    prompt: 'Research the best laptops under ₹80,000 this month and compare the top 3 with prices and sources.',
   },
   {
-    title: 'Sentry Perimeter Scan',
-    prompt: 'Engage Sentry Mode and check for high CPU or memory anomalies across my mesh.',
+    title: 'Check & fix my PC',
+    prompt: 'My PC feels slow — diagnose it and fix what you safely can.',
   },
   {
-    title: 'Universal Task Analysis',
-    prompt: 'Analyze this task for me: Build and deploy a resilient multi-device API rate limiter.',
+    title: 'Teach me on screen',
+    prompt: 'Show me how to turn on night light in Windows settings.',
   },
   {
-    title: 'Cross-Device Briefing',
-    prompt: 'Search the web for today’s top AI engineering news, speak a concise briefing, and push links to Handoff.',
+    title: 'What did you learn today?',
+    prompt: 'What did you learn today? Give me a short briefing.',
   },
 ];
 
@@ -224,6 +226,7 @@ function FormattedProse({ text }: { text: string }) {
 }
 
 export const AssistantView: React.FC<AssistantViewProps> = ({
+  compact = false,
   roomId,
   userName,
   localDeviceName,
@@ -946,7 +949,7 @@ export const AssistantView: React.FC<AssistantViewProps> = ({
   return (
     <div className="flex flex-col h-full">
       {/* Workspace Toolbar */}
-      <div className="shrink-0 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 sm:px-6 py-2.5 space-y-2">
+      <div className={`${compact ? 'hidden' : ''} shrink-0 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 sm:px-6 py-2.5 space-y-2`}>
         <div className="flex flex-wrap items-center justify-between gap-2.5">
           <div className="flex flex-wrap items-center gap-2">
             <select
@@ -1759,8 +1762,9 @@ export const AssistantView: React.FC<AssistantViewProps> = ({
                     At your service, {userName}.
                   </h1>
                   <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-                    Tap the RAY Voice Core or arm Wake Standby (<span className="font-mono text-slate-900 dark:text-slate-100">&quot;Hey Ray&quot;</span>), search with Gemini Web/Maps/URL Grounding, or control room{' '}
-                    <span className="font-mono font-medium text-slate-900 dark:text-slate-100">{roomId}</span>.
+                    Talk or type. RAY researches in a real browser, uses the mouse on your PC and phone, runs coding agents, repairs your devices and learns something new every day. Say{' '}
+                    <span className="font-medium text-slate-900 dark:text-slate-100">“Hey Ray”</span> or press{' '}
+                    <kbd className="px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 text-[11px] font-mono">Ctrl+Alt+R</kbd> on your PC.
                   </p>
                 </div>
                 <div className="shrink-0">

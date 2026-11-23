@@ -91,6 +91,8 @@ import { zipDirectory } from './server/zip.ts';
 import { buildInstaller } from './server/installer.ts';
 import { getFileMap, refreshDeviceIndex, startFileIndexScheduler } from './server/fileIndex.ts';
 import { getAutopilot, learnFromTurn, runAutopilot, setAutopilot, startAutonomy } from './server/autopilot.ts';
+import { getLearning, getTopics, observeTurn, runLearningCycle, saveTopics, setLearning, startLearningScheduler, withRecall } from './server/learning.ts';
+import { getLatestBridgeVersion } from './server/repair.ts';
 import { getIceServers, listScheduledCalls, cancelScheduledCall, startCallScheduler } from './server/calls.ts';
 import { checkFishKey, fishUsable, getFishKey, getFishStatus } from './server/fishAudio.ts';
 import { checkMetaSignature, handleMetaWebhook, metaStatus, verifyMetaWebhook } from './server/meta.ts';
@@ -184,6 +186,7 @@ async function startServer() {
   startCallScheduler();
   startFileIndexScheduler();
   startAutonomy();
+  startLearningScheduler();
   if (getFishKey()) setInterval(() => void checkFishKey(), 6 * 3600_000).unref();
   if (getFishKey()) {
     const fish = await checkFishKey();
@@ -371,6 +374,58 @@ async function startServer() {
   app.post('/api/autopilot/run', aiLimiter, requireRoomAuth, async (req, res) => {
     const { roomId } = req.body as { roomId: string };
     res.json({ summary: await runAutopilot(normalizeRoomId(roomId), { force: true }) });
+  });
+
+  // JARVIS status: learning, knowledge, lessons, repairs, bridge versions.
+  app.get('/api/jarvis', requireRoomAuth, async (req, res) => {
+    const roomId = normalizeRoomId(String(req.query.room || 'RLY-HOME'));
+    const notes = getRoomSnapshot(roomId).brainNotes || [];
+    const learning = await getLearning(roomId);
+    const lines = (folder: string, title: RegExp) =>
+      (notes.find((n) => n.folder === folder && title.test(n.title))?.content || '').split('\n').filter((l) => l.startsWith('- ')).slice(0, 12).map((l) => l.slice(2));
+    const latest = getLatestBridgeVersion();
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      learning: {
+        enabled: learning.enabled,
+        dailyAt: `${String(learning.hour).padStart(2, '0')}:${String(learning.minute).padStart(2, '0')}`,
+        lastRunAt: learning.lastRunAt || null,
+        lastSummary: learning.lastSummary || '',
+        notesLearned: learning.learnedCount,
+        openQuestions: learning.openQuestions,
+        pendingExperiences: learning.experiences.length,
+        topics: getTopics(roomId),
+      },
+      knowledge: notes
+        .filter((n) => n.folder === 'Knowledge' && !/^learning topics$/i.test(n.title))
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .slice(0, 12)
+        .map((n) => ({ id: n.id, title: n.title, updatedAt: n.updatedAt, preview: n.content.replace(/^# .*\n+/, '').replace(/[#*]/g, '').slice(0, 220) })),
+      lessons: lines('Memory', /^lessons$/i),
+      memory: lines('Memory', /about ray/i),
+      repairs: lines('System', /^repairs$/i),
+      health: lines('System', /^system health$/i),
+      bridges: getRoomDevices(roomId)
+        .filter((d) => d.type === 'bridge')
+        .map((d) => ({ id: d.id, name: d.name, online: d.online, os: d.os, version: String((d.telemetry as Record<string, unknown> | undefined)?.bridgeVersion || '3.0 or older'), latest, capabilities: d.capabilities || [] })),
+    });
+  });
+  app.post('/api/jarvis/learning', requireRoomAuth, async (req, res) => {
+    const { roomId, action, topics, ...patch } = req.body as { roomId: string; action?: string; topics?: string[]; hour?: number; minute?: number; enabled?: boolean };
+    const room = normalizeRoomId(roomId);
+    if (Array.isArray(topics)) saveTopics(room, topics.map(String));
+    if (action === 'run') void runLearningCycle(room).catch(() => undefined);
+    res.json({ ok: true, settings: await setLearning(room, patch), topics: getTopics(room), started: action === 'run' });
+  });
+  app.post('/api/jarvis/diagnose', aiLimiter, requireRoomAuth, async (req, res) => {
+    const { roomId, deviceId } = req.body as { roomId: string; deviceId: string };
+    const out = await dispatchBridgeProxyCall(normalizeRoomId(roomId), { action: 'diagnose' }, 60000, deviceId);
+    res.status(out.ok ? 200 : 502).json(out);
+  });
+  app.post('/api/jarvis/popup', requireRoomAuth, async (req, res) => {
+    const { roomId, device } = req.body as { roomId: string; device: string };
+    const out = await dispatchDeviceCommand({ roomId: normalizeRoomId(roomId), type: 'wake', targetQuery: device || 'pc', source: 'assistant', payload: { popup: true }, waitForAckMs: 6000 });
+    res.json({ summary: out.summary });
   });
 
   // File map for the 3D Brain (names/folders only, per device).
@@ -980,10 +1035,23 @@ async function startServer() {
     res.setHeader('Connection', 'keep-alive');
 
     let lastReplyText = '';
+    let failedSteps: string[] = [];
     const sendEvent = (event: { type: string; data: unknown }) => {
       if (event.type === 'text') lastReplyText = String(event.data || '');
+      if (event.type === 'tool_end') {
+        const t = event.data as { name?: string; status?: string; result?: unknown };
+        if (t?.status === 'error' || /^(Could not|No online|No device|Error|Failed)/i.test(String(t?.result || ''))) failedSteps.push(`${t.name} failed: ${String(t.result || '').slice(0, 160)}`);
+      }
       res.write(`data: ${JSON.stringify(event)}\n\n`);
     };
+    // Long missions (browser research, repairs) can run for minutes: keep the stream alive.
+    const keepAlive = setInterval(() => {
+      try {
+        res.write(': working\n\n');
+      } catch {
+        /* closed */
+      }
+    }, 15000);
 
     try {
       // eslint-disable-next-line prefer-const
@@ -1084,7 +1152,7 @@ async function startServer() {
             message: message || '',
             history: history || [],
             attachments: attachments || [],
-            systemInstruction: sysPrompt,
+            systemInstruction: withRecall(normalizedRoom, sysPrompt, message || ''),
             tools: getOllamaToolDeclarations(),
             executeTool: toolExecutor,
             onEvent: sendEvent,
@@ -1234,10 +1302,13 @@ async function startServer() {
     } catch (err) {
       sendEvent({ type: 'error', data: sanitizeErrorMessage(err, 'AI engine request failed') });
     } finally {
+      clearInterval(keepAlive);
       res.end();
       // Self-learning: remember durable facts from this conversation (background, best-effort).
       const body = req.body as { roomId?: string; message?: string };
       if (lastReplyText && body?.message) learnFromTurn(normalizeRoomId(body.roomId), String(body.message), lastReplyText);
+      if (body?.message) void observeTurn(normalizeRoomId(body.roomId), String(body.message), lastReplyText, failedSteps).catch(() => undefined);
+      failedSteps = [];
     }
   });
 

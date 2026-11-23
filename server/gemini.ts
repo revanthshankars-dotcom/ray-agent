@@ -31,6 +31,8 @@ import { executeFileIndexTool, fileIndexToolDeclarations } from './fileIndex.ts'
 import { computerUseToolDeclarations, executeComputerUseTool } from './computerUse.ts';
 import { codingAgentToolDeclarations, executeCodingAgentTool } from './codingAgents.ts';
 import { memoryExcerpt } from './autopilot.ts';
+import { executeJarvisTool, jarvisToolDeclarations } from './jarvisTools.ts';
+import { lessonsExcerpt, withRecall } from './learning.ts';
 import { checkActionPolicy, executeExtendedTool, extendedToolDeclarations } from './deviceTools.ts';
 import type {
   AppConnector,
@@ -471,7 +473,7 @@ export const baseToolDeclarations: FunctionDeclaration[] = [
 ];
 
 // Extended tools (search & open, apps, tabs, messages, wake) — replace older duplicates by name.
-for (const decl of [...extendedToolDeclarations, ...callToolDeclarations, ...fileIndexToolDeclarations, ...computerUseToolDeclarations, ...codingAgentToolDeclarations]) {
+for (const decl of [...extendedToolDeclarations, ...callToolDeclarations, ...fileIndexToolDeclarations, ...computerUseToolDeclarations, ...codingAgentToolDeclarations, ...jarvisToolDeclarations]) {
   const idx = baseToolDeclarations.findIndex((d) => d.name === decl.name);
   if (idx >= 0) baseToolDeclarations[idx] = decl;
   else baseToolDeclarations.push(decl);
@@ -611,6 +613,14 @@ Behavioral Guidelines:
 15. CODING AGENTS: for coding work in Ray's projects ("fix the bug in my app", "have Claude Code and Codex each…"), use run_coding_agents — several jobs run IN PARALLEL on his PC (one approval). Check list_coding_agents if unsure what is installed; report with coding_agent_status.
 16. AUTONOMY: an Autopilot checks in on its own (journal in Second Brain → System → Autopilot Journal) and a watchdog self-heals devices/engines. When Ray says "remember …", confirm — RAY stores it in Memory automatically. To improve RAY itself, use run_coding_agents in Ray's local ray-agent repo folder (he reviews and pushes).
 17. Never repeat secrets (API keys, room tokens) back in chat; tell Ray to rotate any he pasted.
+18. MISSION CLAUSE — think like JARVIS: for any goal with several steps, silently plan the whole job and the alternatives first (other device, other app, the browser, the mouse, waking a device), then execute step by step, check every tool result, and if a step fails try the next alternative instead of giving up. Finish the WHOLE goal from one command; only stop for Ray's approval, a password/payment, or when truly blocked — then say exactly what is left.
+19. BROWSER HANDS: for research, comparisons, prices, documentation or anything needing several pages, call browse_web (mode "research"; it reads real pages, returns sources). To complete a task on a website (forms, bookings, settings) use browse_web mode "do". read_web_page reads one URL.
+20. SELF-LEARNING: "learn about / keep up with X" → learn_about (follow=true to track it daily). RAY researches its Learning Topics every morning into Knowledge notes and turns its mistakes into Lessons — follow the Lessons below. "What did you learn today?" → read the Knowledge → Daily Briefing note.
+21. SELF-HEALING: "my PC is slow / internet broken / app frozen / fix my phone / free up space" → repair_device (diagnoses, proposes safe fixes, asks once, re-checks). Health questions → diagnose_device. Undo a file change → restore_file. If a fix needs clicking in an app use operate_computer; broken code → run_coding_agents.
+22. "Open RAY on my PC/phone", or a task needs Ray's eyes on another device → show_ray.
+
+Lessons RAY learned from its own mistakes (follow them):
+${lessonsExcerpt(roomId, 20) || 'None yet.'}
 
 What you have learned about Ray (Memory/About Ray — use it, never contradict it):
 ${memoryExcerpt(roomId, 25) || 'Nothing yet.'}
@@ -880,6 +890,8 @@ export async function executeDeviceTool(
   if (cuOut) return cuOut;
   const codeOut = await executeCodingAgentTool(roomId, name, args, { confirmed });
   if (codeOut) return codeOut;
+  const jarvisOut = await executeJarvisTool(roomId, name, args, { confirmed });
+  if (jarvisOut) return jarvisOut;
 
   switch (name) {
     case 'list_connected_devices': {
@@ -1527,6 +1539,7 @@ export async function runAssistantChatTurn(input: ChatTurnInput): Promise<void> 
       customConnectors: input.customConnectors,
     }
   );
+  const recalledInstruction = withRecall(input.roomId, systemInstruction, input.message);
 
   const contents: Content[] = [];
   for (const h of input.history.slice(-12)) {
@@ -1582,7 +1595,7 @@ export async function runAssistantChatTurn(input: ChatTurnInput): Promise<void> 
 
   const useDeep = Boolean(input.deepThinking || snapshot.veronicaMode);
   const config: Record<string, unknown> = {
-    systemInstruction,
+    systemInstruction: recalledInstruction,
     tools,
     toolConfig,
     thinkingConfig: {
@@ -1593,7 +1606,7 @@ export async function runAssistantChatTurn(input: ChatTurnInput): Promise<void> 
   const collectedSources: GroundingSource[] = [];
   const toolLogs: ToolCallEvent[] = [];
 
-  for (let round = 0; round < 5; round++) {
+  for (let round = 0; round < 10; round++) {
     if (isRoomInterrupted(input.roomId)) {
       input.onEvent({ type: 'text', data: 'Standing down, Ray. Execution halted on your command.' });
       input.onEvent({ type: 'done', data: { toolCalls: toolLogs, sources: collectedSources } });

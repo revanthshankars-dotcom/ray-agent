@@ -33,7 +33,7 @@ import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import WebSocket, { WebSocketServer } from 'ws';
 
-const BRIDGE_VERSION = '3.0';
+const BRIDGE_VERSION = '3.1';
 const IS_TERMUX = Boolean(process.env.PREFIX && process.env.PREFIX.includes('com.termux')) || fs.existsSync('/data/data/com.termux');
 const PLATFORM = IS_TERMUX ? 'android' : os.platform();
 const WS_URL = process.env.RELAY_WS_URL || "__RAY_WS_URL__";
@@ -1506,8 +1506,500 @@ function getTelemetry(topProcesses = [], activeWindow = '') {
   };
 }
 
+// ===========================================================================
+// JARVIS layer (bridge 3.1): browser hands (Chrome DevTools Protocol), device
+// diagnose & repair, file versions, self-update, and the RAY pop-up window.
+// ===========================================================================
+
+/** Public URL of the RAY web app this bridge belongs to (derived from the hub WebSocket URL). */
+function rayAppUrl(extra) {
+  try {
+    const u = new URL(WS_URL);
+    u.protocol = u.protocol === 'wss:' ? 'https:' : 'http:';
+    u.pathname = '/';
+    u.search = '';
+    u.searchParams.set('room', ROOM_ID);
+    for (const [k, v] of Object.entries(extra || {})) u.searchParams.set(k, String(v));
+    return u.toString();
+  } catch {
+    return '';
+  }
+}
+
+function findChromeBinary() {
+  if (process.env.RAY_CHROME_PATH && fs.existsSync(process.env.RAY_CHROME_PATH)) return process.env.RAY_CHROME_PATH;
+  const c = [];
+  if (os.platform() === 'win32') {
+    for (const base of [process.env.PROGRAMFILES, process.env['PROGRAMFILES(X86)'], process.env.LOCALAPPDATA].filter(Boolean)) {
+      c.push(path.join(base, 'Google', 'Chrome', 'Application', 'chrome.exe'));
+      c.push(path.join(base, 'Microsoft', 'Edge', 'Application', 'msedge.exe'));
+      c.push(path.join(base, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'));
+    }
+  } else if (os.platform() === 'darwin') {
+    c.push('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge', '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser', '/Applications/Chromium.app/Contents/MacOS/Chromium');
+  } else {
+    c.push('/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/microsoft-edge', '/snap/bin/chromium');
+  }
+  return c.find((p) => { try { return fs.existsSync(p); } catch { return false; } }) || null;
+}
+
+// --- RAY pop-up ------------------------------------------------------------
+let lastPopupAt = 0;
+function openRayPopup(reason, cb) {
+  const done = cb || (() => {});
+  if (Date.now() - lastPopupAt < 4000) return done('Already opening', true);
+  lastPopupAt = Date.now();
+  const url = rayAppUrl({ popup: 1, listen: 1 });
+  if (!url) return done('RAY URL unknown', false);
+  if (IS_TERMUX) return runSafeCommand('termux-open-url', [url], (m, ok) => done(ok ? 'RAY opened on the phone' : m, ok));
+  const chrome = findChromeBinary();
+  if (chrome) {
+    try {
+      const w = 470, h = 780;
+      spawn(chrome, ['--app=' + url, '--window-size=' + w + ',' + h, '--window-position=40,40'], { detached: true, stdio: 'ignore', windowsHide: false }).unref();
+      return done('RAY window opened' + (reason ? ' (' + reason + ')' : ''), true);
+    } catch (e) {}
+  }
+  launchUrlSafely(url, (m, ok) => done(ok ? 'RAY opened in the browser' : m, ok));
+}
+
+/** Windows: Start-menu shortcut "RAY" with the global hotkey Ctrl+Alt+R that pops RAY up. */
+function installPopupShortcuts() {
+  if (os.platform() !== 'win32') return;
+  const chrome = findChromeBinary();
+  const url = rayAppUrl({ popup: 1, listen: 1 });
+  if (!chrome || !url) return;
+  const lnk = path.join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'RAY.lnk');
+  const q = (s) => String(s).replace(/'/g, "''");
+  const ps =
+    "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('" + q(lnk) + "');" +
+    "$s.TargetPath='" + q(chrome) + "';$s.Arguments='--app=" + q(url) + " --window-size=470,780';" +
+    "$s.Hotkey='CTRL+ALT+R';$s.Description='RAY assistant';$s.Save()";
+  execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { timeout: 20000, windowsHide: true }, () => {});
+}
+
+/** Android: a permanent "RAY is running" notification with Open / Ask buttons. */
+function showPersistentPhoneNotification() {
+  if (!IS_TERMUX) return;
+  const url = rayAppUrl({ popup: 1, listen: 1 });
+  const ask = path.join(os.homedir(), '.shortcuts', 'Ask RAY');
+  execFile('termux-notification', [
+    '--id', 'ray-persistent', '--ongoing', '--priority', 'low', '--alert-once',
+    '--title', 'RAY is running', '--content', 'Tap to open RAY · Ask by voice',
+    '--action', 'termux-open-url "' + url + '"',
+    '--button1', 'Open RAY', '--button1-action', 'termux-open-url "' + url + '"',
+    '--button2', 'Ask RAY', '--button2-action', 'sh "' + ask + '"',
+  ], { timeout: 10000 }, () => {});
+}
+
+// --- Browser hands (Chrome DevTools Protocol) --------------------------------
+const CDP_PORT = Number(process.env.RAY_CDP_PORT || 9333);
+const cdpState = { visible: { port: CDP_PORT, current: null }, background: { port: CDP_PORT + 1, current: null } };
+
+async function cdpJson(port, p, method) {
+  const r = await fetch('http://127.0.0.1:' + port + p, { method: method || 'GET', signal: AbortSignal.timeout(4000) });
+  return r.json();
+}
+
+async function ensureCdpBrowser(background) {
+  const st = background ? cdpState.background : cdpState.visible;
+  try { await cdpJson(st.port, '/json/version'); return st; } catch {}
+  const chrome = findChromeBinary();
+  if (!chrome) throw new Error('No Chrome/Edge/Brave found on this PC (set RAY_CHROME_PATH).');
+  const profile = path.join(CONFIG_DIR, background ? 'browser-profile-bg' : 'browser-profile');
+  fs.mkdirSync(profile, { recursive: true });
+  const args = ['--remote-debugging-port=' + st.port, '--user-data-dir=' + profile, '--no-first-run', '--no-default-browser-check', '--disable-features=Translate'];
+  if (background) args.push('--headless=new', '--window-size=1280,900');
+  if (process.getuid && process.getuid() === 0) args.push('--no-sandbox');
+  args.push('about:blank');
+  spawn(chrome, args, { detached: true, stdio: 'ignore', windowsHide: !!background }).unref();
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 300));
+    try { await cdpJson(st.port, '/json/version'); return st; } catch {}
+  }
+  throw new Error('Browser did not start with remote control enabled.');
+}
+
+function cdpConnect(wsUrl) {
+  return new Promise((resolve, reject) => {
+    const sock = new WebSocket(wsUrl, { perMessageDeflate: false, maxPayload: 64 * 1024 * 1024 });
+    let id = 0;
+    const pending = new Map();
+    sock.on('message', (raw) => {
+      let m; try { m = JSON.parse(raw.toString()); } catch { return; }
+      if (m.id && pending.has(m.id)) {
+        const p = pending.get(m.id); pending.delete(m.id);
+        if (m.error) p.rej(new Error(m.error.message)); else p.res(m.result);
+      }
+    });
+    sock.on('error', reject);
+    sock.on('open', () => resolve({
+      send: (method, params) => new Promise((res, rej) => {
+        const i = ++id; pending.set(i, { res, rej });
+        sock.send(JSON.stringify({ id: i, method, params: params || {} }));
+        setTimeout(() => { if (pending.has(i)) { pending.delete(i); rej(new Error('Browser timeout: ' + method)); } }, 25000);
+      }),
+      close: () => { try { sock.close(); } catch {} },
+    }));
+  });
+}
+
+async function cdpPage(st, wantId) {
+  const list = (await cdpJson(st.port, '/json/list')).filter((t) => t.type === 'page');
+  let t = list.find((x) => x.id === (wantId || st.current)) || list[0];
+  if (!t) t = await cdpJson(st.port, '/json/new?about:blank', 'PUT');
+  st.current = t.id;
+  return { target: t, s: await cdpConnect(t.webSocketDebuggerUrl) };
+}
+
+async function cdpEval(s, fn, arg) {
+  const expr = '(' + fn.toString() + ')(' + JSON.stringify(arg === undefined ? null : arg) + ')';
+  const r = await s.send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true });
+  if (r.exceptionDetails) throw new Error('Page script error: ' + (r.exceptionDetails.text || 'unknown'));
+  return r.result ? r.result.value : undefined;
+}
+
+async function cdpWaitLoad(s, ms) {
+  const end = Date.now() + (ms || 15000);
+  await new Promise((r) => setTimeout(r, 400));
+  while (Date.now() < end) {
+    try { if ((await cdpEval(s, () => document.readyState)) === 'complete') break; } catch {}
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  await new Promise((r) => setTimeout(r, 500));
+}
+
+// Runs inside the page: number every visible interactive element and return the page text.
+function pageReadScript() {
+  document.querySelectorAll('[data-ray-id]').forEach((e) => e.removeAttribute('data-ray-id'));
+  const sel = 'a[href],button,input,textarea,select,[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[role=option],[role=searchbox],[role=textbox],[contenteditable=true],summary';
+  const out = [];
+  let n = 0;
+  for (const el of document.querySelectorAll(sel)) {
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) continue;
+    const st = getComputedStyle(el);
+    if (st.visibility === 'hidden' || st.display === 'none' || Number(st.opacity) === 0) continue;
+    if (r.bottom < -50 || r.top > innerHeight * 2) continue;
+    const label = String(el.getAttribute('aria-label') || el.innerText || el.value || el.placeholder || el.title || el.name || el.alt || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+    n++;
+    el.setAttribute('data-ray-id', String(n));
+    out.push({ i: n, tag: el.tagName.toLowerCase(), type: el.type ? String(el.type) : undefined, label, href: el.href ? String(el.href).slice(0, 120) : undefined, inView: r.top >= 0 && r.bottom <= innerHeight });
+    if (n >= 140) break;
+  }
+  const text = (document.body ? document.body.innerText : '').replace(/\n{3,}/g, '\n\n').slice(0, 14000);
+  return { title: document.title, url: location.href, text, elements: out, scrollY: Math.round(scrollY), scrollMax: Math.max(0, document.documentElement.scrollHeight - innerHeight) };
+}
+
+function pageLocateScript(q) {
+  let el = q.i ? document.querySelector('[data-ray-id="' + q.i + '"]') : null;
+  if (!el && q.text) {
+    const want = String(q.text).toLowerCase();
+    el = [...document.querySelectorAll('a,button,input,textarea,[role=button],[role=link],[role=tab],[role=menuitem],summary,label')].find((e) =>
+      String(e.getAttribute('aria-label') || e.innerText || e.value || e.placeholder || '').toLowerCase().includes(want)
+    ) || null;
+  }
+  if (!el) return null;
+  el.scrollIntoView({ block: 'center', inline: 'center' });
+  const r = el.getBoundingClientRect();
+  return { x: r.left + r.width / 2, y: r.top + r.height / 2, password: el.type === 'password', tag: el.tagName.toLowerCase() };
+}
+
+async function cdpClickAt(s, x, y) {
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+  await s.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+  await s.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+}
+
+const CDP_KEYS = { enter: ['Enter', 13, '\r'], tab: ['Tab', 9, ''], escape: ['Escape', 27, ''], backspace: ['Backspace', 8, ''], arrowdown: ['ArrowDown', 40, ''], arrowup: ['ArrowUp', 38, ''], pagedown: ['PageDown', 34, ''], pageup: ['PageUp', 33, ''] };
+async function cdpKey(s, name) {
+  const k = CDP_KEYS[String(name || 'enter').toLowerCase()] || CDP_KEYS.enter;
+  await s.send('Input.dispatchKeyEvent', { type: 'keyDown', key: k[0], code: k[0], windowsVirtualKeyCode: k[1], text: k[2] || undefined });
+  await s.send('Input.dispatchKeyEvent', { type: 'keyUp', key: k[0], code: k[0], windowsVirtualKeyCode: k[1] });
+}
+
+async function browserAction(req) {
+  if (IS_TERMUX) return { ok: false, error: 'Browser hands run on the PC bridge.' };
+  const op = String(req.op || 'read');
+  const background = Boolean(req.background);
+  const st = await ensureCdpBrowser(background);
+  if (op === 'tabs') {
+    const list = (await cdpJson(st.port, '/json/list')).filter((t) => t.type === 'page');
+    return { ok: true, data: { tabs: list.map((t) => ({ id: t.id, title: t.title, url: t.url, current: t.id === st.current })) } };
+  }
+  if (op === 'new_tab' || (op === 'open' && req.newTab)) {
+    const url = req.url ? validateSafeUrl(String(req.url), true) : 'about:blank';
+    const t = await cdpJson(st.port, '/json/new?' + encodeURIComponent(url), 'PUT');
+    st.current = t.id;
+  }
+  if (op === 'close_tab') {
+    await cdpJson(st.port, '/json/close/' + encodeURIComponent(String(req.tabId || st.current)));
+    st.current = null;
+    return { ok: true, data: { closed: true } };
+  }
+  const { target, s } = await cdpPage(st, req.tabId);
+  try {
+    if (op === 'switch_tab') await cdpJson(st.port, '/json/activate/' + target.id);
+    if (op === 'open' && !req.newTab) {
+      const url = validateSafeUrl(String(req.url || ''), true);
+      await s.send('Page.navigate', { url });
+    }
+    if (op === 'open' || op === 'new_tab') await cdpWaitLoad(s, 20000);
+    if (op === 'click') {
+      const loc = await cdpEval(s, pageLocateScript, { i: req.i, text: req.text });
+      if (!loc) return { ok: false, error: 'Element not found: ' + (req.i || req.text) };
+      await new Promise((r) => setTimeout(r, 250));
+      await cdpClickAt(s, loc.x, loc.y);
+      await cdpWaitLoad(s, 12000);
+    }
+    if (op === 'type') {
+      const loc = await cdpEval(s, pageLocateScript, { i: req.i, text: req.label });
+      if (!loc) return { ok: false, error: 'Field not found: ' + (req.i || req.label) };
+      if (loc.password) return { ok: false, error: 'RAY never types into password fields — Ray must type it.' };
+      await cdpClickAt(s, loc.x, loc.y);
+      if (req.clear !== false) {
+        await cdpEval(s, () => { const e = document.activeElement; if (e && 'value' in e) { e.value = ''; e.dispatchEvent(new Event('input', { bubbles: true })); } else if (e && e.isContentEditable) e.textContent = ''; });
+      }
+      await s.send('Input.insertText', { text: String(req.value || req.textToType || '') });
+      if (req.submit) { await cdpKey(s, 'enter'); await cdpWaitLoad(s, 12000); }
+    }
+    if (op === 'key') { await cdpKey(s, req.key); await cdpWaitLoad(s, 8000); }
+    if (op === 'scroll') { await cdpEval(s, (dy) => scrollBy(0, dy), Number(req.dy || 700)); await new Promise((r) => setTimeout(r, 500)); }
+    if (op === 'back') { await cdpEval(s, () => history.back()); await cdpWaitLoad(s, 10000); }
+    let shot;
+    if (op === 'screenshot' || req.screenshot) {
+      const r = await s.send('Page.captureScreenshot', { format: 'jpeg', quality: 55 });
+      shot = 'data:image/jpeg;base64,' + r.data;
+    }
+    const page = await cdpEval(s, pageReadScript);
+    return { ok: true, data: { ...page, tabId: target.id, screenshot: shot } };
+  } finally {
+    s.close();
+  }
+}
+
+// --- Diagnose & repair -------------------------------------------------------
+function execOut(cmd, args, timeout) {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { timeout: timeout || 20000, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) =>
+      resolve({ ok: !err, out: String(stdout || '').trim(), err: String(stderr || (err && err.message) || '').trim() })
+    );
+  });
+}
+
+function diskInfo() {
+  const roots = os.platform() === 'win32' ? ['C:\\', os.homedir()] : IS_TERMUX ? [os.homedir(), '/storage/emulated/0'] : ['/', os.homedir()];
+  const seen = new Set();
+  const out = [];
+  for (const r of roots) {
+    try {
+      const s = fs.statfsSync(r);
+      const total = s.blocks * s.bsize, free = s.bavail * s.bsize;
+      const key = total + ':' + free;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ path: r, freeGb: +(free / 1e9).toFixed(1), totalGb: +(total / 1e9).toFixed(1), freePct: Math.round((free / Math.max(1, total)) * 100) });
+    } catch {}
+  }
+  return out;
+}
+
+function dirSizeMb(dir, limit) {
+  let bytes = 0, n = 0;
+  const walk = (d, depth) => {
+    if (n > (limit || 20000) || depth > 6) return;
+    let ents = [];
+    try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      n++;
+      const p = path.join(d, e.name);
+      try {
+        if (e.isDirectory()) walk(p, depth + 1);
+        else bytes += fs.statSync(p).size;
+      } catch {}
+    }
+  };
+  walk(dir, 0);
+  return Math.round(bytes / 1e6);
+}
+
+async function diagnoseDevice() {
+  const report = {
+    device: DEVICE_NAME, platform: PLATFORM, bridgeVersion: BRIDGE_VERSION, uptimeHours: Math.round(os.uptime() / 360) / 10,
+    disks: diskInfo(), memory: { freeMb: Math.round(os.freemem() / 1e6), totalMb: Math.round(os.totalmem() / 1e6) },
+    tempMb: dirSizeMb(os.tmpdir()), issues: [],
+  };
+  report.memory.usedPct = Math.round((1 - report.memory.freeMb / Math.max(1, report.memory.totalMb)) * 100);
+  try {
+    const t0 = Date.now();
+    const r = await fetch('https://www.gstatic.com/generate_204', { signal: AbortSignal.timeout(6000) });
+    report.internet = { ok: r.status === 204 || r.ok, latencyMs: Date.now() - t0 };
+  } catch (e) {
+    report.internet = { ok: false, error: String(e.message || e).slice(0, 120) };
+  }
+  report.ollama = { running: ollamaState.running, models: ollamaState.models.length };
+  report.topProcesses = await new Promise((res) => sampleTopProcesses((p) => res((p || []).slice(0, 8))));
+  if (os.platform() === 'win32') {
+    const nr = await execOut('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Get-Process | ? { $_.MainWindowHandle -ne 0 -and -not $_.Responding } | select -ExpandProperty ProcessName']);
+    report.notResponding = nr.out ? nr.out.split(/\r?\n/).filter(Boolean) : [];
+    const ev = await execOut('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      "Get-WinEvent -FilterHashtable @{LogName='Application';Level=2;StartTime=(Get-Date).AddHours(-24)} -MaxEvents 40 -ErrorAction SilentlyContinue | Group-Object ProviderName | sort Count -desc | select -First 6 Count,Name | ConvertTo-Json -Compress"], 30000);
+    try { report.recentAppErrors = ev.out ? [].concat(JSON.parse(ev.out)) : []; } catch { report.recentAppErrors = []; }
+  }
+  if (IS_TERMUX) {
+    const b = await execOut('termux-battery-status', [], 8000);
+    try { report.battery = JSON.parse(b.out); } catch {}
+  }
+  for (const d of report.disks) if (d.freePct < 10) report.issues.push('Low disk space on ' + d.path + ' (' + d.freeGb + ' GB free)');
+  if (report.memory.usedPct > 90) report.issues.push('Memory almost full (' + report.memory.usedPct + '% used)');
+  if (!report.internet.ok) report.issues.push('No internet from this device');
+  if (report.tempMb > 2000) report.issues.push('Temp files use ' + report.tempMb + ' MB');
+  if (report.notResponding && report.notResponding.length) report.issues.push('Not responding: ' + report.notResponding.join(', '));
+  if (report.battery && report.battery.percentage < 15 && report.battery.status !== 'CHARGING') report.issues.push('Battery low (' + report.battery.percentage + '%)');
+  return report;
+}
+
+function cleanTempFiles() {
+  const dir = IS_TERMUX ? path.join(process.env.PREFIX || '', 'tmp') : os.tmpdir();
+  const cutoff = Date.now() - 48 * 3600_000;
+  let freed = 0, removed = 0, skipped = 0;
+  const walk = (d, depth) => {
+    let ents = [];
+    try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      const p = path.join(d, e.name);
+      try {
+        const st = fs.lstatSync(p);
+        if (e.isDirectory() && !st.isSymbolicLink()) { if (depth < 5) walk(p, depth + 1); try { fs.rmdirSync(p); } catch {} continue; }
+        if (st.mtimeMs > cutoff) { skipped++; continue; }
+        fs.unlinkSync(p); freed += st.size; removed++;
+      } catch { skipped++; }
+    }
+  };
+  walk(dir, 0);
+  return { folder: dir, removedFiles: removed, freedMb: Math.round(freed / 1e6), skippedInUseOrRecent: skipped };
+}
+
+const SAFE_NAME = /^[a-zA-Z0-9 ._+-]{1,64}$/;
+async function repairAction(req) {
+  const fix = String(req.fix || '');
+  const target = String(req.target || '').trim();
+  const win = os.platform() === 'win32';
+  if (fix === 'clear_temp') return { ok: true, data: cleanTempFiles() };
+  if (fix === 'flush_dns') {
+    const r = win ? await execOut('ipconfig', ['/flushdns']) : os.platform() === 'darwin' ? await execOut('dscacheutil', ['-flushcache']) : await execOut('resolvectl', ['flush-caches']);
+    return { ok: r.ok, data: r.out.slice(0, 400), error: r.ok ? undefined : r.err.slice(0, 300) };
+  }
+  if (fix === 'renew_ip' && win) {
+    await execOut('ipconfig', ['/release'], 30000);
+    const r = await execOut('ipconfig', ['/renew'], 60000);
+    return { ok: r.ok, data: 'Network address renewed', error: r.ok ? undefined : r.err.slice(0, 300) };
+  }
+  if (fix === 'kill_not_responding' && win) {
+    const r = await execOut('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      "Get-Process | ? { $_.MainWindowHandle -ne 0 -and -not $_.Responding -and $_.ProcessName -notmatch '^(explorer|csrss|winlogon|dwm|lsass|services|svchost|System)$' } | % { $_.ProcessName; Stop-Process -Id $_.Id -Force }"]);
+    return { ok: true, data: r.out ? 'Closed frozen apps: ' + r.out.split(/\r?\n/).join(', ') : 'No frozen apps found' };
+  }
+  if (fix === 'restart_explorer' && win) {
+    await execOut('taskkill', ['/F', '/IM', 'explorer.exe']);
+    spawn('explorer.exe', [], { detached: true, stdio: 'ignore' }).unref();
+    return { ok: true, data: 'Restarted Windows Explorer (taskbar/desktop)' };
+  }
+  if (fix === 'restart_app') {
+    if (!SAFE_NAME.test(target) || isProtected(target)) return { ok: false, error: 'Cannot restart ' + target };
+    const exe = target.replace(/\.exe$/i, '');
+    if (win) await execOut('taskkill', ['/F', '/IM', exe + '.exe']);
+    else await execOut('pkill', ['-f', exe]);
+    await new Promise((r) => setTimeout(r, 1500));
+    return await new Promise((res) => launchAppSafely(exe, (m, ok) => res({ ok, data: 'Restarted ' + exe + ': ' + m, error: ok ? undefined : m })));
+  }
+  if (fix === 'update_app') {
+    if (!SAFE_NAME.test(target)) return { ok: false, error: 'Invalid app name' };
+    const r = win ? await execOut('winget', ['upgrade', '--name', target, '--silent', '--accept-package-agreements', '--accept-source-agreements'], 600000)
+      : IS_TERMUX ? await execOut('pkg', ['install', '-y', target], 600000)
+      : os.platform() === 'darwin' ? await execOut('brew', ['upgrade', target], 600000)
+      : { ok: false, out: '', err: 'Use your package manager to update ' + target };
+    return { ok: r.ok, data: (r.out || '').slice(-600), error: r.ok ? undefined : (r.err || r.out).slice(-400) };
+  }
+  if (fix === 'restart_ollama') {
+    if (win) await execOut('taskkill', ['/F', '/IM', 'ollama.exe']); else await execOut('pkill', ['-x', 'ollama']);
+    ollamaState.autoStartAttempted = false;
+    await ensureOllamaRunning(true);
+    return { ok: true, data: 'Ollama restarted: ' + (ollamaState.running ? 'running' : 'not running') };
+  }
+  if (fix === 'restart_bridge') {
+    setTimeout(() => process.exit(0), 1200);
+    return { ok: true, data: 'RAY bridge restarting (back in ~10 s)' };
+  }
+  if (fix === 'self_update') return await selfUpdateBridge();
+  if (fix === 'restore_file') return restoreFileVersion(String(req.path || target), req.version);
+  return { ok: false, error: 'Unknown or unsupported repair on this device: ' + fix };
+}
+
+async function selfUpdateBridge() {
+  try {
+    const u = new URL(rayAppUrl());
+    u.pathname = '/api/bridge-script';
+    u.searchParams.set('token', ROOM_TOKEN);
+    const r = await fetch(u.toString(), { signal: AbortSignal.timeout(30000) });
+    const code = await r.text();
+    if (!r.ok || !code.includes('RAY Device Bridge')) return { ok: false, error: 'Download failed (' + r.status + ')' };
+    const ver = (code.match(/BRIDGE_VERSION = '([^']+)'/) || [])[1] || '?';
+    const self = fileURLToPath(import.meta.url);
+    fs.copyFileSync(self, self + '.bak');
+    fs.writeFileSync(self, code, 'utf8');
+    setTimeout(() => process.exit(0), 1500);
+    return { ok: true, data: 'Updated bridge ' + BRIDGE_VERSION + ' → ' + ver + '; restarting' };
+  } catch (e) {
+    return { ok: false, error: 'Self-update failed: ' + (e.message || e) };
+  }
+}
+
+// --- File versions: RAY backs up a file before it overwrites it ---------------
+const BACKUP_DIR = path.join(CONFIG_DIR, 'file-versions');
+function backupKey(p) { return crypto.createHash('sha1').update(path.resolve(p)).digest('hex').slice(0, 16); }
+function backupBeforeWrite(target) {
+  try {
+    if (!fs.existsSync(target) || fs.statSync(target).size > 20 * 1024 * 1024) return;
+    const dir = path.join(BACKUP_DIR, backupKey(target));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'path.txt'), path.resolve(target));
+    fs.copyFileSync(target, path.join(dir, Date.now() + '.bak'));
+    const vers = fs.readdirSync(dir).filter((f) => f.endsWith('.bak')).sort();
+    for (const old of vers.slice(0, Math.max(0, vers.length - 10))) fs.unlinkSync(path.join(dir, old));
+  } catch {}
+}
+function listFileVersions(p) {
+  const dir = path.join(BACKUP_DIR, backupKey(p));
+  if (!fs.existsSync(dir)) return { ok: true, data: { path: p, versions: [] } };
+  const versions = fs.readdirSync(dir).filter((f) => f.endsWith('.bak')).sort().reverse().map((f) => ({ version: f.replace('.bak', ''), savedAt: new Date(Number(f.replace('.bak', ''))).toISOString(), bytes: fs.statSync(path.join(dir, f)).size }));
+  return { ok: true, data: { path: p, versions } };
+}
+function restoreFileVersion(p, version) {
+  const target = resolveSafeFsPath(p, false);
+  const dir = path.join(BACKUP_DIR, backupKey(target));
+  if (!fs.existsSync(dir)) return { ok: false, error: 'RAY has no saved versions of ' + target };
+  const vers = fs.readdirSync(dir).filter((f) => f.endsWith('.bak')).sort();
+  const pick = version ? vers.find((v) => v.startsWith(String(version))) : vers[vers.length - 1];
+  if (!pick) return { ok: false, error: 'Version not found' };
+  backupBeforeWrite(target);
+  fs.copyFileSync(path.join(dir, pick), target);
+  return { ok: true, data: { restored: target, from: new Date(Number(pick.replace('.bak', ''))).toISOString() } };
+}
+
+async function jarvisAction(action, req) {
+  if (action === 'browser') return await browserAction(req);
+  if (action === 'diagnose') return { ok: true, data: await diagnoseDevice() };
+  if (action === 'repair') return await repairAction(req);
+  if (action === 'file_versions') return listFileVersions(resolveSafeFsPath(String(req.path || ''), false));
+  if (action === 'popup') return await new Promise((res) => openRayPopup(String(req.reason || ''), (m, ok) => res({ ok, data: m, error: ok ? undefined : m })));
+  return null;
+}
+
 async function runBridgeAction(action, reqData) {
   try {
+    const jv = await jarvisAction(action, reqData || {});
+    if (jv) return jv;
     if (action === 'ollama_tags') {
       const targetBase = new URL(reqData.ollamaUrl || OLLAMA_HOST);
       if (!['127.0.0.1', 'localhost'].includes(targetBase.hostname)) {
@@ -1556,6 +2048,7 @@ async function runBridgeAction(action, reqData) {
     if (action === 'fs_write_file') {
       const target = resolveSafeFsPath(reqData.filePath || reqData.path || '', false);
       fs.mkdirSync(path.dirname(target), { recursive: true });
+      backupBeforeWrite(target); // self-healing: every overwrite can be undone with restore_file
       fs.writeFileSync(target, String(reqData.content || ''), 'utf8');
       return { ok: true, data: { path: target, saved: true, bytes: Buffer.byteLength(String(reqData.content || ''), 'utf8') } };
     }
@@ -2181,7 +2674,8 @@ function executeDeviceCommand(cmd, ack, ws) {
   } else if (cmd.type === 'call') {
     ringThisDevice(cmd.payload || {}, (out, ok) => ack(ok ? 'completed' : 'failed', out));
   } else if (cmd.type === 'wake') {
-    ack('completed', DEVICE_NAME + ' is awake');
+    if (cmd.payload && cmd.payload.popup) openRayPopup(String(cmd.payload.reason || ''), (m) => ack('completed', DEVICE_NAME + ': ' + m));
+    else ack('completed', DEVICE_NAME + ' is awake');
   } else if (cmd.type === 'refresh_telemetry') {
     sampleTopProcesses((procs) => {
       const t = getTelemetry(procs);
@@ -2283,8 +2777,9 @@ function connect() {
           'os-bridge', 'open_application', 'close_application', 'kill_process',
           'adjust_volume', 'obsidian-vault', 'ollama-proxy', 'fs-sandbox', 'wake-on-lan', 'chat-compose', 'calls', 'coding-agents',
         ];
+        caps.push('diagnose', 'repair', 'popup', 'file-versions');
         if (IS_TERMUX) caps.push('notifications-relay');
-        else caps.push('screen-control', 'clean_slate', 'optimize_system', 'computer-use');
+        else caps.push('screen-control', 'clean_slate', 'optimize_system', 'computer-use', 'browser-agent');
         ws.send(JSON.stringify({
           event: 'device:register',
           data: {
@@ -2295,7 +2790,7 @@ function connect() {
             browser: 'Node.js ' + process.version,
             capabilities: caps,
             macAddress: getPrimaryMac(),
-            telemetry: { ...getTelemetry(procs), ollamaRunning: ollamaState.running, ollamaModels: ollamaState.models, installedAppCount: apps.length },
+            telemetry: { ...getTelemetry(procs), bridgeVersion: BRIDGE_VERSION, ollamaRunning: ollamaState.running, ollamaModels: ollamaState.models, installedAppCount: apps.length },
           },
         }));
       });
@@ -2358,3 +2853,15 @@ startLanHub();
 startLanClient();
 startNotificationRelay();
 connect();
+
+// Always there: phone keeps a "RAY is running" notification; PC gets Ctrl+Alt+R and pops RAY up
+// after boot so "Hey Ray" works right away (set RAY_POPUP_ON_BOOT=0 to turn that off).
+showPersistentPhoneNotification();
+setInterval(showPersistentPhoneNotification, 30 * 60_000).unref?.();
+installPopupShortcuts();
+if (!IS_TERMUX && process.env.RAY_POPUP_ON_BOOT !== '0' && os.uptime() < 15 * 60 && !loadSavedBridgeConfig().popupShownBoot?.startsWith(String(Math.round(Date.now() / 1000 - os.uptime())).slice(0, 7))) {
+  setTimeout(() => {
+    saveBridgeConfig({ popupShownBoot: String(Math.round(Date.now() / 1000 - os.uptime())) });
+    openRayPopup('startup');
+  }, 20000);
+}

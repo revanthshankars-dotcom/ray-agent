@@ -78,6 +78,15 @@ RAY runs the coding agents installed on your PC — **Claude Code, Codex CLI, Ge
 - **Self-healing**: a watchdog re-wakes offline bridges and devices with stuck commands, notices failing engines (RAY already routes around them) and writes *System → System Health*, alerting you only on new problems.
 - **Self-building**: ask RAY to improve itself and it runs a coding agent in your local `ray-agent` folder; you review and push.
 
+## JARVIS layer (bridge 3.1)
+
+- **Browser hands** — RAY drives a real Chrome/Edge on your PC (its own "RAY" profile — sign in there once). `browse_web` reads pages as text + numbered buttons/fields and a free model picks one step at a time (open, click, type, scroll, note, done). *Research* mode runs hidden and returns an answer with sources; *Do* mode (forms, bookings, settings) needs one Approve. It never types into password fields and never pays or posts on its own. With the PC offline, research falls back to the cloud.
+- **Real self-learning** — every morning (05:30 local, change in JARVIS Core) RAY researches its *Learning Topics* plus questions it couldn't answer, writes dated `Knowledge/<topic>` notes with sources and a *Daily Briefing*, and pulls the relevant notes into later answers. Its failed actions and your corrections ("no, I meant…") are distilled into *Memory → Lessons*, rules it follows from then on. "Learn about X" / "keep up with X" adds a topic.
+- **Mission mode** — one command, whole job: up to 12 tool rounds; when a step fails RAY reflects and tries alternatives (another device, wake it first, the browser, the mouse) before reporting exactly what is blocked.
+- **Self-healing** — "fix my PC / my internet is broken / Chrome keeps freezing / free up space": RAY diagnoses (disk, memory, internet, frozen apps, crash log, temp, battery), plans fixes from a safe catalogue (clear old temp files, flush DNS, renew IP, close frozen apps, restart Explorer/an app, update an app via winget/brew/pkg, restart Ollama/the bridge, restore a file), asks once, runs them, re-checks and logs *System → Repairs*. Every file RAY overwrites is versioned (last 10) so `restore_file` can undo it. Bridges update themselves when the server has a newer version.
+- **Always there** — the bridge starts on boot; on the PC **Ctrl+Alt+R** (Start-menu shortcut "RAY") pops up a compact RAY window that starts listening, and RAY opens itself once after boot so "Hey Ray" works (`RAY_POPUP_ON_BOOT=0` to disable). On Android a permanent "RAY is running" notification has *Open RAY* / *Ask RAY* buttons. "Open RAY on my phone" pops it up on another device.
+- **JARVIS Core** page — abilities, learning topics & knowledge, lessons & memory, per-device health (Diagnose / Fix), repair journal, Autopilot.
+
 ## Highlights
 
 - **Engine router** (`server/engines/`): 13 free providers, per-task model choice, automatic failover on 429/limits, parallel small-agent "swarm" near daily quotas.

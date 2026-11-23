@@ -22,6 +22,7 @@ import { loadJson, scheduleSave } from './persistence.ts';
 import { getEngineStatus } from './engines/providers.ts';
 import { quickComplete } from './engines/router.ts';
 import { listScheduledCalls } from './calls.ts';
+import { autoUpdateBridges } from './repair.ts';
 
 export type AutopilotLevel = 'off' | 'observe' | 'assist';
 export interface AutopilotSettings {
@@ -44,6 +45,10 @@ const SAFE_TOOLS = new Set([
   'read_incoming_messages',
   'search_file_index',
   'get_device_telemetry',
+  'diagnose_device',
+  'learn_about',
+  'read_web_page',
+  'web_search',
 ]);
 
 function tzOffsetMin(): number {
@@ -250,6 +255,12 @@ async function watchdog(roomId: string) {
       void dispatchDeviceCommand({ roomId, type: 'wake', targetQuery: d.id, source: 'assistant', payload: {}, waitForAckMs: 300 });
     }
     if ((d.queuedCount || 0) > 0 && Date.now() - d.lastSeen > 60 * 60_000) issues.push(`${d.name}: ${d.queuedCount} command(s) waiting over an hour`);
+  }
+  // Heal RAY itself: outdated bridges update themselves to the server's version.
+  try {
+    for (const u of await autoUpdateBridges(roomId)) issues.push(`Updated RAY bridge ${u}`);
+  } catch {
+    /* best-effort */
   }
   for (const e of getEngineStatus()) {
     if (e.configured && e.failuresToday >= 5 && e.requestsToday === 0) {

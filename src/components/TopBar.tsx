@@ -2,7 +2,7 @@ import React from 'react';
 import { OctagonX } from 'lucide-react';
 import { PWAInstallButton } from './PWAInstallButton';
 
-export type ActiveTab = 'dashboard' | 'assistant' | 'brain' | 'files' | 'apps' | 'devices' | 'routines' | 'handoff' | 'connect' | 'brain3d';
+export type ActiveTab = 'dashboard' | 'assistant' | 'brain' | 'files' | 'apps' | 'devices' | 'routines' | 'handoff' | 'connect' | 'brain3d' | 'jarvis';
 
 interface TopBarProps {
   activeTab: ActiveTab;
@@ -15,6 +15,7 @@ interface TopBarProps {
 const NAV_ITEMS: Array<{ id: ActiveTab; label: string }> = [
   { id: 'dashboard', label: 'Home' },
   { id: 'assistant', label: 'Assistant' },
+  { id: 'jarvis', label: 'JARVIS Core' },
   { id: 'brain', label: 'Notes' },
   { id: 'brain3d', label: '3D Brain' },
   { id: 'files', label: 'Files & OS' },
@@ -42,7 +43,13 @@ export const TopBar: React.FC<TopBarProps> = ({
         RAY
       </button>
 
-      <nav className="hidden md:flex items-center gap-5">
+      {/* Large screens use the sidebar for navigation; show where you are instead. */}
+      <div className="hidden lg:flex items-center gap-2 mr-auto min-w-0 text-sm">
+        <span className="text-slate-300 dark:text-slate-700">/</span>
+        <span className="font-medium text-slate-700 dark:text-slate-200 truncate">{NAV_ITEMS.find((n) => n.id === activeTab)?.label}</span>
+      </div>
+
+      <nav className="hidden md:flex lg:hidden items-center gap-5 overflow-x-auto">
         {NAV_ITEMS.map((item) => {
           const active = activeTab === item.id;
           return (

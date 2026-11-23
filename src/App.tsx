@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Blocks, Bot, Brain, Cable, Orbit, ClipboardList, FolderOpen, Home, Layers, LayoutGrid, MonitorSmartphone, X } from 'lucide-react';
+import { Blocks, Bot, Brain, Cable, Orbit, ClipboardList, ExternalLink, FolderOpen, Home, Layers, LayoutGrid, Mic, MonitorSmartphone, Sparkles, X } from 'lucide-react';
 import { TopBar } from './components/TopBar';
 import type { ActiveTab } from './components/TopBar';
 import { Sidebar } from './components/Sidebar';
@@ -18,6 +18,7 @@ import { usePWAInstall } from './hooks/usePWAInstall';
 import { useDeviceCall } from './hooks/useDeviceCall';
 import { CallScreen } from './components/CallScreen';
 import { AgentRunPanel } from './components/AgentRunPanel';
+import { JarvisView } from './components/JarvisView';
 import { PairDeviceModal } from './components/PairDeviceModal';
 import { CameraModal } from './components/CameraModal';
 import { IncomingCommandBar } from './components/IncomingCommandBar';
@@ -126,9 +127,13 @@ function loadInitialEngineSettings(): EngineSettings {
 export default function App() {
   const [roomId, setRoomId] = useState<string>(getInitialRoomId);
   // Opened from the pairing QR (…&connect=1) → go straight to the one-tap connect screen.
-  const [activeTab, setActiveTab] = useState<ActiveTab>(() =>
-    typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('connect') ? 'connect' : 'dashboard'
-  );
+  // Pop-up mode (?popup=1): the compact RAY window opened by Ctrl+Alt+R, "Hey Ray" or another device.
+  const [popupMode] = useState(() => typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('popup'));
+  const [activeTab, setActiveTab] = useState<ActiveTab>(() => {
+    if (typeof window === 'undefined') return 'dashboard';
+    const q = new URLSearchParams(window.location.search);
+    return q.has('popup') ? 'assistant' : q.has('connect') ? 'connect' : 'dashboard';
+  });
   const [pairModalOpen, setPairModalOpen] = useState(false);
   const [manualCameraOpen, setManualCameraOpen] = useState(false);
   const [darkMode, setDarkMode] = useState<boolean>(() => {
@@ -353,6 +358,16 @@ export default function App() {
     onConfirmationRequired: handleAddConfirmation,
     engineSettings,
   });
+
+  // Pop-up window opened with listen=1 (Ctrl+Alt+R, wake from another device): start listening at once.
+  useEffect(() => {
+    if (!popupMode || !new URLSearchParams(window.location.search).has('listen')) return;
+    const t = window.setTimeout(() => {
+      if (voiceState === 'off') void startLiveSession();
+    }, 900);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [popupMode]);
 
   // Track snapshot items & deleted items so Gemini tool creations sync to Firestore without resurrecting deletes
   const knownSnapshotIdsRef = useRef<Set<string>>(new Set());
@@ -894,6 +909,36 @@ export default function App() {
 
   return (
     <div className="h-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-hidden">
+      {popupMode ? (
+        <header className="h-12 shrink-0 flex items-center gap-2.5 px-3 border-b border-slate-200 dark:border-slate-800 bg-white/90 dark:bg-slate-900/90 backdrop-blur">
+          <span className="relative w-7 h-7 rounded-full bg-gradient-to-br from-blue-500 to-violet-600 grid place-items-center shadow shadow-blue-600/30">
+            <Bot className="w-4 h-4 text-white" />
+          </span>
+          <div className="min-w-0 leading-tight">
+            <p className="text-sm font-semibold">RAY</p>
+            <p className="text-[11px] text-slate-500 truncate">
+              {voiceState === 'off' ? 'Ready — say “Hey Ray” or tap the mic' : voiceState === 'listening' ? 'Listening…' : voiceState === 'thinking' ? 'Thinking…' : voiceState === 'speaking' ? 'Speaking…' : 'Connecting…'}
+            </p>
+          </div>
+          <button
+            type="button"
+            aria-label={voiceState === 'off' ? 'Start listening' : 'Stop listening'}
+            onClick={() => (voiceState === 'off' ? void startLiveSession() : stopLiveSession(false))}
+            className={`ml-auto w-9 h-9 rounded-full grid place-items-center transition-colors ${voiceState === 'off' ? 'bg-blue-600 text-white hover:bg-blue-500' : 'bg-rose-500 text-white animate-pulse'}`}
+          >
+            <Mic className="w-4 h-4" />
+          </button>
+          <a
+            href={`/?room=${encodeURIComponent(roomId)}`}
+            target="_blank"
+            rel="noreferrer"
+            aria-label="Open the full RAY app"
+            className="w-9 h-9 rounded-full grid place-items-center text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
+          >
+            <ExternalLink className="w-4 h-4" />
+          </a>
+        </header>
+      ) : (
       <TopBar
         activeTab={activeTab}
         onSelectTab={setActiveTab}
@@ -901,10 +946,12 @@ export default function App() {
         onEmergencyStop={() => void handleEmergencyStopAll()}
         showEmergencyStop={showEmergencyStop}
       />
+      )}
 
       <OfflineIndicator />
 
       <div className="flex-1 flex min-h-0 overflow-hidden">
+        {!popupMode && (
         <Sidebar
           activeTab={activeTab}
           onSelectTab={setActiveTab}
@@ -932,13 +979,14 @@ export default function App() {
             setMessages([]);
           }}
         />
+        )}
 
         <main
-          className={`flex-1 min-w-0 pb-[calc(3.5rem+env(safe-area-inset-bottom))] md:pb-0 ${
+          className={`flex-1 min-w-0 ${popupMode ? '' : 'pb-[calc(3.5rem+env(safe-area-inset-bottom))]'} md:pb-0 ${
             activeTab === 'assistant' || activeTab === 'brain' ? 'overflow-hidden' : 'overflow-y-auto'
           }`}
         >
-          <div style={{ height: '233.656px', resize: 'vertical', overflow: 'auto', minHeight: '100%' }}>
+          <div className="h-full">
             {activeTab === 'dashboard' && (
             <DashboardView
               roomId={roomId}
@@ -995,6 +1043,7 @@ export default function App() {
 
           {activeTab === 'assistant' && (
             <AssistantView
+              compact={popupMode}
               roomId={roomId}
               userName={displayName}
               localDeviceName={identity.name}
@@ -1166,6 +1215,17 @@ export default function App() {
             />
           )}
 
+          {activeTab === 'jarvis' && (
+            <JarvisView
+              roomId={roomId}
+              devices={snapshot.devices}
+              onAskRay={(prompt) => {
+                setDraftPrompt(prompt);
+                setActiveTab('assistant');
+              }}
+            />
+          )}
+
           {activeTab === 'connect' && (
             <ConnectionsView
               roomId={roomId}
@@ -1209,6 +1269,7 @@ export default function App() {
         onToggleMute={deviceCall.toggleMute}
       />
 
+      {!popupMode && (<>
       {/* Mobile Bottom Nav — 4 primary destinations + "More" sheet (bigger tap targets) */}
       {moreNavOpen && (
         <div className="md:hidden fixed inset-0 z-40 bg-slate-950/50 backdrop-blur-sm" onClick={() => setMoreNavOpen(false)}>
@@ -1226,6 +1287,7 @@ export default function App() {
               {(
                 [
                   { id: 'brain', label: 'Notes', icon: Brain },
+                  { id: 'brain3d', label: '3D Brain', icon: Orbit },
                   { id: 'files', label: 'Files & OS', icon: FolderOpen },
                   { id: 'apps', label: 'Apps', icon: Blocks },
                   { id: 'devices', label: 'Devices', icon: MonitorSmartphone },
@@ -1262,7 +1324,7 @@ export default function App() {
           [
             { id: 'dashboard', label: 'Home', icon: Home },
             { id: 'assistant', label: 'RAY', icon: Bot },
-            { id: 'brain3d', label: '3D Brain', icon: Orbit },
+            { id: 'jarvis', label: 'Core', icon: Sparkles },
             { id: 'connect', label: 'Connect', icon: Cable },
           ] as const
         ).map((item) => {
@@ -1288,13 +1350,15 @@ export default function App() {
           type="button"
           onClick={() => setMoreNavOpen(true)}
           className={`h-14 flex flex-col items-center justify-center gap-1 text-[11px] font-medium ${
-            ['brain', 'files', 'apps', 'devices', 'routines', 'handoff'].includes(activeTab) ? 'text-blue-600 dark:text-blue-400' : 'text-slate-500 dark:text-slate-400'
+            ['brain', 'brain3d', 'files', 'apps', 'devices', 'routines', 'handoff'].includes(activeTab) ? 'text-blue-600 dark:text-blue-400' : 'text-slate-500 dark:text-slate-400'
           }`}
         >
           <span className="px-3 py-0.5"><LayoutGrid className="w-5 h-5" /></span>
           <span>More</span>
         </button>
       </nav>
+
+      </>)}
 
       <IncomingCommandBar actions={incomingActions} onDismiss={dismissAction} />
 

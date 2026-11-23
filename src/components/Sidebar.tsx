@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
+  Sparkles,
   Blocks,
   Bot,
   Brain,
@@ -69,6 +70,7 @@ function formatRemaining(endsAt: number, now: number): string {
 const SIDEBAR_NAV: Array<{ id: ActiveTab; label: string; icon: React.ComponentType<{ className?: string }> }> = [
   { id: 'dashboard', label: 'Home', icon: Home },
   { id: 'assistant', label: 'AI Assistant', icon: Bot },
+  { id: 'jarvis', label: 'JARVIS Core', icon: Sparkles },
   { id: 'brain', label: 'Second Brain', icon: Brain },
   { id: 'brain3d', label: '3D Brain Graph', icon: Orbit },
   { id: 'files', label: 'Files & OS', icon: FolderOpen },

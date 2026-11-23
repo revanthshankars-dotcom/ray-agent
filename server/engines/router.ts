@@ -73,7 +73,7 @@ export interface RouterChatInput {
 // ---------------------------------------------------------------------------
 
 const TOOL_HINTS =
-  /\b(codex|claude code|aider|coding agents?|teach|show me|how do i|how to|navigate|fill|settings?|call|ring|dial|wake|alarm|open|launch|start|close|kill|play|search|find|show|list|read|send|message|whatsapp|instagram|text|call|notify|remind|timer|alarm|tab|tabs|app|apps|file|files|folder|screen|screenshot|click|type|press|volume|clipboard|copy|phone|pc|laptop|desktop|device|note|brain|save|calendar|email|gmail|drive|task|todo|protocol|wake)\b/i;
+  /\b(research|learn about|learn|keep up with|study|browse|website|repair|fix my|fix the|diagnose|frozen|not responding|free up|disk space|internet|restore|undo|health|codex|claude code|aider|coding agents?|teach|show me|how do i|how to|navigate|fill|settings?|call|ring|dial|wake|alarm|open|launch|start|close|kill|play|search|find|show|list|read|send|message|whatsapp|instagram|text|call|notify|remind|timer|alarm|tab|tabs|app|apps|file|files|folder|screen|screenshot|click|type|press|volume|clipboard|copy|phone|pc|laptop|desktop|device|note|brain|save|calendar|email|gmail|drive|task|todo|protocol|wake)\b/i;
 const CODE_HINTS = /\b(code|function|bug|error|stack ?trace|typescript|javascript|python|java|rust|golang|sql|regex|compile|refactor|api|script|class|component|debug)\b|```/i;
 const REASONING_HINTS =
   /\b(why|analy[sz]e|compare|plan|strategy|design|architecture|prove|derive|step[- ]by[- ]step|pros and cons|trade-?offs?|research|explain in depth|deep dive|evaluate)\b/i;
@@ -301,12 +301,16 @@ const TOOL_TOPICS: Array<[RegExp, string[]]> = [
   [/\b(claude code|codex|gemini cli|aider|coding agents?|my (project|repo|app|code)|in parallel|sub-?agents?)\b/i, ['run_coding_agents', 'coding_agent_status', 'list_coding_agents']],
   [/\b(teach|show me how|how do i|how to|click|navigate|do it for me|for me|operate|fill|form|setting|settings|in the app|on my screen|use the mouse|step by step)\b/i, ['operate_computer', 'stop_computer_task', 'open_application']],
   [/\b(call|ring|dial|phone me|wake me|alarm|remind me|connect (my )?(pc|phone|laptop))\b/i, ['call_me', 'call_device', 'place_phone_call', 'manage_scheduled_calls', 'list_connected_devices']],
+  [/\b(research|find out|look up|compare|best|price|prices|review|reviews|docs|documentation|website|web ?site|browse|browser|on the web|online|book|booking|form|sign up|order)\b/i, ['browse_web', 'read_web_page', 'web_search']],
+  [/\b(learn|study|keep up|follow|knowledge|what did you learn|briefing|topics?)\b/i, ['learn_about', 'manage_learning', 'search_second_brain']],
+  [/\b(fix|repair|broken|slow|frozen|hang|hanging|crash|crashing|not responding|not working|space|disk|storage|internet|wifi|wi-fi|dns|health|diagnos\w*|check ?up|update ray|restore|undo|previous version)\b/i, ['diagnose_device', 'repair_device', 'restore_file', 'operate_computer']],
+  [/\b(open ray|show ray|show yourself|pop ?up|bring up ray)\b/i, ['show_ray']],
 ];
 
 export function selectRelevantTools(message: string, tools: RouterChatInput['tools']): RouterChatInput['tools'] {
   const wanted = new Set<string>();
   for (const [re, names] of TOOL_TOPICS) if (re.test(message)) names.forEach((n) => wanted.add(n));
-  return tools.filter((t) => wanted.has(t.function.name)).slice(0, 14);
+  return tools.filter((t) => wanted.has(t.function.name)).slice(0, 18);
 }
 
 // ---------------------------------------------------------------------------
@@ -464,7 +468,11 @@ export async function runAutoChatTurn(input: RouterChatInput): Promise<{ handled
 
   const toolLogs: Array<Record<string, unknown>> = [];
   let lastProvider = '';
-  for (let round = 0; round < 6; round++) {
+  // MISSION CLAUSE: up to 12 rounds; when steps fail, RAY reflects and tries alternatives
+  // (twice) instead of stopping at the first error.
+  const MAX_ROUNDS = 12;
+  let reflections = 0;
+  for (let round = 0; round < MAX_ROUNDS; round++) {
     if (isRoomInterrupted(input.roomId)) {
       input.onEvent({ type: 'text', data: 'Standing down, Ray.' });
       input.onEvent({ type: 'done', data: { toolCalls: toolLogs, sources: [] } });
@@ -482,12 +490,28 @@ export async function runAutoChatTurn(input: RouterChatInput): Promise<{ handled
       const failed = toolLogs.filter(
         (t) =>
           t.status === 'error' ||
-          /^(BLOCKED|REQUIRES_CONFIRMATION|Could not|No online|No device|Error|Failed|.*not configured)/i.test(String(t.result || ''))
+          /^(BLOCKED|REQUIRES_CONFIRMATION|Could not|No online|No device|No RAY bridge|Error|Failed|Diagnosis failed|Browser task failed|.*not configured)/i.test(String(t.result || ''))
       );
-      let text = out.content || (toolLogs.length ? (failed.length ? 'Some actions did not complete.' : 'Done.') : '');
-      if (failed.length) {
-        text += `\n\n⚠️ Not completed: ${failed.map((t) => `${t.name} — ${String(t.result || t.status).slice(0, 160)}`).join(' · ')}`;
+      const retryable = failed.filter((t) => !/^(BLOCKED|REQUIRES_CONFIRMATION)/i.test(String(t.result || '')) && !t.reflected);
+      if (retryable.length && reflections < 2 && round < MAX_ROUNDS - 2 && tools.length) {
+        reflections++;
+        retryable.forEach((t) => (t.reflected = true));
+        emitEngine({ phase: 'reflect', reason: `${retryable.length} step(s) failed — trying alternatives` });
+        messages.push({ role: 'assistant', content: out.content || '' });
+        messages.push({
+          role: 'user',
+          content: `[RAY self-check] These steps failed:\n${retryable.map((t) => `- ${t.name}: ${String(t.result || t.status).slice(0, 220)}`).join('\n')}\nThink about every other way to still finish Ray's goal (another device, wake the device first, a different tool, browse_web, operate_computer, a different app or query). If one exists, call the tools now. If it is truly impossible, give the final answer saying exactly what is blocked and why.`,
+        });
+        continue;
       }
+      // A failed step RAY recovered from (a later step succeeded) is noted, not reported as unfinished.
+      const recovered = failed.filter((t) => t.reflected && toolLogs.slice(toolLogs.indexOf(t) + 1).some((x) => !failed.includes(x) && x.status === 'completed'));
+      const unresolved = failed.filter((t) => !recovered.includes(t));
+      let text = out.content || (toolLogs.length ? (unresolved.length ? 'Some actions did not complete.' : 'Done.') : '');
+      if (unresolved.length) {
+        text += `\n\n⚠️ Not completed: ${unresolved.map((t) => `${t.name} — ${String(t.result || t.status).slice(0, 160)}`).join(' · ')}`;
+      }
+      if (recovered.length) text += `\n\n↻ Recovered: ${recovered.map((t) => t.name).join(', ')} failed, so RAY finished another way.`;
       const answeredBy = `${out.provider.label} · ${out.model}`;
       emitEngine({ answeredBy });
       input.onEvent({ type: 'text', data: text });
@@ -526,7 +550,12 @@ export async function runAutoChatTurn(input: RouterChatInput): Promise<{ handled
 }
 
 /** One-shot completion for internal helpers (summaries, classification, planning). */
-export async function quickComplete(prompt: string, system = 'You are RAY, a concise assistant.', kind: TaskKind = 'quick'): Promise<string> {
+export async function quickComplete(
+  prompt: string,
+  system = 'You are RAY, a concise assistant.',
+  kind: TaskKind = 'quick',
+  opts: { maxTokens?: number; timeoutMs?: number } = {}
+): Promise<string> {
   await loadUsage();
   const candidates = await buildCandidates(kind, false);
   const out = await completeWithFailover(
@@ -537,7 +566,7 @@ export async function quickComplete(prompt: string, system = 'You are RAY, a con
     ],
     undefined,
     undefined,
-    { maxTokens: 800, timeoutMs: 25000 }
+    { maxTokens: opts.maxTokens || 800, timeoutMs: opts.timeoutMs || 25000 }
   );
   return out.content;
 }
