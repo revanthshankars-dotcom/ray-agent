@@ -28,6 +28,13 @@ export interface DeviceTelemetry {
   activeWindow?: string;
   diskSummary?: string;
   topProcesses?: ProcessMetric[];
+  /** Local Ollama status reported by a Desktop/Android bridge. */
+  ollamaRunning?: boolean;
+  ollamaModels?: string[];
+  /** Number of installed apps the bridge can launch. */
+  installedAppCount?: number;
+  /** Open browser tabs reported by the RAY Tabs extension. */
+  openTabCount?: number;
 }
 
 export interface DeviceInfo {
@@ -40,6 +47,12 @@ export interface DeviceInfo {
   online: boolean;
   lastSeen: number;
   telemetry: DeviceTelemetry;
+  /** MAC address reported by a bridge so another bridge on the LAN can Wake-on-LAN it. */
+  macAddress?: string;
+  /** True when this device registered a Web Push subscription (can be woken while closed). */
+  pushEnabled?: boolean;
+  /** Commands waiting for this device to come back online. */
+  queuedCount?: number;
 }
 
 export type CommandType =
@@ -50,7 +63,8 @@ export type CommandType =
   | 'set_timer'
   | 'request_snapshot'
   | 'refresh_telemetry'
-  | 'bridge_command';
+  | 'bridge_command'
+  | 'wake';
 
 export interface CommandExecutionResult {
   deviceId: string;
@@ -70,7 +84,7 @@ export interface DeviceCommand {
   source: 'assistant' | 'user' | 'routine' | 'protocol';
   payload: Record<string, unknown>;
   createdAt: number;
-  status: 'dispatched' | 'acknowledged' | 'completed' | 'failed';
+  status: 'dispatched' | 'acknowledged' | 'completed' | 'failed' | 'queued';
   results: CommandExecutionResult[];
 }
 
@@ -162,7 +176,7 @@ export interface AppConnector {
   updatedAt: number;
 }
 
-export type AiEngineProvider = 'gemini' | 'openrouter' | 'ollama' | 'groq' | 'anthropic' | 'openai' | 'huggingface';
+export type AiEngineProvider = 'auto' | 'gemini' | 'openrouter' | 'ollama' | 'groq' | 'anthropic' | 'openai' | 'huggingface';
 
 export type GroundingMode = 'auto' | 'search' | 'maps' | 'url';
 
@@ -175,6 +189,9 @@ export interface TokenUsageStats {
 
 export interface EngineSettings {
   provider: AiEngineProvider;
+  /** Auto-router mode: 'auto' | 'swarm' | a provider id to pin (groq, cerebras, gemini…). */
+  routerMode?: string;
+  settingsVersion?: number;
   ollamaUrl: string;
   ollamaModel: string;
   openrouterModel: string;
@@ -199,6 +216,26 @@ export interface RoomSnapshot {
   veronicaMode?: boolean;
   interrupted?: boolean;
   screenControlArmed?: boolean;
+  incomingMessages?: IncomingMessage[];
+}
+
+export interface IncomingMessage {
+  id: string;
+  app: string; // whatsapp | instagram | messenger | sms | telegram | ...
+  from: string;
+  text: string;
+  receivedAt: number;
+  viaDevice: string;
+  read?: boolean;
+}
+
+export interface BrowserTabInfo {
+  id: number;
+  windowId: number;
+  title: string;
+  url: string;
+  active: boolean;
+  audible?: boolean;
 }
 
 export interface ToolCallEvent {
@@ -230,6 +267,10 @@ export interface ChatMessage {
   sources?: GroundingSource[];
   createdAt: number;
   thinkingMode?: 'fast' | 'deep';
+  /** Which engine/model produced this reply (e.g. "Groq · openai/gpt-oss-120b"). */
+  engineLabel?: string;
+  /** error replies are shown as errors, not saved as normal answers. */
+  kind?: 'normal' | 'error';
 }
 
 export type VoicePersona = 'Kore' | 'Puck' | 'Charon' | 'Fenrir' | 'Zephyr';

@@ -79,9 +79,19 @@ export function useLocalBridgeMonitor(
     setOllamaModels([]);
   }, [ollamaUrl, roomId, roomToken]);
 
+  // Offline: back off 5s → 10s → 20s … up to 60s instead of hammering a refused port (#11).
+  const [offlineStreak, setOfflineStreak] = useState(0);
+  useEffect(() => {
+    setOfflineStreak((n) => (status === 'offline' ? n + 1 : 0));
+  }, [status, lastCheckedAt]);
+
   useEffect(() => {
     void refreshNow();
-    const intervalMs = status === 'connected' ? 12000 : 5000;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomId, ollamaUrl, roomToken]);
+
+  useEffect(() => {
+    const intervalMs = status === 'connected' ? 12000 : Math.min(60000, 5000 * 2 ** Math.min(4, Math.max(0, offlineStreak - 1)));
     const id = window.setInterval(() => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       void refreshNow();
@@ -93,7 +103,8 @@ export function useLocalBridgeMonitor(
       window.clearInterval(id);
       window.removeEventListener('focus', onFocus);
     };
-  }, [refreshNow, status]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshNow, status, Math.min(5, offlineStreak)]);
 
   return {
     status,

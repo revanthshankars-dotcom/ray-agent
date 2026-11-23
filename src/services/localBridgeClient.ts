@@ -99,6 +99,18 @@ export async function probeLocalDirectBridgeDetailed(roomId: string): Promise<Lo
     }
   }
 
+  const bridgeRoom = String(statusMeta?.roomId || '').toUpperCase();
+  if (bridgeRoom && bridgeRoom !== roomId.toUpperCase()) {
+    return {
+      status: 'token_mismatch',
+      statusRoomId: bridgeRoom,
+      ollamaRunning: statusMeta?.ollamaRunning,
+      ollamaModels: statusMeta?.ollamaModels,
+      startupInstalled: statusMeta?.startupInstalled,
+      error: `The bridge running on this PC belongs to room ${bridgeRoom}, but this app is in room ${roomId}. Download the bridge for ${roomId} from Connections (it replaces the old one).`,
+    };
+  }
+
   if (!token) {
     return {
       status: 'token_mismatch',

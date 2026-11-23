@@ -206,19 +206,48 @@ export function useRelaySocket(
           const url = String(p.url || '');
           const title = String(p.title || url);
           playHudSound('affirmative');
+
+          // 1) This PC runs the Desktop Bridge -> open it for real in the OS default browser.
+          if (localBridgeRef.current) {
+            const out = await forwardBridgeProxyActionToLocal(roomId, { action: 'open_url', url });
+            if (out.ok) {
+              ack('completed', `Opened ${title} in a new browser tab on this computer`);
+              break;
+            }
+          }
+
+          // 2) Try opening directly. Works when pop-ups are allowed for RAY
+          //    (one-time: browser address bar -> "Always allow pop-ups") or the
+          //    user interacted with RAY a moment ago.
+          let opened = false;
+          try {
+            const win = window.open(url, '_blank', 'noopener');
+            opened = Boolean(win) || document.visibilityState === 'hidden';
+          } catch {
+            opened = false;
+          }
+          if (opened) {
+            ack('completed', `Opened ${title} in a new tab`);
+            break;
+          }
+
+          // 3) Fallback: one-tap launch card.
           setIncomingActions((prev) => [
             {
               id: `${cmd.id}-url`,
               commandId: cmd.id,
               type: 'open_url',
-              title: `Open Link: ${title}`,
+              title: `Tap to open: ${title}`,
               message: url,
               url,
               createdAt: Date.now(),
             },
             ...prev.slice(0, 4),
           ]);
-          ack('completed', `Delivered launch card for ${url}`);
+          ack(
+            'acknowledged',
+            `Pop-ups are blocked on this browser, so a one-tap launch card was shown for ${url}. Allow pop-ups for RAY (or run the Desktop/Android bridge) to open tabs automatically.`
+          );
           break;
         }
 
@@ -274,6 +303,12 @@ export function useRelaySocket(
           break;
         }
 
+        case 'wake': {
+          playHudSound('wake');
+          ack('completed', 'Device is awake and connected');
+          break;
+        }
+
         default:
           ack('acknowledged', `Received ${cmd.type}`);
       }
@@ -326,6 +361,7 @@ export function useRelaySocket(
 
       ws.onopen = async () => {
         if (!active) return;
+        attempt = 0;
         setStatus('connected');
         const telemetry = await collectDeviceTelemetry(false);
         const caps = ['notify', 'clipboard', 'speak', 'timers', 'camera'];
@@ -405,6 +441,30 @@ export function useRelaySocket(
               });
               break;
             }
+            case 'messages:new': {
+              // Incoming WhatsApp / Instagram / SMS relayed from the phone or Meta APIs.
+              const m = msg.data as { id: string; app: string; from: string; text: string };
+              playHudSound('alert');
+              if ('Notification' in window && Notification.permission === 'granted' && document.visibilityState !== 'visible') {
+                try {
+                  new Notification(`${m.app[0]?.toUpperCase()}${m.app.slice(1)} · ${m.from}`, { body: m.text.slice(0, 180), tag: `ray-msg-${m.id}` });
+                } catch {
+                  // ignore
+                }
+              }
+              setIncomingActions((prev) => [
+                {
+                  id: `msg-${m.id}`,
+                  commandId: m.id,
+                  type: 'notify',
+                  title: `${m.app[0]?.toUpperCase()}${m.app.slice(1)} · ${m.from}`,
+                  message: m.text.slice(0, 200),
+                  createdAt: Date.now(),
+                },
+                ...prev.slice(0, 4),
+              ]);
+              break;
+            }
             case 'hud:sound': {
               const payload = msg.data as { sound?: HudSoundType };
               if (payload.sound) {
@@ -433,11 +493,32 @@ export function useRelaySocket(
       ws.onclose = () => {
         if (!active) return;
         setStatus('reconnecting');
-        reconnectTimerRef.current = window.setTimeout(connect, 2500);
+        attempt += 1;
+        const delay = Math.min(15000, 800 * 2 ** Math.min(attempt, 5)) + Math.random() * 400;
+        reconnectTimerRef.current = window.setTimeout(connect, delay);
       };
     };
 
+    let attempt = 0;
     connect();
+
+    // Reconnect immediately when the device wakes up / regains network / tab becomes visible.
+    const reconnectNow = () => {
+      const ws = wsRef.current;
+      if (!active || (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING))) return;
+      if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
+      attempt = 0;
+      void connect();
+    };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') reconnectNow();
+    };
+    window.addEventListener('online', reconnectNow);
+    document.addEventListener('visibilitychange', onVisible);
+    const swHandler = (evt: MessageEvent) => {
+      if (evt.data?.type === 'ray:wake') reconnectNow();
+    };
+    if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', swHandler);
 
     const telemetryInterval = window.setInterval(async () => {
       if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -453,6 +534,9 @@ export function useRelaySocket(
 
     return () => {
       active = false;
+      window.removeEventListener('online', reconnectNow);
+      document.removeEventListener('visibilitychange', onVisible);
+      if ('serviceWorker' in navigator) navigator.serviceWorker.removeEventListener('message', swHandler);
       window.clearInterval(telemetryInterval);
       if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
       wsRef.current?.close();

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ConfirmationRequest, LiveVoiceState, VoicePersona } from '../types/relay';
+import type { ConfirmationRequest, EngineSettings, LiveVoiceState, VoicePersona } from '../types/relay';
 import { playHudSound } from '../utils/hudAudio';
 import { authFetch, ensureRoomBootstrap, getStoredRoomToken } from '../utils/roomAuth';
 
@@ -64,6 +64,30 @@ function base64PcmToFloat32(base64: string): Float32Array {
   return samples;
 }
 
+/** Pick a natural local voice for the free (browser) speech pipeline. */
+function pickBrowserVoice(): SpeechSynthesisVoice | null {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return null;
+  const voices = window.speechSynthesis.getVoices();
+  const prefs = [/Google UK English Male/i, /Daniel/i, /en-GB.*(Male|Ryan|George)/i, /Microsoft (Ryan|George|Guy)/i, /en-GB/i, /Google US English/i, /en-US/i];
+  for (const re of prefs) {
+    const v = voices.find((x) => re.test(`${x.name} ${x.lang}`));
+    if (v) return v;
+  }
+  return voices.find((v) => v.lang?.startsWith('en')) || voices[0] || null;
+}
+
+function cleanForSpeech(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, ' (code omitted) ')
+    .replace(/https?:\/\/\S+/g, 'the link')
+    .replace(/[#*_`>|~\[\]]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 900);
+}
+
+export type VoicePipeline = 'live' | 'classic';
+
 function matchesWakePhrase(transcript: string, sensitivity: number): boolean {
   const clean = transcript.toLowerCase().replace(/[^a-z\s]/g, ' ').trim();
   if (!clean) return false;
@@ -85,6 +109,7 @@ export function useJarvisVoice(params: {
   googleAccessToken?: string | null;
   notionToken?: string | null;
   onConfirmationRequired?: (req: ConfirmationRequest) => void;
+  engineSettings?: EngineSettings;
 }) {
   const [voiceState, setVoiceState] = useState<LiveVoiceState>(
     params.wakeEnabled ? 'standby' : 'off'
@@ -93,6 +118,18 @@ export function useJarvisVoice(params: {
   const [jarvisCaption, setJarvisCaption] = useState('');
   const [liveError, setLiveError] = useState<string | null>(null);
   const [wakeSupported] = useState(() => Boolean(getSpeechRecognitionCtor()));
+  const [pipeline, setPipeline] = useState<VoicePipeline>('live');
+  const engineRef = useRef(params.engineSettings);
+  engineRef.current = params.engineSettings;
+  const deviceNameRef = useRef(params.deviceName);
+  deviceNameRef.current = params.deviceName;
+  // Free fallback pipeline state
+  const classicActiveRef = useRef(false);
+  const classicRecRef = useRef<SpeechRecognitionInstance | null>(null);
+  const classicHistoryRef = useRef<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
+  const classicAbortRef = useRef<AbortController | null>(null);
+  const liveFailedUntilRef = useRef(0);
+  const voiceCapsRef = useRef<{ live: boolean } | null>(null);
 
   const liveActiveRef = useRef(false);
   const wakeEnabledRef = useRef(params.wakeEnabled);
@@ -176,7 +213,23 @@ export function useJarvisVoice(params: {
   const stopLiveSession = useCallback(
     (returnToStandby = true) => {
       liveActiveRef.current = false;
+      classicActiveRef.current = false;
       clearPlaybackQueue();
+      classicAbortRef.current?.abort();
+      classicAbortRef.current = null;
+      const crec = classicRecRef.current;
+      classicRecRef.current = null;
+      if (crec) {
+        crec.onresult = null;
+        crec.onend = null;
+        crec.onerror = null;
+        try {
+          crec.abort();
+        } catch {
+          // ignore
+        }
+      }
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel();
 
       try {
         processorRef.current?.disconnect();
@@ -203,9 +256,178 @@ export function useJarvisVoice(params: {
     [clearPlaybackQueue]
   );
 
+  /**
+   * FREE voice pipeline — works with any engine (Groq, Cerebras, Ollama…), no Gemini needed:
+   * browser speech-to-text → /api/ai/chat (auto-router + tools) → browser text-to-speech,
+   * then keeps listening for follow-ups until Ray goes quiet.
+   */
+  const startClassicSession = useCallback(
+    async (initialPrompt?: string) => {
+      const Ctor = getSpeechRecognitionCtor();
+      stopWakeListener();
+      liveActiveRef.current = true;
+      classicActiveRef.current = true;
+      setPipeline('classic');
+      setLiveError(null);
+      setUserCaption('');
+      setJarvisCaption('');
+      playHudSound('wake');
+      let silentTurns = 0;
+
+      const speak = (text: string) =>
+        new Promise<void>((resolve) => {
+          if (!('speechSynthesis' in window) || !text) return resolve();
+          const utter = new SpeechSynthesisUtterance(cleanForSpeech(text));
+          const v = pickBrowserVoice();
+          if (v) utter.voice = v;
+          utter.rate = 1.03;
+          utter.pitch = 0.95;
+          utter.onend = () => resolve();
+          utter.onerror = () => resolve();
+          window.speechSynthesis.cancel();
+          window.speechSynthesis.speak(utter);
+        });
+
+      const ask = async (text: string) => {
+        if (!classicActiveRef.current) return;
+        if (/^\s*(stop|cancel|never ?mind|that'?s all|goodbye|bye)\b/i.test(text)) {
+          await speak('Standing by, Ray.');
+          stopLiveSession(true);
+          return;
+        }
+        setVoiceState('thinking');
+        setJarvisCaption('');
+        const controller = new AbortController();
+        classicAbortRef.current = controller;
+        let reply = '';
+        try {
+          const resp = await authFetch(
+            '/api/ai/chat',
+            params.roomId,
+            {
+              method: 'POST',
+              signal: controller.signal,
+              body: JSON.stringify({
+                roomId: params.roomId,
+                sourceDeviceName: deviceNameRef.current,
+                message: `${text}\n\n(Voice conversation: reply in 1-3 short spoken sentences.)`,
+                history: classicHistoryRef.current.slice(-8),
+                preferredVoice: params.voiceName,
+                engine: engineRef.current || { provider: 'auto' },
+              }),
+            },
+            { googleAccessToken: googleTokenRef.current || null, notionToken: notionTokenRef.current || null }
+          );
+          if (!resp.ok || !resp.body) throw new Error(`Voice request failed (${resp.status})`);
+          const reader = resp.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const chunks = buffer.split('\n\n');
+            buffer = chunks.pop() || '';
+            for (const chunk of chunks) {
+              const line = chunk.split('\n').find((l) => l.startsWith('data: '));
+              if (!line) continue;
+              const evt = JSON.parse(line.slice(6)) as { type: string; data: unknown };
+              if (evt.type === 'text') {
+                reply = String(evt.data || '');
+                setJarvisCaption(reply.slice(-320));
+              } else if (evt.type === 'error') {
+                reply = `Sorry Ray, ${String(evt.data || 'something went wrong')}`;
+              } else if (evt.type === 'confirmation_required') {
+                confirmationCbRef.current?.(evt.data as ConfirmationRequest);
+              }
+            }
+          }
+        } catch (err) {
+          if (!classicActiveRef.current) return;
+          reply = err instanceof Error && err.name !== 'AbortError' ? `I couldn't reach my engines, Ray. ${err.message}` : '';
+        }
+        if (!classicActiveRef.current) return;
+        classicHistoryRef.current.push({ role: 'user', text }, { role: 'assistant', text: reply });
+        classicHistoryRef.current = classicHistoryRef.current.slice(-16);
+        setVoiceState('speaking');
+        await speak(reply);
+        if (classicActiveRef.current) listen();
+      };
+
+      const listen = () => {
+        if (!classicActiveRef.current) return;
+        if (!Ctor) {
+          setLiveError('This browser has no speech recognition. Use Chrome/Edge, or type to RAY.');
+          stopLiveSession(true);
+          return;
+        }
+        setVoiceState('listening');
+        setUserCaption('');
+        const rec = new Ctor();
+        rec.continuous = false;
+        rec.interimResults = true;
+        rec.lang = navigator.language || 'en-US';
+        classicRecRef.current = rec;
+        let finalText = '';
+        rec.onresult = (event) => {
+          let interim = '';
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            const r = event.results[i];
+            if (r.isFinal) finalText += r[0].transcript;
+            else interim += r[0].transcript;
+          }
+          setUserCaption(`${finalText} ${interim}`.trim().slice(-240));
+        };
+        rec.onerror = (evt) => {
+          if (evt.error === 'not-allowed' || evt.error === 'service-not-allowed') {
+            setLiveError('Microphone permission denied. Allow the mic for RAY in your browser settings.');
+            stopLiveSession(true);
+          }
+        };
+        rec.onend = () => {
+          if (classicRecRef.current !== rec || !classicActiveRef.current) return;
+          classicRecRef.current = null;
+          const said = finalText.trim();
+          if (said) {
+            silentTurns = 0;
+            void ask(said);
+          } else if (++silentTurns <= 1) {
+            listen();
+          } else {
+            playHudSound('blip');
+            stopLiveSession(true); // Ray went quiet -> back to "Hey Ray" standby
+          }
+        };
+        try {
+          rec.start();
+        } catch {
+          window.setTimeout(listen, 300);
+        }
+      };
+
+      if (initialPrompt && initialPrompt.trim().length > 2) void ask(initialPrompt.trim());
+      else listen();
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [params.roomId, params.voiceName, stopWakeListener]
+  );
+
   const startLiveSession = useCallback(
     async (initialPrompt?: string) => {
       if (liveActiveRef.current) return;
+      // Decide pipeline: Gemini Live (best) when available, else the free classic pipeline.
+      if (!voiceCapsRef.current) {
+        try {
+          voiceCapsRef.current = (await fetch('/api/voice/capabilities').then((r) => r.json())) as { live: boolean };
+        } catch {
+          voiceCapsRef.current = { live: false };
+        }
+      }
+      if (!voiceCapsRef.current.live || Date.now() < liveFailedUntilRef.current) {
+        void startClassicSession(initialPrompt);
+        return;
+      }
+      setPipeline('live');
       setLiveError(null);
       stopWakeListener();
       liveActiveRef.current = true;
@@ -244,6 +466,15 @@ export function useJarvisVoice(params: {
 
         const ws = new WebSocket(url);
         wsRef.current = ws;
+        let gotLiveData = false;
+        const openedAt = Date.now();
+        const fallbackToClassic = (reason: string) => {
+          if (gotLiveData || !liveActiveRef.current) return;
+          liveFailedUntilRef.current = Date.now() + 10 * 60_000; // don't retry Live for 10 min
+          stopLiveSession(false);
+          setLiveError(`${reason} — switched to RAY's free voice pipeline.`);
+          void startClassicSession(initialPrompt);
+        };
 
         ws.onopen = () => {
           if (!liveActiveRef.current) {
@@ -290,6 +521,7 @@ export function useJarvisVoice(params: {
               interrupted?: boolean;
               message?: string;
             };
+            if (msg.type !== 'error' && msg.type !== 'closed') gotLiveData = true;
             if (msg.type === 'audio' && typeof msg.data === 'string') {
               setVoiceState('speaking');
               schedulePcmChunk(msg.data);
@@ -309,7 +541,8 @@ export function useJarvisVoice(params: {
             } else if (msg.type === 'confirmation_required' && msg.data) {
               confirmationCbRef.current?.(msg.data as ConfirmationRequest);
             } else if (msg.type === 'error') {
-              setLiveError(msg.message || 'Live voice session error');
+              if (!gotLiveData && Date.now() - openedAt < 15000) fallbackToClassic(msg.message || 'Gemini Live unavailable');
+              else setLiveError(msg.message || 'Live voice session error');
             }
           } catch {
             // Ignore invalid message
@@ -317,7 +550,11 @@ export function useJarvisVoice(params: {
         };
 
         ws.onclose = () => {
-          if (liveActiveRef.current) {
+          if (liveActiveRef.current && !gotLiveData && Date.now() - openedAt < 15000) {
+            fallbackToClassic('Gemini Live closed the session');
+            return;
+          }
+          if (liveActiveRef.current && !classicActiveRef.current) {
             stopLiveSession(true);
           }
         };
@@ -327,6 +564,7 @@ export function useJarvisVoice(params: {
       }
     },
     [
+      startClassicSession,
       clearPlaybackQueue,
       params.deviceName,
       params.roomId,
@@ -417,7 +655,14 @@ export function useJarvisVoice(params: {
       try {
         rec.start();
       } catch {
-        // Already started or blocked before user gesture
+        // Blocked before a user gesture: retry on the first tap/key anywhere.
+        const retry = () => {
+          window.removeEventListener('pointerdown', retry);
+          window.removeEventListener('keydown', retry);
+          if (!cancelled) startStandby();
+        };
+        window.addEventListener('pointerdown', retry, { once: true });
+        window.addEventListener('keydown', retry, { once: true });
       }
     };
 
@@ -445,5 +690,6 @@ export function useJarvisVoice(params: {
     startLiveSession,
     stopLiveSession,
     emergencyStop,
+    pipeline,
   };
 }

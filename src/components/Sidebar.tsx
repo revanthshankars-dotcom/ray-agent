@@ -21,6 +21,7 @@ import {
   Wifi,
   WifiOff,
   X,
+  Cable,
 } from 'lucide-react';
 import type { User } from 'firebase/auth';
 import type { ActiveTab } from './TopBar';
@@ -68,6 +69,7 @@ const SIDEBAR_NAV: Array<{ id: ActiveTab; label: string; icon: React.ComponentTy
   { id: 'files', label: 'Files & OS', icon: FolderOpen },
   { id: 'apps', label: 'Apps & Connectors', icon: Blocks },
   { id: 'devices', label: 'Devices', icon: MonitorSmartphone },
+  { id: 'connect', label: 'Connections & Engines', icon: Cable },
   { id: 'routines', label: 'Routines', icon: ClipboardList },
   { id: 'handoff', label: 'Handoff', icon: Layers },
 ];

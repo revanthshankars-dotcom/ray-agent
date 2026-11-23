@@ -318,6 +318,13 @@ export function createConfirmationRequest(params: {
 }): ConfirmationRequest {
   purgeExpiredConfirmations();
   const now = Date.now();
+  // Reuse the pending request for the same action instead of piling up duplicates on retries.
+  const argsKey = JSON.stringify(params.args);
+  for (const existing of pendingConfirmations.values()) {
+    if (existing.roomId === params.roomId && existing.toolName === params.toolName && JSON.stringify(existing.args) === argsKey) {
+      return existing;
+    }
+  }
   const req: ConfirmationRequest = {
     id: crypto.randomUUID(),
     roomId: params.roomId,

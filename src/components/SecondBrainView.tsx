@@ -1,3 +1,4 @@
+import { BrainGraph3D } from './BrainGraph3D';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   ArrowUpRight,
@@ -175,7 +176,7 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedFolder, setSelectedFolder] = useState<string>('all');
   const [selectedTag, setSelectedTag] = useState<string>('all');
-  const [viewMode, setViewMode] = useState<'split' | 'edit' | 'preview' | 'graph'>('split');
+  const [viewMode, setViewMode] = useState<'split' | 'edit' | 'preview' | 'graph' | '3d'>('split');
   const [showAppsRail, setShowAppsRail] = useState(true);
   const [showLocalSync, setShowLocalSync] = useState(false);
 
@@ -881,7 +882,7 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
 
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex items-center p-0.5 bg-slate-100 dark:bg-slate-800 rounded-lg">
-              {(['split', 'edit', 'preview', 'graph'] as const).map((m) => (
+              {(['split', 'edit', 'preview', '3d', 'graph'] as const).map((m) => (
                 <button
                   key={m}
                   type="button"
@@ -892,7 +893,7 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
                       : 'text-slate-600 dark:text-slate-400'
                   }`}
                 >
-                  {m === 'graph' ? 'Graph' : m}
+                  {m === 'graph' ? '2D Graph' : m === '3d' ? '3D Graph' : m}
                 </button>
               ))}
             </div>
@@ -1176,7 +1177,14 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
               showAppsRail ? 'lg:col-span-6' : 'lg:col-span-9'
             } rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 space-y-4`}
           >
-            {viewMode === 'graph' ? (
+            {viewMode === '3d' ? (
+              <BrainGraph3D
+                notes={notes}
+                onOpenNote={(id) => {
+                  setSelectedId(id);
+                }}
+              />
+            ) : viewMode === 'graph' ? (
               <div className="space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">

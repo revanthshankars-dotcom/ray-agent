@@ -1,0 +1,6 @@
+node_modules
+dist
+.relay-data
+.env*
+.git
+public/assets/aistudio

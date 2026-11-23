@@ -24,10 +24,19 @@ export async function handleLiveJarvisSocket(
     voiceName: VoicePersona;
   }
 ): Promise<void> {
-  const ai = getAiClient();
+  let ai: ReturnType<typeof getAiClient>;
+  try {
+    ai = getAiClient();
+  } catch {
+    clientWs.send(JSON.stringify({ type: 'error', code: 'LIVE_UNAVAILABLE', message: 'Gemini Live needs GEMINI_API_KEY; using the free voice pipeline instead.' }));
+    clientWs.close();
+    return;
+  }
   let closed = false;
   let sessionGoogleToken = '';
   let sessionNotionToken = '';
+  // Rolling transcript of what Ray actually said — tools that change things need his command.
+  let recentUserSpeech = '';
   setRoomInterrupted(params.roomId, false);
 
   const sendJson = (payload: Record<string, unknown>) => {
@@ -38,14 +47,27 @@ export async function handleLiveJarvisSocket(
 
   let session: Awaited<ReturnType<typeof ai.live.connect>> | null = null;
 
+  // Live model names change often: try the configured one, then known fallbacks.
+  const liveModels = Array.from(
+    new Set(
+      [
+        process.env.GEMINI_LIVE_MODEL,
+        'gemini-3.8-live-extended-thinking',
+        'gemini-live-2.5-flash-preview',
+        'gemini-2.5-flash-native-audio-preview-09-2025',
+        'gemini-2.0-flash-live-001',
+      ].filter((m): m is string => Boolean(m && m.trim()))
+    )
+  );
+  let lastConnectError: unknown = null;
+
+  for (const liveModel of liveModels) {
   try {
     session = await ai.live.connect({
-      model: 'gemini-3.8-live-extended-thinking',
+      model: liveModel,
       config: {
         responseModalities: [Modality.AUDIO],
-        thinkingConfig: {
-          thinkingLevel: ThinkingLevel.HIGH,
-        },
+        ...(/thinking/.test(liveModel) ? { thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH } } : {}),
         speechConfig: {
           voiceConfig: {
             prebuiltVoiceConfig: {
@@ -72,6 +94,7 @@ export async function handleLiveJarvisSocket(
 
           if (content?.inputTranscription?.text) {
             const text = content.inputTranscription.text;
+            recentUserSpeech = `${recentUserSpeech} ${text}`.slice(-600);
             sendJson({ type: 'inputTranscript', text });
             if (/\b(jarvis\s*,?\s*stop|stop\s*,?\s*jarvis|abort|stand down)\b/i.test(text)) {
               setRoomInterrupted(params.roomId, true);
@@ -136,6 +159,7 @@ export async function handleLiveJarvisSocket(
                   {
                     googleAccessToken: sessionGoogleToken || undefined,
                     notionToken: sessionNotionToken || undefined,
+                    userCommand: recentUserSpeech,
                   }
                 );
 
@@ -199,10 +223,18 @@ export async function handleLiveJarvisSocket(
         },
       },
     });
+    break;
   } catch (err) {
+    lastConnectError = err;
+    session = null;
+  }
+  }
+
+  if (!session) {
     sendJson({
       type: 'error',
-      message: sanitizeErrorMessage(err, 'Failed to connect Gemini Live voice session'),
+      code: 'LIVE_UNAVAILABLE',
+      message: sanitizeErrorMessage(lastConnectError, 'Failed to connect Gemini Live voice session'),
     });
     clientWs.close();
     return;
@@ -234,6 +266,7 @@ export async function handleLiveJarvisSocket(
         });
       } else if (msg.type === 'text' && msg.text) {
         setRoomInterrupted(params.roomId, false);
+        recentUserSpeech = `${recentUserSpeech} ${msg.text}`.slice(-600);
         session.sendRealtimeInput({
           text: msg.text,
         });

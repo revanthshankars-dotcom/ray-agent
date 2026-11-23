@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Blocks, Bot, Brain, ClipboardList, FolderOpen, Home, Layers, MonitorSmartphone } from 'lucide-react';
+import { Blocks, Bot, Brain, Cable, ClipboardList, FolderOpen, Home, Layers, LayoutGrid, MonitorSmartphone, X } from 'lucide-react';
 import { TopBar } from './components/TopBar';
 import type { ActiveTab } from './components/TopBar';
 import { Sidebar } from './components/Sidebar';
@@ -11,6 +11,8 @@ import { AppsConnectorsView } from './components/AppsConnectorsView';
 import { DevicesView } from './components/DevicesView';
 import { RoutinesView } from './components/RoutinesView';
 import { HandoffView } from './components/HandoffView';
+import { ConnectionsView } from './components/ConnectionsView';
+import { usePushWake } from './hooks/usePushWake';
 import { PairDeviceModal } from './components/PairDeviceModal';
 import { CameraModal } from './components/CameraModal';
 import { IncomingCommandBar } from './components/IncomingCommandBar';
@@ -53,11 +55,13 @@ function getInitialRoomId(): string {
 const VALID_VOICES: VoicePersona[] = ['Kore', 'Puck', 'Charon', 'Fenrir', 'Zephyr'];
 
 const DEFAULT_ENGINE_SETTINGS: EngineSettings = {
-  provider: 'gemini',
+  provider: 'auto',
+  routerMode: 'auto',
+  settingsVersion: 2,
   ollamaUrl: 'http://127.0.0.1:11434',
   ollamaModel: 'llama3.2',
-  openrouterModel: 'openrouter/free',
-  groqModel: 'llama-3.3-70b-versatile',
+  openrouterModel: 'nvidia/nemotron-3.5-lightning:free',
+  groqModel: 'openai/gpt-oss-120b',
   anthropicModel: 'claude-3-5-sonnet-20241022',
   openaiModel: 'gpt-4o',
   hfModel: 'meta-llama/Meta-Llama-3-8B-Instruct',
@@ -76,21 +80,33 @@ function loadInitialEngineSettings(): EngineSettings {
     const raw = localStorage.getItem('jarvis_engine_settings');
     if (!raw) return DEFAULT_ENGINE_SETTINGS;
     const parsed = JSON.parse(raw) as Partial<EngineSettings>;
-    const validProviders = ['gemini', 'openrouter', 'ollama', 'groq', 'anthropic', 'openai', 'huggingface'];
-    const provider = validProviders.includes(parsed.provider || '')
+    const validProviders = ['auto', 'gemini', 'openrouter', 'ollama', 'groq', 'anthropic', 'openai', 'huggingface'];
+    // v2 migration: old installs defaulted to Gemini-only; move them onto the free auto-router once.
+    const migrated = (parsed.settingsVersion || 1) < 2 && (parsed.provider === 'gemini' || !parsed.provider);
+    const provider = migrated
+      ? 'auto'
+      : validProviders.includes(parsed.provider || '')
       ? (parsed.provider as EngineSettings['provider'])
-      : 'gemini';
+      : 'auto';
     const rawOrModel =
       typeof parsed.openrouterModel === 'string' && parsed.openrouterModel.trim()
         ? parsed.openrouterModel.trim()
-        : 'openrouter/free';
+        : 'nvidia/nemotron-3.5-lightning:free';
     return {
       provider,
+      routerMode: typeof parsed.routerMode === 'string' ? parsed.routerMode : 'auto',
+      settingsVersion: 2,
       ollamaUrl: typeof parsed.ollamaUrl === 'string' && parsed.ollamaUrl.trim() ? parsed.ollamaUrl : 'http://127.0.0.1:11434',
       ollamaModel: typeof parsed.ollamaModel === 'string' && parsed.ollamaModel.trim() ? parsed.ollamaModel : 'llama3.2',
       openrouterModel:
-        rawOrModel === 'meta-llama/llama-3.3-70b-instruct:free' ? 'openrouter/free' : rawOrModel,
-      groqModel: typeof parsed.groqModel === 'string' && parsed.groqModel.trim() ? parsed.groqModel : 'llama-3.3-70b-versatile',
+        // openrouter/free stalled in testing (auto-router that can pick paid/image models).
+        rawOrModel === 'meta-llama/llama-3.3-70b-instruct:free' || rawOrModel === 'openrouter/free'
+          ? 'nvidia/nemotron-3.5-lightning:free'
+          : rawOrModel,
+      groqModel:
+        typeof parsed.groqModel === 'string' && parsed.groqModel.trim() && !/allam|safeguard|whisper|orpheus|guard/i.test(parsed.groqModel)
+          ? parsed.groqModel
+          : 'openai/gpt-oss-120b',
       anthropicModel: typeof parsed.anthropicModel === 'string' && parsed.anthropicModel.trim() ? parsed.anthropicModel : 'claude-3-5-sonnet-20241022',
       openaiModel: typeof parsed.openaiModel === 'string' && parsed.openaiModel.trim() ? parsed.openaiModel : 'gpt-4o',
       hfModel: typeof parsed.hfModel === 'string' && parsed.hfModel.trim() ? parsed.hfModel : 'meta-llama/Meta-Llama-3-8B-Instruct',
@@ -280,6 +296,8 @@ export default function App() {
   }, [bridgeMonitor.status]);
 
   const screenShare = useScreenShare();
+  const pushWake = usePushWake(roomId, identity.id);
+  const [moreNavOpen, setMoreNavOpen] = useState(false);
 
   const handleAddConfirmation = useCallback((req: ConfirmationRequest) => {
     setPendingConfirmations((prev) => {
@@ -298,6 +316,7 @@ export default function App() {
     startLiveSession,
     stopLiveSession,
     emergencyStop,
+    pipeline: voicePipeline,
   } = useJarvisVoice({
     roomId,
     deviceName: identity.name,
@@ -307,6 +326,7 @@ export default function App() {
     googleAccessToken,
     notionToken,
     onConfirmationRequired: handleAddConfirmation,
+    engineSettings,
   });
 
   // Track snapshot items & deleted items so Gemini tool creations sync to Firestore without resurrecting deletes
@@ -888,7 +908,7 @@ export default function App() {
         />
 
         <main
-          className={`flex-1 min-w-0 pb-12 md:pb-0 ${
+          className={`flex-1 min-w-0 pb-[calc(3.5rem+env(safe-area-inset-bottom))] md:pb-0 ${
             activeTab === 'assistant' || activeTab === 'brain' ? 'overflow-hidden' : 'overflow-y-auto'
           }`}
         >
@@ -1102,6 +1122,20 @@ export default function App() {
             />
           )}
 
+          {activeTab === 'connect' && (
+            <ConnectionsView
+              roomId={roomId}
+              devices={snapshot.devices}
+              messages={snapshot.incomingMessages || []}
+              engineSettings={engineSettings}
+              onChangeEngineSettings={setEngineSettings}
+              pushStatus={pushWake.status}
+              onEnablePush={() => void pushWake.enable()}
+              voicePipeline={voicePipeline}
+              wakeEnabled={wakeEnabled}
+            />
+          )}
+
           {activeTab === 'handoff' && (
             <HandoffView
               handoffs={effectiveHandoffs}
@@ -1118,18 +1152,60 @@ export default function App() {
         </main>
       </div>
 
-      {/* Mobile Bottom Nav */}
-      <nav className="md:hidden fixed bottom-0 inset-x-0 h-12 border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 grid grid-cols-8 z-30">
+      {/* Mobile Bottom Nav — 4 primary destinations + "More" sheet (bigger tap targets) */}
+      {moreNavOpen && (
+        <div className="md:hidden fixed inset-0 z-40 bg-slate-950/50 backdrop-blur-sm" onClick={() => setMoreNavOpen(false)}>
+          <div
+            className="absolute bottom-0 inset-x-0 rounded-t-2xl bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 p-4 pb-[calc(1rem+env(safe-area-inset-bottom))]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-sm font-semibold text-slate-900 dark:text-slate-100">More</span>
+              <button type="button" aria-label="Close" onClick={() => setMoreNavOpen(false)} className="p-1.5 rounded-lg text-slate-500">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {(
+                [
+                  { id: 'files', label: 'Files & OS', icon: FolderOpen },
+                  { id: 'apps', label: 'Apps', icon: Blocks },
+                  { id: 'devices', label: 'Devices', icon: MonitorSmartphone },
+                  { id: 'routines', label: 'Routines', icon: ClipboardList },
+                  { id: 'handoff', label: 'Handoff', icon: Layers },
+                ] as const
+              ).map((item) => {
+                const Icon = item.icon;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => {
+                      setActiveTab(item.id);
+                      setMoreNavOpen(false);
+                    }}
+                    className={`flex flex-col items-center gap-1.5 rounded-xl py-3 text-xs font-medium border ${
+                      activeTab === item.id
+                        ? 'border-blue-500/40 bg-blue-500/10 text-blue-600 dark:text-blue-300'
+                        : 'border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300'
+                    }`}
+                  >
+                    <Icon className="w-5 h-5" />
+                    {item.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+      <nav className="md:hidden fixed bottom-0 inset-x-0 border-t border-slate-200 dark:border-slate-800 bg-white/95 dark:bg-slate-900/95 backdrop-blur grid grid-cols-5 z-30 pb-[env(safe-area-inset-bottom)]">
         {(
           [
             { id: 'dashboard', label: 'Home', icon: Home },
             { id: 'assistant', label: 'RAY', icon: Bot },
             { id: 'brain', label: 'Brain', icon: Brain },
-            { id: 'files', label: 'Files', icon: FolderOpen },
-            { id: 'apps', label: 'Apps', icon: Blocks },
-            { id: 'devices', label: 'Devices', icon: MonitorSmartphone },
-            { id: 'routines', label: 'Tasks', icon: ClipboardList },
-            { id: 'handoff', label: 'Handoff', icon: Layers },
+            { id: 'connect', label: 'Connect', icon: Cable },
           ] as const
         ).map((item) => {
           const Icon = item.icon;
@@ -1139,17 +1215,27 @@ export default function App() {
               key={item.id}
               type="button"
               onClick={() => setActiveTab(item.id)}
-              className={`flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium ${
-                active
-                  ? 'text-blue-600 dark:text-blue-400'
-                  : 'text-slate-500 dark:text-slate-400'
+              className={`h-14 flex flex-col items-center justify-center gap-1 text-[11px] font-medium ${
+                active ? 'text-blue-600 dark:text-blue-400' : 'text-slate-500 dark:text-slate-400'
               }`}
             >
-              <Icon className="w-4 h-4" />
+              <span className={`px-3 py-0.5 rounded-full ${active ? 'bg-blue-500/12 dark:bg-blue-400/15' : ''}`}>
+                <Icon className="w-5 h-5" />
+              </span>
               <span>{item.label}</span>
             </button>
           );
         })}
+        <button
+          type="button"
+          onClick={() => setMoreNavOpen(true)}
+          className={`h-14 flex flex-col items-center justify-center gap-1 text-[11px] font-medium ${
+            ['files', 'apps', 'devices', 'routines', 'handoff'].includes(activeTab) ? 'text-blue-600 dark:text-blue-400' : 'text-slate-500 dark:text-slate-400'
+          }`}
+        >
+          <span className="px-3 py-0.5"><LayoutGrid className="w-5 h-5" /></span>
+          <span>More</span>
+        </button>
       </nav>
 
       <IncomingCommandBar actions={incomingActions} onDismiss={dismissAction} />

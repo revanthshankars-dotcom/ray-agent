@@ -25,6 +25,7 @@ import {
 } from './hub.ts';
 import { assertSafeExternalUrl, sanitizeErrorMessage, validateScreenControlAction } from './security.ts';
 import { executeAppConnectorAction, executeGoogleWorkspaceAction } from './workspace.ts';
+import { checkActionPolicy, executeExtendedTool, extendedToolDeclarations } from './deviceTools.ts';
 import type {
   AppConnector,
   ConfirmationRequest,
@@ -463,6 +464,23 @@ export const baseToolDeclarations: FunctionDeclaration[] = [
   },
 ];
 
+// Extended tools (search & open, apps, tabs, messages, wake) — replace older duplicates by name.
+for (const decl of extendedToolDeclarations) {
+  const idx = baseToolDeclarations.findIndex((d) => d.name === decl.name);
+  if (idx >= 0) baseToolDeclarations[idx] = decl;
+  else baseToolDeclarations.push(decl);
+}
+for (const d of baseToolDeclarations) {
+  if (d.name === 'open_url_on_device') {
+    d.description =
+      'OPEN a URL for real in a browser tab / app on Ray’s device (PC bridge, phone bridge or RAY Tabs extension). Never just reply with a link when Ray asks to open something — call this or search_and_open.';
+  }
+  if (d.name === 'open_application') {
+    d.description =
+      'Launch ANY installed app on Ray’s PC or Android phone by name (fuzzy matched against the installed-apps list, e.g. "spotify", "whatsapp", "vs code", "camera"). targetDevice: "pc", "phone", a device name, or "auto".';
+  }
+}
+
 export const liveToolDeclarations: FunctionDeclaration[] = baseToolDeclarations.map((decl) => ({
   ...decl,
   behavior: Behavior.NON_BLOCKING,
@@ -513,17 +531,19 @@ export function buildJarvisSystemInstruction(
   const snapshot = getRoomSnapshot(roomId);
   const devicesSummary =
     snapshot.devices
+      .filter((d) => d.online)
+      .slice(0, 10)
       .map(
         (d) =>
           `- ${d.name} [id=${d.id}, type=${d.type}, online=${d.online}, os=${d.os}, battery=${
             d.telemetry.batteryLevel != null ? `${d.telemetry.batteryLevel}%` : 'n/a'
           }${d.telemetry.cpuPercent != null ? `, cpu=${d.telemetry.cpuPercent}%` : ''}]`
       )
-      .join('\n') || 'None registered yet';
+      .join('\n') || 'No device online right now (commands will be queued)';
 
   const notesSummary =
     snapshot.brainNotes
-      ?.slice(0, 12)
+      ?.slice(0, 8)
       .map((n) => `- [[${n.title}]] (${n.folder}) tags=${n.tags.map((t) => `#${t}`).join(' ')}`)
       .join('\n') || 'None';
 
@@ -571,7 +591,23 @@ Behavioral Guidelines:
       : 'Keep responses crisp, well-structured, and actionable. Confirm executed actions smoothly (e.g., "Right away, Ray.").'
   }
 3. Whenever Ray asks to control a device, inspect his screen, click/type on screen, search or save to his Second Brain, check Gmail/Calendar/Drive/Docs/Sheets/Tasks/Contacts, launch Brave/Notion/Notebook/WhatsApp/Instagram/custom apps, run a movie protocol, or analyze a task, ALWAYS invoke the matching tool immediately.
-4. For SENSITIVE actions (kill_process, optimize_system, clean_slate, control_screen_input, mutating Google Workspace calls), respect the confirmation gate—if confirmation is pending, inform Ray calmly that authorization awaits his click in the HUD.`;
+4. For SENSITIVE actions (kill_process, optimize_system, clean_slate, control_screen_input, send_chat_message, mutating Google Workspace calls), respect the confirmation gate—if confirmation is pending, inform Ray calmly that authorization awaits his click in the HUD.
+5. OPEN, DON'T LINK: when Ray says open / play / search / show / pull up / go to, you MUST call search_and_open, open_url_on_device or open_application so it actually opens on his device (PC by default, his phone if he says phone). Never answer with a bare link instead. Use openTopResult=true for "play X" or when he clearly wants one specific page.
+6. ACCESS POLICY: you may READ by yourself (files, installed apps, browser tabs, screen, incoming messages, web) whenever useful, and briefly tell Ray what you looked at. You may only WRITE or ACT (write files, send messages, close apps/tabs, type/click, change volume) when Ray's current command explicitly asks for it. If a tool returns BLOCKED_BY_POLICY, tell Ray what you would do and ask.
+7. If a target device is offline, still issue the command: RAY queues it, wakes the device (push / Wake-on-LAN) and runs it on reconnect — tell Ray that.
+8. For messages: use read_incoming_messages to brief Ray; use send_chat_message only when he tells you to message someone.
+9. HONESTY: only say something is done if the tool result confirms it. If a tool returns an error, BLOCKED, NOT_AUTHORIZED, "offline" or REQUIRES_CONFIRMATION, say exactly that. Never describe buttons or confirmations that don't exist.
+10. Plain questions (maths, JSON, writing, facts) are answered directly — do not call tools for them.
+11. If a device you are about to use has battery under 15% and is not charging, warn Ray and prefer another online device.
+12. Never repeat secrets (API keys, room tokens) back in chat; tell Ray to rotate any he pasted.
+
+Recent incoming messages (newest first):
+${
+  (snapshot.incomingMessages || [])
+    .slice(0, 6)
+    .map((m) => `- [${m.app}] ${m.from}: ${m.text.slice(0, 120)}${m.read ? '' : ' (unread)'}`)
+    .join('\n') || 'None'
+}`;
 }
 
 export async function generateSpeechAudio(text: string, voiceName: VoicePersona = 'Fenrir', style?: string): Promise<string> {
@@ -780,6 +816,8 @@ Classify strictly into:
 
 export interface ToolExecutionContextOptions {
   confirmed?: boolean;
+  /** Ray's own words for this turn — used to enforce "read alone, act only on command". */
+  userCommand?: string;
   googleAccessToken?: string;
   notionToken?: string;
   customConnectors?: AppConnector[];
@@ -794,6 +832,12 @@ export async function executeDeviceTool(
   options?: ToolExecutionContextOptions
 ): Promise<{ result: string; confirmation?: ConfirmationRequest }> {
   const confirmed = Boolean(options?.confirmed);
+
+  const blocked = checkActionPolicy(name, args, options?.userCommand, confirmed);
+  if (blocked) return { result: blocked };
+
+  const extended = await executeExtendedTool(roomId, name, args, { confirmed });
+  if (extended) return extended;
 
   switch (name) {
     case 'list_connected_devices': {
@@ -1585,6 +1629,7 @@ export async function runAssistantChatTurn(input: ChatTurnInput): Promise<void> 
             googleAccessToken: input.googleAccessToken,
             notionToken: input.notionToken,
             customConnectors: input.customConnectors,
+            userCommand: input.message || '',
           }
         );
         resultStr = execOut.result;
