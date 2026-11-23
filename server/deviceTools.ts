@@ -39,6 +39,9 @@ const ACTION_TOOLS: Record<string, RegExp> = {
   optimize_system: /\b(optimi[sz]e|clean|speed up|free up)\b/i,
   browser_tab_action: /\b(close|open|switch|go to|focus|reload|refresh|mute|show|read|bring)\b/i,
   execute_protocol: /\b(protocol|run|activate|engage|initiate|start)\b/i,
+  call_me: /\b(call|ring|wake|remind|alarm|phone me|buzz)\b/i,
+  call_device: /\b(call|ring|connect|talk|link|join)\b/i,
+  place_phone_call: /\b(call|dial|ring|phone)\b/i,
 };
 
 /** Read-type actions inside an action tool that are always allowed. */

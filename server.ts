@@ -88,6 +88,7 @@ import { dailyBudget, getEngineStatus, getKeySources, loadUsage, normalizeProvid
 import { installShutdownFlush, persistenceBackend } from './server/persistence.ts';
 import { getVapidPublicKey, initWakeServices, sendPush } from './server/wake.ts';
 import { zipDirectory } from './server/zip.ts';
+import { getIceServers, listScheduledCalls, cancelScheduledCall, startCallScheduler } from './server/calls.ts';
 import { checkFishKey, fishUsable, getFishKey, getFishStatus } from './server/fishAudio.ts';
 import { checkMetaSignature, handleMetaWebhook, metaStatus, verifyMetaWebhook } from './server/meta.ts';
 import type { AppConnector, BrainNote, VoicePersona } from './src/types/relay.ts';
@@ -177,6 +178,7 @@ async function startServer() {
     return 0;
   });
   const wake = await initWakeServices();
+  startCallScheduler();
   if (getFishKey()) setInterval(() => void checkFishKey(), 6 * 3600_000).unref();
   if (getFishKey()) {
     const fish = await checkFishKey();
@@ -350,6 +352,19 @@ async function startServer() {
     } catch (err) {
       res.status(500).json({ error: sanitizeErrorMessage(err, 'Extension package unavailable') });
     }
+  });
+
+  app.get('/api/call/ice', requireRoomAuth, async (_req, res) => {
+    res.json({ iceServers: await getIceServers() });
+  });
+
+  app.get('/api/calls/scheduled', requireRoomAuth, async (req, res) => {
+    res.json({ calls: await listScheduledCalls(normalizeRoomId(String(req.query.room || 'RLY-HOME'))) });
+  });
+
+  app.post('/api/calls/scheduled/cancel', requireRoomAuth, async (req, res) => {
+    const { roomId, id } = req.body as { roomId: string; id: string };
+    res.json({ cancelled: await cancelScheduledCall(normalizeRoomId(roomId), String(id || '')) });
   });
 
   app.get('/api/voice/capabilities', (_req, res) => {

@@ -74,6 +74,8 @@ export async function wakeOfflineDevices(params: {
   onlineDevices: DeviceInfo[];
   pushSubscriptions: Record<string, unknown>;
   reason: string;
+  /** Page to open when the push is tapped (default: plain wake). */
+  url?: string;
   sendToDevice: (deviceId: string, packet: Record<string, unknown>) => boolean;
   onExpiredSubscription: (deviceId: string) => void;
 }): Promise<string> {
@@ -83,10 +85,11 @@ export async function wakeOfflineDevices(params: {
     // 1) Web Push wake
     const sub = params.pushSubscriptions[target.id];
     if (sub) {
+      const isCall = Boolean(params.url?.includes('answer='));
       const out = await sendPush(sub, {
-        title: 'RAY needs this device',
-        body: `${params.reason} — tap to run it now.`,
-        url: '/?wake=1',
+        title: isCall ? '📞 Incoming call — RAY' : 'RAY needs this device',
+        body: isCall ? `${params.reason} — tap to answer.` : `${params.reason} — tap to run it now.`,
+        url: params.url || '/?wake=1',
         tag: `ray-wake-${target.id}`,
         data: { roomId: params.roomId, deviceId: target.id },
       });

@@ -64,7 +64,8 @@ export type CommandType =
   | 'request_snapshot'
   | 'refresh_telemetry'
   | 'bridge_command'
-  | 'wake';
+  | 'wake'
+  | 'call';
 
 export interface CommandExecutionResult {
   deviceId: string;
@@ -227,6 +228,27 @@ export interface IncomingMessage {
   receivedAt: number;
   viaDevice: string;
   read?: boolean;
+}
+
+/** A ring sent to a device: either RAY calling Ray, or another device starting a live call. */
+export interface CallPayload {
+  callId: string;
+  kind: 'ray' | 'peer';
+  fromName: string;
+  /** For kind 'peer': the device that is calling (WebRTC caller). */
+  fromDeviceId?: string;
+  /** For kind 'ray': what RAY says when you answer. */
+  message?: string;
+  createdAt: number;
+}
+
+export interface ScheduledCall {
+  id: string;
+  targetDevice: string;
+  message: string;
+  nextAt: number;
+  repeat: 'none' | 'daily' | 'weekdays';
+  createdAt: number;
 }
 
 export interface BrowserTabInfo {

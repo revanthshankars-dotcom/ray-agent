@@ -26,6 +26,7 @@ import {
 import { assertSafeExternalUrl, sanitizeErrorMessage, validateScreenControlAction } from './security.ts';
 import { executeAppConnectorAction, executeGoogleWorkspaceAction } from './workspace.ts';
 import { checkFishKey, fishTts, fishUsable } from './fishAudio.ts';
+import { callToolDeclarations, executeCallTool } from './calls.ts';
 import { checkActionPolicy, executeExtendedTool, extendedToolDeclarations } from './deviceTools.ts';
 import type {
   AppConnector,
@@ -466,7 +467,7 @@ export const baseToolDeclarations: FunctionDeclaration[] = [
 ];
 
 // Extended tools (search & open, apps, tabs, messages, wake) — replace older duplicates by name.
-for (const decl of extendedToolDeclarations) {
+for (const decl of [...extendedToolDeclarations, ...callToolDeclarations]) {
   const idx = baseToolDeclarations.findIndex((d) => d.name === decl.name);
   if (idx >= 0) baseToolDeclarations[idx] = decl;
   else baseToolDeclarations.push(decl);
@@ -600,7 +601,8 @@ Behavioral Guidelines:
 9. HONESTY: only say something is done if the tool result confirms it. If a tool returns an error, BLOCKED, NOT_AUTHORIZED, "offline" or REQUIRES_CONFIRMATION, say exactly that. Never describe buttons or confirmations that don't exist.
 10. Plain questions (maths, JSON, writing, facts) are answered directly — do not call tools for them.
 11. If a device you are about to use has battery under 15% and is not charging, warn Ray and prefer another online device.
-12. Never repeat secrets (API keys, room tokens) back in chat; tell Ray to rotate any he pasted.
+12. CALLS: "call me / wake me up at / ring my phone / remind me by calling" → call_me (rings Ray's phone by default, now or scheduled). "Call my phone/PC", "connect my PC to my phone" → call_device (live two-way audio). "Call Mom / dial +91…" → place_phone_call (needs his approval). Use manage_scheduled_calls to list or cancel.
+13. Never repeat secrets (API keys, room tokens) back in chat; tell Ray to rotate any he pasted.
 
 Recent incoming messages (newest first):
 ${
@@ -859,6 +861,8 @@ export async function executeDeviceTool(
 
   const extended = await executeExtendedTool(roomId, name, args, { confirmed });
   if (extended) return extended;
+  const callOut = await executeCallTool(roomId, sourceDeviceName, name, args, { confirmed });
+  if (callOut) return callOut;
 
   switch (name) {
     case 'list_connected_devices': {

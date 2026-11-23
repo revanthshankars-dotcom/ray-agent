@@ -891,6 +891,71 @@ function setNativeClipboard(text, cb) {
 }
 
 // ---------------------------------------------------------------------------
+// Calls: ring this device (RAY calling Ray / device-to-device) and dial real numbers
+// ---------------------------------------------------------------------------
+
+const RAY_WEB_ORIGIN = WS_URL.replace(/^ws(s?):/, 'http$1:').replace(/\/ws\/?$/, '');
+
+function ringThisDevice(call, cb) {
+  const answerUrl = RAY_WEB_ORIGIN + '/?answer=' + encodeURIComponent(call.callId || '') + '&kind=' + encodeURIComponent(call.kind || 'ray') + (call.fromDeviceId ? '&from=' + encodeURIComponent(call.fromDeviceId) : '') + (call.message ? '&m=' + encodeURIComponent(String(call.message).slice(0, 300)) : '');
+  const who = call.kind === 'peer' ? (call.fromName || 'your other device') : 'RAY';
+  const line = call.kind === 'peer' ? 'Incoming call from ' + who : 'RAY is calling. ' + (call.message || '');
+  if (PLATFORM === 'android') {
+    runSafeCommand('termux-vibrate', ['-d', '1200', '-f'], () => {});
+    runSafeCommand('termux-notification', [
+      '--id', 'ray-call', '--title', '📞 Incoming call — ' + who, '--content', String(call.message || 'Tap to answer'),
+      '--priority', 'max', '--sound', '--vibrate', '600,300,600,300,600', '--ongoing',
+      '--button1', 'Answer', '--button1-action', 'termux-open-url ' + answerUrl,
+      '--button2', 'Decline', '--button2-action', 'termux-notification-remove ray-call',
+      '--action', 'termux-open-url ' + answerUrl,
+    ], () => {});
+    // Bring RAY's call screen up and announce the caller.
+    launchUrlSafely(answerUrl, () => {});
+    speakNative(line, () => {});
+    return cb('Ringing ' + DEVICE_NAME, true);
+  }
+  showNativeNotification('📞 Incoming call — ' + who, String(call.message || 'Opening RAY to answer…'), () => {});
+  launchUrlSafely(answerUrl, () => {});
+  speakNative(line, () => {});
+  cb('Ringing ' + DEVICE_NAME, true);
+}
+
+function lookupContactNumber(name, cb) {
+  if (!IS_TERMUX) return cb(null, 'Contact lookup needs the Android bridge; give a phone number instead.');
+  execFile('termux-contact-list', [], { timeout: 10000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
+    if (err || !stdout) return cb(null, 'Could not read contacts (grant Termux:API the Contacts permission).');
+    let list = [];
+    try { list = JSON.parse(stdout); } catch { return cb(null, 'Contacts unreadable.'); }
+    const q = String(name).toLowerCase().trim();
+    const exact = list.find((c) => String(c.name || '').toLowerCase() === q);
+    const partial = list.filter((c) => String(c.name || '').toLowerCase().includes(q));
+    const hit = exact || (partial.length === 1 ? partial[0] : null);
+    if (!hit) {
+      return cb(null, partial.length > 1
+        ? 'Several contacts match "' + name + '": ' + partial.slice(0, 5).map((c) => c.name).join(', ') + '. Say the full name.'
+        : 'No contact named "' + name + '" on this phone.');
+    }
+    cb(String(hit.number || '').replace(/[^+\d]/g, ''), hit.name);
+  });
+}
+
+function placePhoneCall(to, cb) {
+  const raw = String(to || '').trim();
+  const dial = (number, label) => {
+    if (!/^\+?\d{3,15}$/.test(number)) return cb('Invalid phone number: ' + number, false);
+    if (PLATFORM === 'android') {
+      return runSafeCommand('termux-telephony-call', [number], (out, ok) =>
+        ok ? cb('Calling ' + (label || number) + ' from ' + DEVICE_NAME, true)
+           : launchUrlSafely('tel:' + number, (o2, ok2) => cb(ok2 ? 'Opened the dialer for ' + (label || number) : 'Call failed: ' + out, ok2)));
+    }
+    // PC: tel: opens Windows Phone Link / FaceTime / the default dialer app.
+    launchUrlSafely('tel:' + number, (out, ok) => cb(ok ? 'Opened the dialer for ' + (label || number) + ' on ' + DEVICE_NAME + ' (Phone Link places the call through your phone)' : 'Could not open the dialer: ' + out, ok));
+  };
+  if (/^\+?[\d\s()-]{3,20}$/.test(raw)) return dial(raw.replace(/[^+\d]/g, ''), raw);
+  lookupContactNumber(raw, (number, labelOrErr) => (number ? dial(number, labelOrErr) : cb(labelOrErr, false)));
+}
+
+// ---------------------------------------------------------------------------
 // Wake-on-LAN: lets this device wake another sleeping PC on the same network
 // ---------------------------------------------------------------------------
 
@@ -1257,6 +1322,9 @@ async function runBridgeAction(action, reqData) {
     if (action === 'clipboard_set') {
       return await new Promise((resolve) => setNativeClipboard(String(reqData.content || ''), (msg, ok) => resolve({ ok, data: { message: msg }, error: ok ? undefined : msg })));
     }
+    if (action === 'place_call') {
+      return await new Promise((resolve) => placePhoneCall(reqData.to, (msg, ok) => resolve({ ok, data: { message: msg }, error: ok ? undefined : msg })));
+    }
     if (action === 'read_notifications') {
       return { ok: true, data: { items: await readChatNotifications(true) } };
     }
@@ -1505,7 +1573,7 @@ function connect() {
         const caps = [
           'notify', 'clipboard', 'open_url', 'speak', 'timers', 'apps',
           'os-bridge', 'open_application', 'close_application', 'kill_process',
-          'adjust_volume', 'obsidian-vault', 'ollama-proxy', 'fs-sandbox', 'wake-on-lan', 'chat-compose',
+          'adjust_volume', 'obsidian-vault', 'ollama-proxy', 'fs-sandbox', 'wake-on-lan', 'chat-compose', 'calls',
         ];
         if (IS_TERMUX) caps.push('notifications-relay');
         else caps.push('screen-control', 'clean_slate', 'optimize_system');
@@ -1571,6 +1639,8 @@ function connect() {
       } else if (cmd.type === 'speak' && cmd.payload?.text) {
         ack('completed', 'Speaking on ' + DEVICE_NAME);
         speakNative(cmd.payload.text, () => {});
+      } else if (cmd.type === 'call') {
+        ringThisDevice(cmd.payload || {}, (out, ok) => ack(ok ? 'completed' : 'failed', out));
       } else if (cmd.type === 'wake') {
         ack('completed', DEVICE_NAME + ' is awake');
       } else if (cmd.type === 'refresh_telemetry') {

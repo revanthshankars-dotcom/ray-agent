@@ -23,6 +23,7 @@ import {
   X,
   Cable,
   Orbit,
+  Phone,
 } from 'lucide-react';
 import type { User } from 'firebase/auth';
 import type { ActiveTab } from './TopBar';
@@ -41,6 +42,8 @@ interface SidebarProps {
   onToggleDarkMode: () => void;
   onOpenPairModal: () => void;
   onSelectDeviceTarget: (deviceName: string) => void;
+  /** Start a live voice call to another of Ray's devices. */
+  onCallDevice?: (deviceId: string, deviceName: string) => void;
   onCancelTimer: (timerId: string) => void;
   user: User | null;
   authReady: boolean;
@@ -88,6 +91,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onToggleDarkMode,
   onOpenPairModal,
   onSelectDeviceTarget,
+  onCallDevice,
   onCancelTimer,
   user,
   authReady,
@@ -241,8 +245,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <ul className="space-y-1">
               {devices.map((device) => {
                 const isSelf = device.id === localDeviceId;
+                const callable =
+                  !isSelf && device.online && device.type !== 'bridge' && !device.capabilities?.includes('browser-tabs');
                 return (
-                  <li key={device.id}>
+                  <li key={device.id} className="flex items-center gap-1">
                     <button
                       type="button"
                       onClick={() => onSelectDeviceTarget(device.name)}
@@ -274,6 +280,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         </span>
                       </span>
                     </button>
+                    {callable && onCallDevice && (
+                      <button
+                        type="button"
+                        onClick={() => onCallDevice(device.id, device.name)}
+                        aria-label={`Call ${device.name}`}
+                        title={`Call ${device.name}`}
+                        className="shrink-0 p-1.5 rounded-lg text-emerald-600 hover:bg-emerald-500/10"
+                      >
+                        <Phone className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </li>
                 );
               })}

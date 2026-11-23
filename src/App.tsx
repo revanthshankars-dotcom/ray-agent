@@ -14,6 +14,8 @@ import { HandoffView } from './components/HandoffView';
 import { ConnectionsView } from './components/ConnectionsView';
 import { Brain3DView } from './components/Brain3DView';
 import { usePushWake } from './hooks/usePushWake';
+import { useDeviceCall } from './hooks/useDeviceCall';
+import { CallScreen } from './components/CallScreen';
 import { PairDeviceModal } from './components/PairDeviceModal';
 import { CameraModal } from './components/CameraModal';
 import { IncomingCommandBar } from './components/IncomingCommandBar';
@@ -289,6 +291,7 @@ export default function App() {
     createTimer,
     cancelTimer,
     deleteRoutine,
+    sendEvent,
   } = useRelaySocket(roomId, handleSnapshotReceived, localBridgeOnline);
 
   const bridgeMonitor = useLocalBridgeMonitor(roomId, engineSettings.ollamaUrl, roomToken);
@@ -298,6 +301,20 @@ export default function App() {
 
   const screenShare = useScreenShare();
   const pushWake = usePushWake(roomId, identity.id);
+  const deviceCall = useDeviceCall({
+    roomId,
+    myDeviceId: identity.id,
+    myName: identity.name,
+    sendEvent,
+    onAnswerRayCall: (message) => {
+      // Answering RAY's call opens a voice conversation that starts with what RAY called to say.
+      void startLiveSession(
+        message
+          ? `(You just phoned me, Ray, and I answered. Tell me this now, briefly and naturally: "${message}". Then ask if I need anything else.)`
+          : '(You just phoned me, Ray, and I answered. Greet me and ask what I need.)'
+      );
+    },
+  });
   const [moreNavOpen, setMoreNavOpen] = useState(false);
   const [brainFocusNoteId, setBrainFocusNoteId] = useState<string | null>(null);
 
@@ -885,6 +902,7 @@ export default function App() {
         <Sidebar
           activeTab={activeTab}
           onSelectTab={setActiveTab}
+          onCallDevice={(id, name) => void deviceCall.callDevice(id, name)}
           roomId={roomId}
           socketStatus={status}
           devices={snapshot.devices}
@@ -1110,6 +1128,7 @@ export default function App() {
               localDeviceId={identity.id}
               onRenameDevice={renameDevice}
               onRemoveDevice={removeDevice}
+              onCallDevice={(id, name) => void deviceCall.callDevice(id, name)}
               onShareLocation={shareLocationTelemetry}
               onOpenPairModal={() => setPairModalOpen(true)}
             />
@@ -1168,6 +1187,14 @@ export default function App() {
           </div>
         </main>
       </div>
+
+      <CallScreen
+        state={deviceCall.state}
+        onAccept={() => void deviceCall.accept()}
+        onDecline={deviceCall.decline}
+        onHangup={deviceCall.hangup}
+        onToggleMute={deviceCall.toggleMute}
+      />
 
       {/* Mobile Bottom Nav — 4 primary destinations + "More" sheet (bigger tap targets) */}
       {moreNavOpen && (

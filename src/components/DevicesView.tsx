@@ -18,6 +18,7 @@ import {
   Trash2,
   Volume2,
   Wifi,
+  Phone,
 } from 'lucide-react';
 import type { DeviceCommand, DeviceInfo, ProtocolName, ProtocolResult } from '../types/relay';
 import { playHudSound } from '../utils/hudAudio';
@@ -30,6 +31,7 @@ interface DevicesViewProps {
   localDeviceId: string;
   onRenameDevice: (id: string, name: string) => void;
   onRemoveDevice: (id: string) => void;
+  onCallDevice?: (id: string, name: string) => void;
   onShareLocation: () => Promise<unknown>;
   onOpenPairModal: () => void;
 }
@@ -48,6 +50,7 @@ export const DevicesView: React.FC<DevicesViewProps> = ({
   localDeviceId,
   onRenameDevice,
   onRemoveDevice,
+  onCallDevice,
   onShareLocation,
   onOpenPairModal,
 }) => {
@@ -291,6 +294,16 @@ export const DevicesView: React.FC<DevicesViewProps> = ({
                   </div>
                 </div>
 
+                {!isSelf && device.online && device.type !== 'bridge' && !device.capabilities?.includes('browser-tabs') && onCallDevice && (
+                  <button
+                    type="button"
+                    onClick={() => onCallDevice(device.id, device.name)}
+                    aria-label={`Call ${device.name}`}
+                    className="p-1.5 text-emerald-600 hover:bg-emerald-500/10 rounded-lg"
+                  >
+                    <Phone className="w-4 h-4" />
+                  </button>
+                )}
                 {!isSelf && (
                   <button
                     type="button"

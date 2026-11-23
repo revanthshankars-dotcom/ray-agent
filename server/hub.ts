@@ -866,6 +866,12 @@ export async function dispatchDeviceCommand(params: {
         onlineDevices: Array.from(room.devices.values()).filter((d) => d.online),
         pushSubscriptions: room.pushSubscriptions,
         reason: describeCommand(params.type, params.payload),
+        url:
+          params.type === 'call'
+            ? `/?answer=${encodeURIComponent(String(params.payload.callId || ''))}&kind=${encodeURIComponent(String(params.payload.kind || 'ray'))}` +
+              (params.payload.fromDeviceId ? `&from=${encodeURIComponent(String(params.payload.fromDeviceId))}` : '') +
+              (params.payload.message ? `&m=${encodeURIComponent(String(params.payload.message).slice(0, 300))}` : '')
+            : undefined,
         sendToDevice: (deviceId, packet) => {
           const ws = room.sockets.get(deviceId);
           if (ws && ws.readyState === WebSocket.OPEN) {
@@ -971,6 +977,10 @@ function describeCommand(type: CommandType, payload: Record<string, unknown>): s
       return String(payload.text || 'RAY has a message for you').slice(0, 120);
     case 'bridge_command':
       return `Run ${String(payload.action || 'a command')}`;
+    case 'call':
+      return payload.kind === 'peer'
+        ? `Incoming call from ${String(payload.fromName || 'your other device')}`
+        : `RAY is calling: ${String(payload.message || 'pick up').slice(0, 100)}`;
     default:
       return `RAY ${type.replace(/_/g, ' ')}`;
   }
@@ -1243,6 +1253,23 @@ export function handleSocketConnection(ws: WebSocket, roomId: string): void {
             const device = room.devices.get(deviceId);
             if (device) device.pushEnabled = true;
             broadcastRoomEvent(room.roomId, 'state:sync', getRoomSnapshot(room.roomId));
+          }
+          break;
+        }
+
+        case 'call:signal': {
+          // WebRTC signalling between two devices (accept / offer / answer / ice / hangup / decline).
+          const to = String(data.to || '');
+          const target = room.sockets.get(to);
+          if (target && target.readyState === WebSocket.OPEN && registeredDeviceId) {
+            target.send(
+              JSON.stringify({
+                event: 'call:signal',
+                data: { ...data, from: registeredDeviceId, fromName: room.devices.get(registeredDeviceId)?.name || 'Device' },
+              })
+            );
+          } else if (registeredDeviceId) {
+            ws.send(JSON.stringify({ event: 'call:signal', data: { type: 'unavailable', callId: data.callId, from: to } }));
           }
           break;
         }

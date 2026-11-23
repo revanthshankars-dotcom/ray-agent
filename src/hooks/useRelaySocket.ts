@@ -15,6 +15,7 @@ import {
 import { playHudSound } from '../utils/hudAudio';
 import { ensureRoomBootstrap, getStoredRoomToken } from '../utils/roomAuth';
 import { forwardBridgeProxyActionToLocal } from '../services/localBridgeClient';
+import { emitCallEvent } from '../services/callBus';
 
 export type SocketStatus = 'connecting' | 'connected' | 'reconnecting';
 
@@ -303,6 +304,13 @@ export function useRelaySocket(
           break;
         }
 
+        case 'call': {
+          // Incoming call (RAY calling Ray, or another device starting a live call).
+          emitCallEvent('ring', { ...p, commandId: cmd.id });
+          ack('acknowledged', 'Ringing on this device');
+          break;
+        }
+
         case 'wake': {
           playHudSound('wake');
           ack('completed', 'Device is awake and connected');
@@ -439,6 +447,10 @@ export function useRelaySocket(
                   );
                 }
               });
+              break;
+            }
+            case 'call:signal': {
+              emitCallEvent('signal', (msg.data || {}) as Record<string, unknown>);
               break;
             }
             case 'messages:new': {
@@ -703,6 +715,7 @@ export function useRelaySocket(
   );
 
   return {
+    sendEvent,
     identity,
     status,
     roomToken,

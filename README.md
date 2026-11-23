@@ -47,6 +47,12 @@ RAY assigns every request to an engine automatically — you never have to choos
 5. A server-side daily token budget (`RAY_DAILY_TOKEN_CAP`) is respected, and free engines always come before paid ones such as DeepSeek.
 6. Every reply shows which engine answered. **Connections → Who handles what** shows the live chains.
 
+## Calls
+
+- **RAY calls you** — "Hey Ray, call me in 20 minutes", "wake me up at 6:30 on weekdays", "call my phone and remind me to take the charger". Your phone rings with a full-screen call; answering starts a voice conversation with RAY. Scheduled calls survive restarts.
+- **Device ↔ device** — "call my phone" (or the phone icon next to a device) rings the other device; answering connects a live two-way audio call (WebRTC, with Cloudflare TURN relay for mobile data).
+- **Call someone** — "call Mom": the Android bridge dials the contact from your phone (always asks you to approve first); on a PC the dialer opens through Windows Phone Link.
+
 ## Highlights
 
 - **Engine router** (`server/engines/`): 13 free providers, per-task model choice, automatic failover on 429/limits, parallel small-agent "swarm" near daily quotas.
