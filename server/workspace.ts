@@ -207,7 +207,7 @@ export async function executeGoogleWorkspaceAction(params: {
         ? `trashed = false and name contains '${queryText}'`
         : 'trashed = false';
       const data = await googleFetch(
-        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(qParam)}&pageSize=12&fields=files(id,name,mimeType,modifiedTime,webViewLink)`,
+        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(qParam)}&pageSize=${Math.min(500, Math.max(1, Number(params.args.pageSize || 12)))}&orderBy=modifiedTime%20desc&fields=files(id,name,mimeType,modifiedTime,webViewLink,parents)`,
         token
       );
       return { result: JSON.stringify(data.files || []) };

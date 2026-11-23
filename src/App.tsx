@@ -1073,6 +1073,8 @@ export default function App() {
 
           {activeTab === 'brain3d' && (
             <Brain3DView
+              roomId={roomId}
+              googleAccessToken={googleAccessToken}
               notes={effectiveBrainNotes}
               onOpenInEditor={(id) => {
                 setBrainFocusNoteId(id);

@@ -59,6 +59,10 @@ When the phone and PC are close but have **no internet**, they still talk over a
 
 Everything cross-device works offline, in both directions: open apps/links on the other device, **ring my phone**, **call a number** from the phone, **send text to the phone/PC** (clipboard), **tell my PC/phone…** (notification), **any new messages** (WhatsApp/Instagram/SMS relayed from the phone to the PC), **battery**, **what's in my Downloads on my phone**, and free-form questions answered by the PC's local Ollama (`ollama pull llama3.2`). Use the phone's **Ask RAY** button (Termux:Widget) or the RAY app on the PC — it switches to offline mode automatically. When far apart with no internet, nothing can link two devices; commands wait and run when they reconnect.
 
+## File map clause
+
+RAY keeps a map of the files on every connected device (PC bridges and the Android bridge) — **names, folders, sizes and dates only, never file contents, never credential files** — refreshed when a device connects and every 30 minutes, and stored with RAY's durable state. The **3D Brain** shows it alongside your Second Brain notes and Google Drive files: devices and the cloud are hubs, folders branch off them, files are coloured by type, and notes that mention a file are linked to it. RAY searches the map on its own ("where's my passport scan?") — even for devices that are offline right now — and opens or reads a file only when you ask. Turn it off with `RAY_FILE_INDEX=off`.
+
 ## Highlights
 
 - **Engine router** (`server/engines/`): 13 free providers, per-task model choice, automatic failover on 429/limits, parallel small-agent "swarm" near daily quotas.

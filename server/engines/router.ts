@@ -282,7 +282,7 @@ const TOOL_TOPICS: Array<[RegExp, string[]]> = [
   [/\b(open|play|watch|listen|search|google|youtube|spotify|show me|pull up|go to|website|link|url)\b/i, ['search_and_open', 'open_url_on_device', 'web_search']],
   [/\b(app|apps|launch|start|open|installed|close|quit)\b/i, ['open_application', 'list_installed_apps', 'close_application']],
   [/\b(tab|tabs|browser|chrome|edge)\b/i, ['list_browser_tabs', 'browser_tab_action', 'open_url_on_device']],
-  [/\b(file|files|folder|document|downloads|desktop|read|write|save|pdf|txt)\b/i, ['list_system_files', 'search_system_files', 'read_system_file', 'write_system_file']],
+  [/\b(file|files|folder|document|documents|downloads|desktop|read|write|save|pdf|txt|photo|scan|where is|where's|find my)\b/i, ['search_file_index', 'open_file_on_device', 'list_system_files', 'search_system_files', 'read_system_file', 'write_system_file']],
   [/\b(screen|screenshot|window|click|type|press|scroll|mouse|keyboard)\b/i, ['capture_screen_snapshot', 'inspect_active_screen_and_window', 'control_screen_input']],
   [/\b(message|messages|whatsapp|instagram|dm|sms|text|telegram|reply|inbox|chat)\b/i, ['read_incoming_messages', 'send_chat_message']],
   [/\b(note|notes|brain|remember|memory|obsidian|wikilink)\b/i, ['search_second_brain', 'read_brain_note', 'upsert_brain_note', 'link_brain_notes']],

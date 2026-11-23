@@ -2,21 +2,36 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Hash, Loader2, Maximize2, Minimize2, RotateCcw } from 'lucide-react';
 import type { BrainNote } from '../types/relay';
 
-interface GraphNode {
+export interface GraphNode {
   id: string;
   label: string;
-  kind: 'note' | 'tag' | 'ghost';
+  kind: 'note' | 'tag' | 'ghost' | 'device' | 'folder' | 'file' | 'cloud';
   folder: string;
   degree: number;
   noteId?: string;
+  /** For device files / cloud files: where it lives. */
+  meta?: { path?: string; device?: string; sizeKb?: number; modified?: string; url?: string; online?: boolean };
   x?: number;
   y?: number;
   z?: number;
 }
-interface GraphLink {
+export interface GraphLink {
   source: string;
   target: string;
-  kind: 'wikilink' | 'tag';
+  kind: 'wikilink' | 'tag' | 'contains' | 'mentions';
+}
+
+const FILE_COLORS: Array<[RegExp, string]> = [
+  [/\.(pdf|docx?|odt|rtf|txt|md|pages)$/i, '#f59e0b'],
+  [/\.(xlsx?|csv|ods|numbers)$/i, '#22c55e'],
+  [/\.(pptx?|key|odp)$/i, '#f97316'],
+  [/\.(jpe?g|png|gif|webp|heic|svg|raw)$/i, '#ec4899'],
+  [/\.(mp4|mov|mkv|avi|webm|mp3|wav|m4a|flac)$/i, '#a855f7'],
+  [/\.(js|ts|tsx|py|java|kt|c|cpp|cs|go|rs|rb|php|html|css|json|ya?ml|sh)$/i, '#06b6d4'],
+  [/\.(zip|rar|7z|tar|gz|apk|exe|msi|dmg)$/i, '#64748b'],
+];
+export function fileColor(name: string): string {
+  return FILE_COLORS.find(([re]) => re.test(name))?.[1] || '#94a3b8';
 }
 
 const FOLDER_PALETTE = ['#60a5fa', '#34d399', '#f472b6', '#fbbf24', '#a78bfa', '#22d3ee', '#fb7185', '#4ade80', '#f97316', '#2dd4bf'];
@@ -35,10 +50,15 @@ export function BrainGraph3D({
   onOpenNote,
   showTags = true,
   heightClass = 'h-[520px]',
+  extra,
+  onOpenItem,
 }: {
   notes: BrainNote[];
   onOpenNote: (noteId: string) => void;
   showTags?: boolean;
+  /** Device file map + cloud files merged into the graph. */
+  extra?: { nodes: GraphNode[]; links: GraphLink[] };
+  onOpenItem?: (node: GraphNode) => void;
   /** Tailwind height for the canvas area (page view passes a viewport-based height). */
   heightClass?: string;
 }) {
@@ -46,6 +66,8 @@ export function BrainGraph3D({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const graphRef = useRef<any>(null);
   const fittedRef = useRef(false);
+  const onOpenItemRef = useRef(onOpenItem);
+  onOpenItemRef.current = onOpenItem;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
@@ -83,8 +105,15 @@ export function BrainGraph3D({
       nodes.get(l.source)!.degree++;
       nodes.get(l.target)!.degree++;
     }
+    for (const n of extra?.nodes || []) if (!nodes.has(n.id)) nodes.set(n.id, { ...n, degree: 0 });
+    for (const l of extra?.links || []) {
+      if (!nodes.has(l.source) || !nodes.has(l.target)) continue;
+      links.push(l);
+      nodes.get(l.source)!.degree++;
+      nodes.get(l.target)!.degree++;
+    }
     return { nodes: Array.from(nodes.values()), links, folders };
-  }, [notes, tagsOn]);
+  }, [notes, tagsOn, extra]);
 
   // Create graph once
   useEffect(() => {
@@ -115,11 +144,12 @@ export function BrainGraph3D({
             }
           })
           .onNodeHover((n: GraphNode | null) => {
-            el.style.cursor = n && n.kind === 'note' ? 'pointer' : 'grab';
+            el.style.cursor = n && (n.kind === 'note' || n.kind === 'file') ? 'pointer' : 'grab';
             setHover(n);
           })
           .onNodeClick((n: GraphNode) => {
             if (n.kind === 'note' && n.noteId) onOpenNote(n.noteId);
+            else onOpenItemRef.current?.(n);
             const dist = 90;
             const r = 1 + dist / Math.hypot(n.x || 1, n.y || 1, n.z || 1);
             g.cameraPosition({ x: (n.x || 0) * r, y: (n.y || 0) * r, z: (n.z || 0) * r }, n, 900);
@@ -157,17 +187,51 @@ export function BrainGraph3D({
     if (!g) return;
     const q = query.trim().toLowerCase();
     const isDark = document.documentElement.classList.contains('dark') || window.matchMedia('(prefers-color-scheme: dark)').matches;
-    g.nodeVal((n: GraphNode) => (n.kind === 'note' ? 1.5 + Math.min(10, n.degree) : n.kind === 'tag' ? 1 + Math.min(4, n.degree / 2) : 0.8))
+    g.nodeVal((n: GraphNode) =>
+      n.kind === 'device' || n.kind === 'cloud'
+        ? 18
+        : n.kind === 'folder'
+        ? 2 + Math.min(6, n.degree / 4)
+        : n.kind === 'file'
+        ? 0.6
+        : n.kind === 'note'
+        ? 1.5 + Math.min(10, n.degree)
+        : n.kind === 'tag'
+        ? 1 + Math.min(4, n.degree / 2)
+        : 0.8
+    )
       .nodeColor((n: GraphNode) => {
         const dim = q && !n.label.toLowerCase().includes(q);
         if (dim) return isDark ? '#1e293b' : '#e2e8f0';
+        if (n.kind === 'device') return n.meta?.online === false ? '#64748b' : isDark ? '#f8fafc' : '#0f172a';
+        if (n.kind === 'cloud') return '#38bdf8';
+        if (n.kind === 'folder') return '#818cf8';
+        if (n.kind === 'file') return fileColor(n.label);
         if (n.kind === 'tag') return '#94a3b8';
         if (n.kind === 'ghost') return isDark ? '#475569' : '#cbd5e1';
         return folderColor(n.folder, data.folders);
       })
-      .nodeLabel((n: GraphNode) => `<div style="font:12px system-ui;padding:4px 8px;border-radius:6px;background:rgba(15,23,42,.9);color:#e2e8f0">${n.label.replace(/</g, '&lt;')}<br/><span style="opacity:.6">${n.kind === 'note' ? n.folder : n.kind === 'tag' ? 'tag' : 'not created yet'} · ${n.degree} links</span></div>`)
-      .linkColor((l: GraphLink) => (l.kind === 'tag' ? (isDark ? '#334155' : '#cbd5e1') : isDark ? '#60a5fa' : '#3b82f6'))
-      .linkWidth((l: GraphLink) => (l.kind === 'wikilink' ? 0.8 : 0.2))
+      .nodeLabel((n: GraphNode) => {
+        const sub =
+          n.kind === 'note'
+            ? n.folder
+            : n.kind === 'tag'
+            ? 'tag'
+            : n.kind === 'ghost'
+            ? 'not created yet'
+            : n.kind === 'file'
+            ? `${n.meta?.device || ''} · ${n.meta?.path || ''}${n.meta?.sizeKb != null ? ` · ${n.meta.sizeKb} KB` : ''}${n.meta?.modified ? ` · ${n.meta.modified}` : ''}`
+            : n.kind === 'device'
+            ? `device · ${n.meta?.online === false ? 'offline' : 'online'}`
+            : n.kind === 'cloud'
+            ? 'cloud storage'
+            : `folder · ${n.meta?.device || ''}`;
+        return `<div style="font:12px system-ui;padding:4px 8px;border-radius:6px;background:rgba(15,23,42,.9);color:#e2e8f0;max-width:380px">${n.label.replace(/</g, '&lt;')}<br/><span style="opacity:.6">${sub.replace(/</g, '&lt;')} · ${n.degree} links</span></div>`;
+      })
+      .linkColor((l: GraphLink) =>
+        l.kind === 'mentions' ? '#f59e0b' : l.kind === 'contains' ? (isDark ? '#312e81' : '#c7d2fe') : l.kind === 'tag' ? (isDark ? '#334155' : '#cbd5e1') : isDark ? '#60a5fa' : '#3b82f6'
+      )
+      .linkWidth((l: GraphLink) => (l.kind === 'wikilink' || l.kind === 'mentions' ? 0.8 : 0.2))
       .graphData({ nodes: data.nodes.map((n) => ({ ...n })), links: data.links.map((l) => ({ ...l })) });
     fittedRef.current = false;
   }, [data, query, loading]);
@@ -183,6 +247,7 @@ export function BrainGraph3D({
           3D Knowledge Graph
           <span className="text-xs font-normal text-slate-500">
             {noteCount} notes · {linkCount} links{tagsOn ? ` · ${data.nodes.filter((n) => n.kind === 'tag').length} tags` : ''}
+            {data.nodes.some((n) => n.kind === 'file') ? ` · ${data.nodes.filter((n) => n.kind === 'file').length} files on ${data.nodes.filter((n) => n.kind === 'device' || n.kind === 'cloud').length} sources` : ''}
           </span>
         </div>
         <div className="ml-auto flex items-center gap-2">

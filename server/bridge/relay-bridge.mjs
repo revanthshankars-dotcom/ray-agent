@@ -667,6 +667,51 @@ function searchSafeFiles(query, dirPath, maxResults = 35) {
   return results;
 }
 
+/**
+ * File map for RAY's 3D brain: names, folders, sizes and dates only — never file contents.
+ * Skips system/app folders and anything that looks like a credential.
+ */
+const INDEX_SKIP_DIRS = /^(\.|node_modules$|AppData$|Library$|\$Recycle\.Bin$|System Volume Information$|Windows$|Program Files|ProgramData$|__pycache__$|venv$|\.venv$|dist$|build$|target$|cache$|Caches?$|tmp$|temp$|Android$|data$)/i;
+const INDEX_SKIP_FILES = /(^\.|\.(pem|key|pfx|p12|kdbx|sqlite-wal|tmp|lock|log)$|^id_(rsa|ed25519)|credentials|secrets?\.|service[-_]?account|\.env)/i;
+
+function buildFileIndex(maxEntries = 6000, maxDepth = 6) {
+  const files = [];
+  const roots = ALLOWED_FS_ROOTS.filter((r) => r.id !== 'vault' || true);
+  const seenRoots = new Set(roots.map((r) => r.path));
+  const seenPaths = new Set();
+  const walkedRoots = new Set();
+  for (const root of roots) {
+    if (walkedRoots.has(root.path)) continue;
+    walkedRoots.add(root.path);
+    const walk = (dir, depth) => {
+      if (depth > maxDepth || files.length >= maxEntries) return;
+      let entries = [];
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        if (files.length >= maxEntries) return;
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) {
+          if (INDEX_SKIP_DIRS.test(e.name)) continue;
+          // Avoid indexing the same subtree twice (Home contains Documents, Downloads…)
+          if (seenRoots.has(full)) continue;
+          walk(full, depth + 1);
+        } else if (e.isFile() && !INDEX_SKIP_FILES.test(e.name)) {
+          if (seenPaths.has(full)) continue;
+          seenPaths.add(full);
+          try {
+            const st = fs.statSync(full);
+            files.push({ p: full, s: st.size, m: Math.round(st.mtimeMs) });
+          } catch {}
+        }
+      }
+    };
+    walk(root.path, 0);
+  }
+  // Newest first so the most relevant files survive the cap.
+  files.sort((a, b) => b.m - a.m);
+  return { platform: PLATFORM, sep: path.sep, roots: roots.map((r) => ({ label: r.label, path: r.path })), count: files.length, truncated: files.length >= maxEntries, files };
+}
+
 function listVaultFiles(dir = VAULT_ROOT, prefix = '') {
   const out = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -1360,6 +1405,20 @@ async function runBridgeAction(action, reqData) {
     }
     if (action === 'clipboard_set') {
       return await new Promise((resolve) => setNativeClipboard(String(reqData.content || ''), (msg, ok) => resolve({ ok, data: { message: msg }, error: ok ? undefined : msg })));
+    }
+    if (action === 'open_file') {
+      // Open a file with its default app — only inside the folders RAY may read, never credential files.
+      const target = resolveSafeFsPath(reqData.path || reqData.filePath || '', true);
+      return await new Promise((resolve) => {
+        const done = (out, ok) => resolve({ ok, data: { message: ok ? 'Opened ' + path.basename(target) + ' on ' + DEVICE_NAME : out }, error: ok ? undefined : out });
+        if (IS_TERMUX) return runSafeCommand('termux-open', [target], done);
+        if (os.platform() === 'darwin') return runSafeCommand('open', [target], done);
+        if (os.platform() === 'win32') return runSafeCommand('explorer.exe', [target], (out) => done(out, true));
+        runSafeCommand('xdg-open', [target], done);
+      });
+    }
+    if (action === 'file_index') {
+      return { ok: true, data: buildFileIndex(Math.min(15000, Number(reqData.maxEntries || 6000)), Math.min(10, Number(reqData.maxDepth || 6))) };
     }
     if (action === 'battery') {
       if (IS_TERMUX) {

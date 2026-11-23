@@ -38,6 +38,7 @@ const ACTION_TOOLS: Record<string, RegExp> = {
   adjust_volume: /\b(volume|mute|unmute|louder|quieter|sound)\b/i,
   optimize_system: /\b(optimi[sz]e|clean|speed up|free up)\b/i,
   browser_tab_action: /\b(close|open|switch|go to|focus|reload|refresh|mute|show|read|bring)\b/i,
+  open_file_on_device: /\b(open|show|view|play|launch|display)\b/i,
   execute_protocol: /\b(protocol|run|activate|engage|initiate|start)\b/i,
   call_me: /\b(call|ring|wake|remind|alarm|phone me|buzz)\b/i,
   call_device: /\b(call|ring|connect|talk|link|join)\b/i,
@@ -164,6 +165,18 @@ export const extendedToolDeclarations: FunctionDeclaration[] = [
         targetDevice: { type: Type.STRING, description: 'Device to compose on (default: phone, else PC).' },
       },
       required: ['app', 'text'],
+    },
+  },
+  {
+    name: 'open_file_on_device',
+    description: 'Open a file with its default app on the device that has it (path from search_file_index). Only when Ray asks to open/show it.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        path: { type: Type.STRING, description: 'Full file path as shown by search_file_index.' },
+        targetDevice: { type: Type.STRING, description: 'Device that has the file (name from search_file_index).' },
+      },
+      required: ['path'],
     },
   },
   {
@@ -475,6 +488,13 @@ export async function executeExtendedTool(
           app === 'instagram' ? 'copied to the clipboard (paste + send)' : 'pre-filled'
         } — Ray just taps Send. ${out.summary}`,
       };
+    }
+
+    case 'open_file_on_device': {
+      const exec = pickExecutorDevice(roomId, String(args.targetDevice || 'auto'), 'app');
+      if (!exec) return { result: 'That device is not online right now, so the file cannot be opened. RAY can open it once the device reconnects.' };
+      const out = await dispatchBridgeProxyCall(roomId, { action: 'open_file', path: String(args.path || '') }, 15000, exec.id);
+      return { result: out.ok ? `${(out.data as { message?: string })?.message || 'Opened.'}` : `Could not open the file: ${out.error}` };
     }
 
     case 'wake_device': {

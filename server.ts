@@ -89,6 +89,7 @@ import { installShutdownFlush, persistenceBackend } from './server/persistence.t
 import { getVapidPublicKey, initWakeServices, sendPush } from './server/wake.ts';
 import { zipDirectory } from './server/zip.ts';
 import { buildInstaller } from './server/installer.ts';
+import { getFileMap, refreshDeviceIndex, startFileIndexScheduler } from './server/fileIndex.ts';
 import { getIceServers, listScheduledCalls, cancelScheduledCall, startCallScheduler } from './server/calls.ts';
 import { checkFishKey, fishUsable, getFishKey, getFishStatus } from './server/fishAudio.ts';
 import { checkMetaSignature, handleMetaWebhook, metaStatus, verifyMetaWebhook } from './server/meta.ts';
@@ -180,6 +181,7 @@ async function startServer() {
   });
   const wake = await initWakeServices();
   startCallScheduler();
+  startFileIndexScheduler();
   if (getFishKey()) setInterval(() => void checkFishKey(), 6 * 3600_000).unref();
   if (getFishKey()) {
     const fish = await checkFishKey();
@@ -354,6 +356,23 @@ async function startServer() {
     } catch (err) {
       res.status(500).json({ error: sanitizeErrorMessage(err, 'Extension package unavailable') });
     }
+  });
+
+  // File map for the 3D Brain (names/folders only, per device).
+  app.get('/api/brain/files', requireRoomAuth, async (req, res) => {
+    const roomId = normalizeRoomId(String(req.query.room || 'RLY-HOME'));
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ devices: await getFileMap(roomId, Math.min(4000, Number(req.query.perDevice || 1500))) });
+  });
+
+  app.post('/api/brain/files/refresh', deviceLimiter, requireRoomAuth, async (req, res) => {
+    const { roomId } = req.body as { roomId: string };
+    const room = normalizeRoomId(roomId);
+    const results: Record<string, unknown> = {};
+    for (const d of getRoomDevices(room).filter((x) => x.online && x.type === 'bridge')) {
+      results[d.name] = await refreshDeviceIndex(room, d.id).catch((e) => ({ ok: false, error: String(e) }));
+    }
+    res.json({ results });
   });
 
   app.get('/api/call/ice', requireRoomAuth, async (_req, res) => {
