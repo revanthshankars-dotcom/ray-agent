@@ -53,8 +53,7 @@ import { authFetch } from '../utils/roomAuth';
 import {
   captureScreenViaLocalBridge,
   fetchLocalOllamaTags,
-  runLocalOllamaChatViaBridge,
-} from '../services/localBridgeClient';
+  runLocalOllamaChatViaBridge, forwardBridgeProxyActionToLocal } from '../services/localBridgeClient';
 import type { LocalBridgeMonitorState } from '../hooks/useLocalBridgeMonitor';
 import { RayCoreFace } from './RayCoreFace';
 
@@ -880,6 +879,20 @@ export const AssistantView: React.FC<AssistantViewProps> = ({
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Request failed';
+      // No internet / cloud unreachable → offline mode through this PC's RAY bridge
+      // (local model + phone over Wi-Fi, hotspot, Bluetooth or USB tethering).
+      if (!navigator.onLine || /fetch|network|load failed|timed out/i.test(msg)) {
+        const local = await forwardBridgeProxyActionToLocal(roomId, { action: 'ask', text: userMsg.text });
+        const answer = (local.data as { answer?: string; via?: string } | undefined)?.answer;
+        if (local.ok && answer) {
+          finalReplyText = answer;
+          setMessages((prev) =>
+            prev.map((m) => (m.id === assistantMsgId ? { ...m, text: answer, engineLabel: 'Offline mode · this PC' } : m))
+          );
+          if (autoSpeak) void speakMessage(assistantMsgId, answer);
+          return;
+        }
+      }
       finalReplyText = `Error: ${msg}`;
       // Shown as an error bubble only — not saved into history/briefings (#22).
       setMessages((prev) =>

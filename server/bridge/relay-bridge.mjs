@@ -359,6 +359,10 @@ async function ensureOllamaRunning(allowSpawn = true) {
   }
 }
 
+// A bridge must never die from one bad request — log and keep serving (phones depend on it).
+process.on('uncaughtException', (err) => console.error('[RAY Bridge] Recovered from error:', err && err.stack ? err.stack.split('\n')[0] : err));
+process.on('unhandledRejection', (err) => console.error('[RAY Bridge] Recovered from rejection:', err && err.message ? err.message : err));
+
 await handleCliFlags();
 
 fs.mkdirSync(VAULT_ROOT_RAW, { recursive: true });
@@ -1357,6 +1361,21 @@ async function runBridgeAction(action, reqData) {
     if (action === 'clipboard_set') {
       return await new Promise((resolve) => setNativeClipboard(String(reqData.content || ''), (msg, ok) => resolve({ ok, data: { message: msg }, error: ok ? undefined : msg })));
     }
+    if (action === 'battery') {
+      if (IS_TERMUX) {
+        return await new Promise((resolve) => execFile('termux-battery-status', [], { timeout: 8000 }, (err, out) => {
+          if (err) return resolve({ ok: false, error: 'Battery status needs Termux:API.' });
+          try { const j = JSON.parse(out); resolve({ ok: true, data: { percentage: j.percentage, charging: /CHARG/i.test(j.status || '') } }); } catch { resolve({ ok: false, error: 'Unreadable battery status' }); }
+        }));
+      }
+      return { ok: false, error: 'Battery level is only available from the phone bridge.' };
+    }
+    if (action === 'lan_status') {
+      return { ok: true, data: { linked: Boolean(lanLink && lanLink.readyState === WebSocket.OPEN), peer: lanPeerName, cloud: Boolean(activeWs && activeWs.readyState === WebSocket.OPEN) } };
+    }
+    if (action === 'ask') {
+      return { ok: true, data: await askRay(String(reqData.text || '')) };
+    }
     if (action === 'place_call') {
       return await new Promise((resolve) => placePhoneCall(reqData.to, (msg, ok) => resolve({ ok, data: { message: msg }, error: ok ? undefined : msg })));
     }
@@ -1453,8 +1472,13 @@ function startLocalDirectBridge() {
       for await (const c of req) { body += c; if (body.length > 20000) break; }
       let parsed = {};
       try { parsed = JSON.parse(body || '{}'); } catch {}
-      const out = await askRay(String(parsed.text || ''));
-      speakIfAsked(out.answer, parsed.speak);
+      let out;
+      try {
+        out = await askRay(String(parsed.text || ''));
+        speakIfAsked(out.answer, parsed.speak);
+      } catch (e) {
+        out = { answer: 'RAY hit an error: ' + (e && e.message ? e.message : e), via: 'error' };
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(out));
       return;
@@ -1572,44 +1596,163 @@ function readChatNotifications(includeSeen = false) {
 }
 
 // ---------------------------------------------------------------------------
-// Offline local mode (no internet): PC = local hub with Ollama, phone discovers it on the LAN
+// Offline local mode (no internet). Works over ANY local link between phone and PC:
+// same Wi-Fi, phone hotspot, Bluetooth tethering (PAN) or USB tethering — no internet needed.
+// Every bridge feature travels over it in both directions: open apps/links, ring & dial,
+// notifications, clipboard, WhatsApp/Instagram relay, phone status, files, Ask RAY.
 // ---------------------------------------------------------------------------
 
 const ROOM_TAG = crypto.createHash('sha256').update('ray-lan:' + ROOM_ID).digest('hex').slice(0, 12);
-let lanPeer = null; // phone side: socket to the PC hub
+const SELF_KIND = IS_TERMUX ? 'phone' : 'pc';
+let lanLink = null; // socket to the other device (phone: PC hub; PC: connected phone)
+let lanPeerName = '';
 const lanPending = new Map();
+const lanInbox = []; // messages relayed from the phone while offline (newest first)
 
 function speakIfAsked(text, speak) {
   if (speak && text) speakNative(String(text).slice(0, 600), () => {});
 }
 
-/** Answer a question with NO cloud: quick device intents first, then local Ollama on this PC. */
-async function answerLocally(text) {
-  const q = String(text || '').trim();
-  const open = q.match(/^(?:open|launch|start)\s+(.+?)(?:\s+on\s+(?:my\s+)?(?:pc|computer|laptop))?$/i);
-  if (open) {
-    return await new Promise((resolve) => launchAppSafely(open[1], (out, ok) => resolve(ok ? 'Opening ' + open[1] + ' on ' + DEVICE_NAME + '.' : 'I could not open ' + open[1] + ': ' + out)));
+function lanSend(msg) {
+  if (!lanLink || lanLink.readyState !== WebSocket.OPEN) return false;
+  lanLink.send(JSON.stringify(msg));
+  return true;
+}
+
+function lanRequest(msg, timeoutMs = 30000) {
+  return new Promise((resolve) => {
+    const id = crypto.randomUUID();
+    if (!lanSend({ ...msg, id })) return resolve({ ok: false, error: 'Your ' + (SELF_KIND === 'pc' ? 'phone' : 'PC') + ' is not connected on the local network.' });
+    const t = setTimeout(() => { lanPending.delete(id); resolve({ ok: false, error: 'No reply from ' + (lanPeerName || 'the other device') + '.' }); }, timeoutMs);
+    lanPending.set(id, (r) => { clearTimeout(t); resolve(r.ok === false && !r.error ? { ...r, error: r.message || 'Failed on ' + (lanPeerName || 'the other device') } : r); });
+  });
+}
+
+/** Handle a message from the other device (same protocol on both sides). */
+async function handleLanMessage(sock, raw) {
+  let m = {};
+  try { m = JSON.parse(String(raw)); } catch { return; }
+  const reply = (data) => { if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ ...data, id: m.id, type: 'reply' })); };
+  if (m.type === 'reply' && lanPending.has(m.id)) {
+    lanPending.get(m.id)(m);
+    lanPending.delete(m.id);
+  } else if (m.type === 'hello') {
+    lanPeerName = String(m.name || 'device');
+    console.log('[RAY LAN] Linked with ' + lanPeerName + ' over the local network (works without internet).');
+  } else if (m.type === 'ask') {
+    reply({ ok: true, answer: await answerLocally(m.text, true) });
+  } else if (m.type === 'command') {
+    executeDeviceCommand(
+      { id: m.id, type: m.cmd?.type, payload: m.cmd?.payload || {} },
+      (status, message, data) => reply({ ok: status !== 'failed', status, message, data, error: status === 'failed' ? message : undefined }),
+      null
+    );
+  } else if (m.type === 'proxy') {
+    reply(await runBridgeAction(String(m.action || ''), m.args || {}));
+  } else if (m.type === 'messages') {
+    for (const it of (m.items || []).slice(0, 20)) {
+      lanInbox.unshift(it);
+      showNativeNotification((it.app || 'Message') + ' · ' + (it.from || ''), String(it.text || '').slice(0, 160), () => {});
+    }
+    lanInbox.splice(50);
+  }
+}
+
+function deviceFromText(q) {
+  if (/\b(on|to|from)\s+(my\s+)?(phone|mobile|android)\b/i.test(q)) return 'phone';
+  if (/\b(on|to|from)\s+(my\s+)?(pc|computer|laptop|desktop)\b/i.test(q)) return 'pc';
+  return null;
+}
+
+/** Run an action on whichever device the user meant: here, or the other one over the local link. */
+async function onDevice(target, action, args) {
+  if (!target || target === SELF_KIND) return runBridgeAction(action, args);
+  const r = await lanRequest({ type: 'proxy', action, args }, 45000);
+  return r;
+}
+
+/**
+ * Answer with NO cloud. Deterministic intents for every cross-device feature first,
+ * then the local model (Ollama on the PC). `fromPeer` = asked by the other device.
+ */
+async function answerLocally(text, fromPeer = false) {
+  const q = String(text || '').trim().replace(/[.!?]+$/, '');
+  const target = deviceFromText(q);
+  const strip = (x) => x.replace(/\s+(on|to|from)\s+(my\s+)?(phone|mobile|android|pc|computer|laptop|desktop)\s*$/i, '').trim();
+  let m;
+
+  if ((m = q.match(/^(?:call|dial|phone)\s+(.+)$/i)) && !/^(me|my phone|my pc)$/i.test(strip(m[1]))) {
+    const r = await onDevice('phone', 'place_call', { to: strip(m[1]) });
+    return r.ok ? (r.data?.message || 'Calling ' + strip(m[1]) + '.') : 'Could not call: ' + r.error;
+  }
+  if (/\b(ring|find)\s+(my\s+)?(phone|mobile)\b|\bwhere'?s my phone\b/i.test(q)) {
+    if (SELF_KIND === 'phone') { ringThisDevice({ kind: 'ray', message: 'Here I am!' }, () => {}); return 'Ringing this phone.'; }
+    const r = await lanRequest({ type: 'command', cmd: { type: 'call', payload: { kind: 'ray', fromName: DEVICE_NAME, message: 'Your PC is looking for this phone.' } } });
+    return r.ok ? 'Ringing your phone.' : r.error;
+  }
+  if ((m = q.match(/^(?:open|launch|start)\s+(.+)$/i))) {
+    const what = strip(m[1]);
+    const r = await onDevice(target, 'open_app', { target: what });
+    return r.ok ? 'Opening ' + what + (target && target !== SELF_KIND ? ' on your ' + target : '') + '.' : 'Could not open ' + what + ': ' + r.error;
+  }
+  if ((m = q.match(/^(?:play|watch)\s+(.+?)(?:\s+on\s+youtube)?$/i)) || (m = q.match(/^search\s+youtube\s+for\s+(.+)$/i))) {
+    const r = await onDevice(target, 'open_url', { url: 'https://www.youtube.com/results?search_query=' + encodeURIComponent(strip(m[1])) });
+    return r.ok ? 'Opening YouTube for ' + strip(m[1]) + ' (needs internet on that device to play).' : r.error;
+  }
+  if ((m = q.match(/^(?:send|copy|share)\s+["“]?(.+?)["”]?\s+to\s+(?:my\s+)?(phone|mobile|pc|computer|laptop)$/i))) {
+    const dest = /phone|mobile/i.test(m[2]) ? 'phone' : 'pc';
+    const cmd = { type: 'clipboard', payload: { content: m[1], label: 'From ' + DEVICE_NAME } };
+    const r = dest === SELF_KIND ? await new Promise((res) => executeDeviceCommand(cmd, (st, msg) => res({ ok: st !== 'failed', message: msg }), null)) : await lanRequest({ type: 'command', cmd });
+    if (dest !== SELF_KIND) lanSend({ type: 'command', cmd: { type: 'notify', payload: { title: 'RAY · clipboard', message: m[1].slice(0, 120) } } });
+    return r.ok ? 'Sent to your ' + dest + "'s clipboard." : r.error;
+  }
+  if ((m = q.match(/^(?:tell|notify|remind)\s+(?:my\s+)?(phone|mobile|pc|computer|laptop)\s+(?:that\s+)?(.+)$/i))) {
+    const dest = /phone|mobile/i.test(m[1]) ? 'phone' : 'pc';
+    const cmd = { type: 'notify', payload: { title: 'RAY', message: m[2] } };
+    if (dest === SELF_KIND) { showNativeNotification('RAY', m[2], () => {}); return 'Done.'; }
+    const r = await lanRequest({ type: 'command', cmd });
+    return r.ok ? 'Sent to your ' + dest + '.' : r.error;
+  }
+  if (/\b(messages?|whatsapp|instagram|sms|texts?)\b/i.test(q) && /\b(any|new|read|latest|unread|check|show)\b/i.test(q)) {
+    let items = [];
+    if (SELF_KIND === 'phone') items = await readChatNotifications(true);
+    else {
+      const r = await lanRequest({ type: 'proxy', action: 'read_notifications', args: {} });
+      items = r.ok ? r.data?.items || [] : lanInbox;
+    }
+    if (!items.length) return 'No new messages.';
+    return items.slice(0, 5).map((it) => (it.app || '') + ' from ' + (it.from || 'someone') + ': ' + String(it.text || '').slice(0, 100)).join('. ');
+  }
+  if (/\bbattery\b/i.test(q)) {
+    const r = await onDevice(target || 'phone', 'battery', {});
+    return r.ok ? 'Battery is at ' + r.data?.percentage + '%' + (r.data?.charging ? ' and charging.' : '.') : r.error;
+  }
+  if ((m = q.match(/^(?:what'?s in|list|show)\s+(?:my\s+)?(downloads|documents|desktop)(?:\s+folder)?/i))) {
+    const r = await onDevice(target, 'fs_list_dir', { dirPath: m[1].toLowerCase(), limit: 15 });
+    return r.ok ? 'In ' + m[1] + ': ' + (r.data?.items || []).slice(0, 15).map((i) => i.name).join(', ') : r.error;
   }
   if (/\b(time|date)\b/i.test(q) && q.length < 40) return 'It is ' + new Date().toLocaleString() + '.';
+
+  // Free-form question: local model on the PC (the phone forwards it there).
+  if (SELF_KIND === 'phone' && !fromPeer) {
+    const r = await lanRequest({ type: 'ask', text: q }, 90000);
+    return r.ok ? r.answer : "I'm offline and can't reach your PC. Link them with Wi-Fi, hotspot, Bluetooth tethering or USB tethering.";
+  }
   const up = await ensureOllamaRunning(true);
   if (!up || !ollamaState.models.length) {
-    return "I'm offline and this computer has no local model running. Install Ollama and pull a small model (for example: ollama pull llama3.2) so I can answer without internet.";
+    return "I'm offline and this computer has no local model. Install Ollama and run: ollama pull llama3.2 — device commands (open, call, ring, send, messages, battery, files) still work offline.";
   }
-  const model = ollamaState.models.find((m) => /llama3\.2|qwen|gemma|phi|mistral/i.test(m)) || ollamaState.models[0];
+  const model = ollamaState.models.find((x) => /llama3\.2|qwen|gemma|phi|mistral/i.test(x)) || ollamaState.models[0];
   const out = await runBridgeAction('ollama_chat', {
-    body: {
-      model,
-      stream: false,
-      messages: [
-        { role: 'system', content: 'You are RAY, a concise personal assistant running OFFLINE on the user\'s computer. Answer in 1-3 short spoken sentences.' },
-        { role: 'user', content: q },
-      ],
-    },
+    body: { model, stream: false, messages: [
+      { role: 'system', content: "You are RAY, a concise personal assistant running OFFLINE on the user's computer. Answer in 1-3 short spoken sentences." },
+      { role: 'user', content: q },
+    ] },
   });
   return out.ok ? String(out.data?.message?.content || '').trim() || 'Done.' : 'Local model error: ' + out.error;
 }
 
-/** Ask path used by the phone/PC: cloud RAY when online → PC hub over LAN → local answer. */
+/** Ask path: cloud RAY when online → offline local handling (both devices) otherwise. */
 async function askRay(text) {
   if (activeWs && activeWs.readyState === WebSocket.OPEN) {
     try {
@@ -1632,20 +1775,18 @@ async function askRay(text) {
       if (answer) return { answer, via: 'cloud' };
     } catch {}
   }
-  if (lanPeer && lanPeer.readyState === WebSocket.OPEN) {
-    const id = crypto.randomUUID();
-    const answer = await new Promise((resolve) => {
-      const t = setTimeout(() => { lanPending.delete(id); resolve('Your PC did not answer in time.'); }, 90000);
-      lanPending.set(id, (a) => { clearTimeout(t); resolve(a); });
-      lanPeer.send(JSON.stringify({ type: 'ask', id, text }));
-    });
-    return { answer, via: 'pc-offline' };
-  }
-  if (!IS_TERMUX) return { answer: await answerLocally(text), via: 'local' };
-  return { answer: "I'm offline and can't reach your PC. Connect the phone and PC to the same Wi-Fi or turn on your phone's hotspot for the PC.", via: 'none' };
+  return { answer: await answerLocally(text), via: lanLink && lanLink.readyState === WebSocket.OPEN ? 'offline-link' : 'offline-local' };
 }
 
-/** PC side: LAN hub (WebSocket, token-protected) + UDP discovery responder. */
+function attachLanSocket(sock) {
+  lanLink = sock;
+  sock.send(JSON.stringify({ type: 'hello', name: DEVICE_NAME, kind: SELF_KIND }));
+  sock.on('message', (raw) => void handleLanMessage(sock, raw));
+  sock.on('close', () => { if (lanLink === sock) { lanLink = null; lanPeerName = ''; } });
+  sock.on('error', () => {});
+}
+
+/** PC side: local hub (WebSocket, token-protected) + UDP discovery responder. */
 function startLanHub() {
   if (IS_TERMUX || /^(0|false|off)$/i.test(process.env.RAY_LAN || '')) return;
   try {
@@ -1653,17 +1794,7 @@ function startLanHub() {
     wss.on('connection', (sock, req) => {
       const u = new URL(req.url || '/', 'http://lan');
       if (u.searchParams.get('token') !== ROOM_TOKEN) return sock.close(4001, 'bad token');
-      console.log('[RAY LAN] Phone connected over the local network (offline mode available).');
-      sock.on('message', async (raw) => {
-        let m = {};
-        try { m = JSON.parse(String(raw)); } catch { return; }
-        if (m.type === 'ask') {
-          const answer = await answerLocally(m.text);
-          sock.send(JSON.stringify({ type: 'answer', id: m.id, text: answer }));
-        } else if (m.type === 'notify') {
-          showNativeNotification(String(m.title || 'RAY'), String(m.message || ''), () => {});
-        }
-      });
+      attachLanSocket(sock);
     });
     wss.on('error', (e) => console.warn('[RAY LAN] hub not started:', e.message));
     const udp = dgram.createSocket({ type: 'udp4', reuseAddr: true });
@@ -1678,28 +1809,25 @@ function startLanHub() {
   }
 }
 
-/** Phone side: find the PC hub on the LAN and stay connected (used when there is no internet). */
+/** Phone side: find the PC hub on any local link and stay connected. */
 function startLanClient() {
   if (!IS_TERMUX || /^(0|false|off)$/i.test(process.env.RAY_LAN || '')) return;
+  const connectTo = (host, port) => {
+    const ws = new WebSocket('ws://' + host + ':' + port + '/?token=' + encodeURIComponent(ROOM_TOKEN));
+    ws.on('open', () => attachLanSocket(ws));
+    ws.on('error', () => {});
+  };
   const discover = () => {
-    if (lanPeer && (lanPeer.readyState === WebSocket.OPEN || lanPeer.readyState === WebSocket.CONNECTING)) return;
+    if (lanLink && (lanLink.readyState === WebSocket.OPEN || lanLink.readyState === WebSocket.CONNECTING)) return;
+    // Optional fixed address (e.g. the PC's Bluetooth-PAN or USB-tether IP).
+    if (process.env.RAY_LAN_HOST) return connectTo(process.env.RAY_LAN_HOST, LAN_PORT);
     const udp = dgram.createSocket('udp4');
     udp.on('error', () => { try { udp.close(); } catch {} });
     udp.on('message', (msg, rinfo) => {
       const parts = String(msg).split(' ');
       if (parts[0] !== 'RAY-HERE' || parts[1] !== ROOM_TAG) return;
       try { udp.close(); } catch {}
-      const ws = new WebSocket('ws://' + rinfo.address + ':' + (Number(parts[2]) || LAN_PORT) + '/?token=' + encodeURIComponent(ROOM_TOKEN));
-      lanPeer = ws;
-      ws.on('open', () => console.log('[RAY LAN] Connected to PC hub at ' + rinfo.address + ' (works without internet).'));
-      ws.on('message', (raw) => {
-        try {
-          const m = JSON.parse(String(raw));
-          if (m.type === 'answer' && lanPending.has(m.id)) { lanPending.get(m.id)(m.text); lanPending.delete(m.id); }
-        } catch {}
-      });
-      ws.on('close', () => { if (lanPeer === ws) lanPeer = null; });
-      ws.on('error', () => {});
+      connectTo(rinfo.address, Number(parts[2]) || LAN_PORT);
     });
     udp.bind(() => {
       try {
@@ -1710,17 +1838,111 @@ function startLanClient() {
     });
   };
   discover();
-  setInterval(discover, 20000);
+  setInterval(discover, 15000);
 }
 
 let activeWs = null;
 function startNotificationRelay() {
   if (!IS_TERMUX) return;
   setInterval(async () => {
-    if (!activeWs || activeWs.readyState !== WebSocket.OPEN) return;
+    const cloudUp = activeWs && activeWs.readyState === WebSocket.OPEN;
+    if (!cloudUp) {
+      // Offline: relay new chats to the PC over the local link instead.
+      if (lanLink && lanLink.readyState === WebSocket.OPEN) {
+        const offlineItems = await readChatNotifications(false);
+        if (offlineItems.length) lanSend({ type: 'messages', items: offlineItems });
+      }
+      return;
+    }
     const items = await readChatNotifications(false);
     if (items.length) activeWs.send(JSON.stringify({ event: 'messages:incoming', data: { items } }));
   }, 12000);
+}
+
+/**
+ * Execute a device command (open_url, notify, clipboard, speak, call, bridge_command…).
+ * Shared by the cloud connection AND the offline local link, so every feature works both ways.
+ */
+function executeDeviceCommand(cmd, ack, ws) {
+  const platform = os.platform();
+  if (cmd.type === 'open_url' && cmd.payload?.url) {
+    try {
+      const safeUrl = validateSafeUrl(cmd.payload.url, true);
+      launchUrlSafely(safeUrl, (out, ok) => ack(ok ? 'completed' : 'failed', ok ? 'Opened ' + safeUrl + ' in a new browser tab on ' + DEVICE_NAME : 'Could not open URL: ' + out));
+    } catch (err) {
+      ack('failed', err.message);
+    }
+  } else if (cmd.type === 'notify') {
+    showNativeNotification(String(cmd.payload?.title || 'RAY'), String(cmd.payload?.message || ''), (out, ok) =>
+      ack(ok ? 'completed' : 'failed', ok ? 'Displayed native notification on ' + DEVICE_NAME : 'Notification failed: ' + out)
+    );
+  } else if (cmd.type === 'clipboard' && cmd.payload?.content) {
+    setNativeClipboard(String(cmd.payload.content), (out, ok) => ack(ok ? 'completed' : 'failed', out));
+  } else if (cmd.type === 'speak' && cmd.payload?.text) {
+    ack('completed', 'Speaking on ' + DEVICE_NAME);
+    speakNative(cmd.payload.text, () => {});
+  } else if (cmd.type === 'call') {
+    ringThisDevice(cmd.payload || {}, (out, ok) => ack(ok ? 'completed' : 'failed', out));
+  } else if (cmd.type === 'wake') {
+    ack('completed', DEVICE_NAME + ' is awake');
+  } else if (cmd.type === 'refresh_telemetry') {
+    sampleTopProcesses((procs) => {
+      const t = getTelemetry(procs);
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ event: 'device:telemetry', data: { id: DEVICE_ID, telemetry: t } }));
+      ack('completed', 'OS telemetry refreshed', t);
+    });
+  } else if (cmd.type === 'bridge_command') {
+    const action = String(cmd.payload?.action || '');
+    if (['list_apps', 'wake_on_lan', 'notify', 'speak', 'clipboard_set', 'read_notifications', 'open_url', 'fs_list_dir', 'fs_read_file', 'fs_search_files', 'active_window'].includes(action)) {
+      runBridgeAction(action, cmd.payload || {}).then((out) =>
+        ack(out.ok ? 'completed' : 'failed', out.ok ? JSON.stringify(out.data).slice(0, 4000) : out.error || 'Failed', out.data && typeof out.data === 'object' ? out.data : undefined)
+      );
+    } else if (action === 'system_info') {
+      sampleTopProcesses((procs) => ack('completed', 'Collected live OS stats', getTelemetry(procs)));
+    } else if (action === 'open_app' || action === 'open_application') {
+      const requested = cmd.payload?.target || cmd.payload?.application || cmd.payload?.app_name || '';
+      launchAppSafely(requested, (out, ok) => ack(ok ? 'completed' : 'failed', 'Launch ' + requested + ': ' + out));
+    } else if (action === 'close_application' || action === 'kill_process') {
+      const target = String(cmd.payload?.target || cmd.payload?.application || '').trim();
+      if (!target) return ack('failed', 'No process or application specified.');
+      if (isProtected(target)) {
+        return ack('failed', 'Blocked by Protected Process Safelist: ' + target + ' cannot be terminated.');
+      }
+      if (!/^\d+$/.test(target) && !/^[a-zA-Z0-9._-]{1,64}$/.test(target)) {
+        return ack('failed', 'Blocked invalid process identifier.');
+      }
+      if (platform === 'darwin' || platform === 'linux') {
+        const flag = /^\d+$/.test(target) ? [target] : ['-x', target];
+        const bin = /^\d+$/.test(target) ? 'kill' : 'pkill';
+        runSafeCommand(bin, flag, (out, ok) => ack(ok ? 'completed' : 'failed', 'Process action on ' + target + ': ' + out));
+      } else if (platform === 'win32') {
+        const args = /^\d+$/.test(target) ? ['/PID', target, '/F'] : ['/IM', target, '/F'];
+        runSafeCommand('taskkill', args, (out, ok) => ack(ok ? 'completed' : 'failed', 'Taskkill ' + target + ': ' + out));
+      }
+    } else if (action === 'adjust_volume') {
+      const level = Math.max(0, Math.min(100, Number(cmd.payload?.level ?? 50)));
+      const done = (out, ok) => ack(ok ? 'completed' : 'failed', ok ? 'System volume set to ' + level + '%' : out);
+      if (IS_TERMUX) {
+        runSafeCommand('termux-volume', ['music', String(Math.round(level * 0.15))], done);
+      } else if (platform === 'darwin') {
+        runSafeCommand('osascript', ['-e', 'set volume output volume ' + level], done);
+      } else if (platform === 'win32') {
+        const ps = '$w = New-Object -ComObject WScript.Shell; 1..50 | % { $w.SendKeys([char]174) }; 1..' + Math.round(level / 2) + ' | % { $w.SendKeys([char]175) }';
+        runSafeCommand('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], done);
+      } else {
+        runSafeCommand('pactl', ['set-sink-volume', '@DEFAULT_SINK@', level + '%'], done);
+      }
+    } else if (action === 'clean_slate' || action === 'optimize_system') {
+      sampleTopProcesses((procs) => {
+        const nonProtected = procs.filter((p) => !isProtected(p.name));
+        ack('completed', 'Safelist-verified scan complete (' + nonProtected.length + ' non-protected processes inspected; critical OS/browser processes untouched).', { telemetry: getTelemetry(procs) });
+      });
+    } else {
+      ack('completed', 'Bridge processed action: ' + action);
+    }
+  } else {
+    ack('acknowledged', 'Bridge received ' + cmd.type);
+  }
 }
 
 let loggedProxyRedirect = false;
@@ -1811,85 +2033,7 @@ function connect() {
         ws.send(JSON.stringify({ event: 'command:ack', data: { commandId: cmd.id, deviceId: DEVICE_ID, status, message, data } }));
       };
 
-      const platform = os.platform();
-      if (cmd.type === 'open_url' && cmd.payload?.url) {
-        try {
-          const safeUrl = validateSafeUrl(cmd.payload.url, true);
-          launchUrlSafely(safeUrl, (out, ok) => ack(ok ? 'completed' : 'failed', ok ? 'Opened ' + safeUrl + ' in a new browser tab on ' + DEVICE_NAME : 'Could not open URL: ' + out));
-        } catch (err) {
-          ack('failed', err.message);
-        }
-      } else if (cmd.type === 'notify') {
-        showNativeNotification(String(cmd.payload?.title || 'RAY'), String(cmd.payload?.message || ''), (out, ok) =>
-          ack(ok ? 'completed' : 'failed', ok ? 'Displayed native notification on ' + DEVICE_NAME : 'Notification failed: ' + out)
-        );
-      } else if (cmd.type === 'clipboard' && cmd.payload?.content) {
-        setNativeClipboard(String(cmd.payload.content), (out, ok) => ack(ok ? 'completed' : 'failed', out));
-      } else if (cmd.type === 'speak' && cmd.payload?.text) {
-        ack('completed', 'Speaking on ' + DEVICE_NAME);
-        speakNative(cmd.payload.text, () => {});
-      } else if (cmd.type === 'call') {
-        ringThisDevice(cmd.payload || {}, (out, ok) => ack(ok ? 'completed' : 'failed', out));
-      } else if (cmd.type === 'wake') {
-        ack('completed', DEVICE_NAME + ' is awake');
-      } else if (cmd.type === 'refresh_telemetry') {
-        sampleTopProcesses((procs) => {
-          const t = getTelemetry(procs);
-          ws.send(JSON.stringify({ event: 'device:telemetry', data: { id: DEVICE_ID, telemetry: t } }));
-          ack('completed', 'OS telemetry refreshed', t);
-        });
-      } else if (cmd.type === 'bridge_command') {
-        const action = String(cmd.payload?.action || '');
-        if (['list_apps', 'wake_on_lan', 'notify', 'speak', 'clipboard_set', 'read_notifications', 'open_url', 'fs_list_dir', 'fs_read_file', 'fs_search_files', 'active_window'].includes(action)) {
-          runBridgeAction(action, cmd.payload || {}).then((out) =>
-            ack(out.ok ? 'completed' : 'failed', out.ok ? JSON.stringify(out.data).slice(0, 4000) : out.error || 'Failed', out.data && typeof out.data === 'object' ? out.data : undefined)
-          );
-        } else if (action === 'system_info') {
-          sampleTopProcesses((procs) => ack('completed', 'Collected live OS stats', getTelemetry(procs)));
-        } else if (action === 'open_app' || action === 'open_application') {
-          const requested = cmd.payload?.target || cmd.payload?.application || cmd.payload?.app_name || '';
-          launchAppSafely(requested, (out, ok) => ack(ok ? 'completed' : 'failed', 'Launch ' + requested + ': ' + out));
-        } else if (action === 'close_application' || action === 'kill_process') {
-          const target = String(cmd.payload?.target || cmd.payload?.application || '').trim();
-          if (!target) return ack('failed', 'No process or application specified.');
-          if (isProtected(target)) {
-            return ack('failed', 'Blocked by Protected Process Safelist: ' + target + ' cannot be terminated.');
-          }
-          if (!/^\d+$/.test(target) && !/^[a-zA-Z0-9._-]{1,64}$/.test(target)) {
-            return ack('failed', 'Blocked invalid process identifier.');
-          }
-          if (platform === 'darwin' || platform === 'linux') {
-            const flag = /^\d+$/.test(target) ? [target] : ['-x', target];
-            const bin = /^\d+$/.test(target) ? 'kill' : 'pkill';
-            runSafeCommand(bin, flag, (out, ok) => ack(ok ? 'completed' : 'failed', 'Process action on ' + target + ': ' + out));
-          } else if (platform === 'win32') {
-            const args = /^\d+$/.test(target) ? ['/PID', target, '/F'] : ['/IM', target, '/F'];
-            runSafeCommand('taskkill', args, (out, ok) => ack(ok ? 'completed' : 'failed', 'Taskkill ' + target + ': ' + out));
-          }
-        } else if (action === 'adjust_volume') {
-          const level = Math.max(0, Math.min(100, Number(cmd.payload?.level ?? 50)));
-          const done = (out, ok) => ack(ok ? 'completed' : 'failed', ok ? 'System volume set to ' + level + '%' : out);
-          if (IS_TERMUX) {
-            runSafeCommand('termux-volume', ['music', String(Math.round(level * 0.15))], done);
-          } else if (platform === 'darwin') {
-            runSafeCommand('osascript', ['-e', 'set volume output volume ' + level], done);
-          } else if (platform === 'win32') {
-            const ps = '$w = New-Object -ComObject WScript.Shell; 1..50 | % { $w.SendKeys([char]174) }; 1..' + Math.round(level / 2) + ' | % { $w.SendKeys([char]175) }';
-            runSafeCommand('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], done);
-          } else {
-            runSafeCommand('pactl', ['set-sink-volume', '@DEFAULT_SINK@', level + '%'], done);
-          }
-        } else if (action === 'clean_slate' || action === 'optimize_system') {
-          sampleTopProcesses((procs) => {
-            const nonProtected = procs.filter((p) => !isProtected(p.name));
-            ack('completed', 'Safelist-verified scan complete (' + nonProtected.length + ' non-protected processes inspected; critical OS/browser processes untouched).', { telemetry: getTelemetry(procs) });
-          });
-        } else {
-          ack('completed', 'Bridge processed action: ' + action);
-        }
-      } else {
-        ack('acknowledged', 'Bridge received ' + cmd.type);
-      }
+      executeDeviceCommand(cmd, ack, ws);
     } catch (e) {
       console.error('Bridge error:', e);
     }

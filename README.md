@@ -55,7 +55,9 @@ RAY assigns every request to an engine automatically — you never have to choos
 
 ## Offline mode (no internet)
 
-When the phone and PC share any local network — home Wi-Fi without internet, or the phone's hotspot — the PC bridge acts as a local hub: the phone bridge discovers it automatically (UDP 17347, WebSocket 17346, room-token protected). The **Ask RAY** home-screen button (Termux:Widget) uses Android's on-device speech recognition; RAY answers from the cloud when online, otherwise from the PC's local Ollama, and can still open PC apps. Install Ollama + a small model (`ollama pull llama3.2`) on the PC for offline answers. On Windows, allow the bridge on *Private networks* when the firewall asks. With no internet *and* no shared network, nothing can link two devices; RAY says so instead of failing silently.
+When the phone and PC are close but have **no internet**, they still talk over any local link: the same Wi-Fi, the phone's **hotspot**, **Bluetooth tethering** (Android: Settings → Hotspot & tethering → Bluetooth tethering, then pair the PC) or **USB tethering**. The PC bridge hosts a token-protected local hub and the phone bridge finds it automatically (or set `RAY_LAN_HOST` to the PC's IP for Bluetooth/USB).
+
+Everything cross-device works offline, in both directions: open apps/links on the other device, **ring my phone**, **call a number** from the phone, **send text to the phone/PC** (clipboard), **tell my PC/phone…** (notification), **any new messages** (WhatsApp/Instagram/SMS relayed from the phone to the PC), **battery**, **what's in my Downloads on my phone**, and free-form questions answered by the PC's local Ollama (`ollama pull llama3.2`). Use the phone's **Ask RAY** button (Termux:Widget) or the RAY app on the PC — it switches to offline mode automatically. When far apart with no internet, nothing can link two devices; commands wait and run when they reconnect.
 
 ## Highlights
 
