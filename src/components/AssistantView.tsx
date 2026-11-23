@@ -551,9 +551,9 @@ export const AssistantView: React.FC<AssistantViewProps> = ({
         method: 'POST',
         body: JSON.stringify({ roomId, text, voiceName: voice }),
       });
-      const data = (await res.json()) as { audioBase64?: string; error?: string };
+      const data = (await res.json()) as { audioBase64?: string; mimeType?: string; error?: string };
       if (!res.ok || !data.audioBase64) throw new Error(data.error || 'TTS failed');
-      const audio = new Audio(`data:audio/wav;base64,${data.audioBase64}`);
+      const audio = new Audio(`data:${data.mimeType || 'audio/wav'};base64,${data.audioBase64}`);
       audioRef.current = audio;
       audio.onended = () => setSpeakingMsgId(null);
       await audio.play();

@@ -51,6 +51,10 @@ services:
         sync: false
       - key: NOVITA_API_KEY
         sync: false
+      - key: FISH_AUDIO_API_KEY    # sk-fish-… natural voice for RAY
+        sync: false
+      - key: FISH_AUDIO_VOICE_ID
+        sync: false
       # ---- Optional durable storage on Google Cloud instead of Cloudflare KV ----
       - key: RAY_GCS_BUCKET
         sync: false

@@ -129,7 +129,7 @@ export function useJarvisVoice(params: {
   const classicHistoryRef = useRef<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
   const classicAbortRef = useRef<AbortController | null>(null);
   const liveFailedUntilRef = useRef(0);
-  const voiceCapsRef = useRef<{ live: boolean } | null>(null);
+  const voiceCapsRef = useRef<{ live: boolean; serverTts?: boolean } | null>(null);
 
   const liveActiveRef = useRef(false);
   const wakeEnabledRef = useRef(params.wakeEnabled);
@@ -274,7 +274,8 @@ export function useJarvisVoice(params: {
       playHudSound('wake');
       let silentTurns = 0;
 
-      const speak = (text: string) =>
+      // Prefer the server voice (Fish Audio / Gemini TTS) — fall back to the browser voice.
+      const speakBrowser = (text: string) =>
         new Promise<void>((resolve) => {
           if (!('speechSynthesis' in window) || !text) return resolve();
           const utter = new SpeechSynthesisUtterance(cleanForSpeech(text));
@@ -287,6 +288,31 @@ export function useJarvisVoice(params: {
           window.speechSynthesis.cancel();
           window.speechSynthesis.speak(utter);
         });
+
+      const speak = async (text: string) => {
+        if (!text) return;
+        if (voiceCapsRef.current?.serverTts) {
+          try {
+            const r = await authFetch('/api/ai/tts', params.roomId, {
+              method: 'POST',
+              body: JSON.stringify({ text: cleanForSpeech(text), voiceName: params.voiceName }),
+            });
+            const d = (await r.json()) as { audioBase64?: string; mimeType?: string };
+            if (r.ok && d.audioBase64 && classicActiveRef.current) {
+              await new Promise<void>((resolve) => {
+                const audio = new Audio(`data:${d.mimeType || 'audio/mpeg'};base64,${d.audioBase64}`);
+                audio.onended = () => resolve();
+                audio.onerror = () => resolve();
+                audio.play().catch(() => resolve());
+              });
+              return;
+            }
+          } catch {
+            // fall back to the browser voice
+          }
+        }
+        await speakBrowser(text);
+      };
 
       const ask = async (text: string) => {
         if (!classicActiveRef.current) return;
@@ -418,7 +444,7 @@ export function useJarvisVoice(params: {
       // Decide pipeline: Gemini Live (best) when available, else the free classic pipeline.
       if (!voiceCapsRef.current) {
         try {
-          voiceCapsRef.current = (await fetch('/api/voice/capabilities').then((r) => r.json())) as { live: boolean };
+          voiceCapsRef.current = (await fetch('/api/voice/capabilities').then((r) => r.json())) as { live: boolean; serverTts?: boolean };
         } catch {
           voiceCapsRef.current = { live: false };
         }

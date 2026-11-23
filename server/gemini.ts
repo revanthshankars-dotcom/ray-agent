@@ -25,6 +25,7 @@ import {
 } from './hub.ts';
 import { assertSafeExternalUrl, sanitizeErrorMessage, validateScreenControlAction } from './security.ts';
 import { executeAppConnectorAction, executeGoogleWorkspaceAction } from './workspace.ts';
+import { fishTts, getFishKey } from './fishAudio.ts';
 import { checkActionPolicy, executeExtendedTool, extendedToolDeclarations } from './deviceTools.ts';
 import type {
   AppConnector,
@@ -610,6 +611,26 @@ ${
 }`;
 }
 
+/**
+ * Best available voice: Fish Audio (natural, custom voice) → Gemini TTS. Returns audio + MIME type.
+ */
+export async function synthesizeSpeech(
+  text: string,
+  voiceName: VoicePersona = 'Fenrir',
+  style?: string
+): Promise<{ audioBase64: string; mimeType: string; engine: string }> {
+  if (getFishKey()) {
+    try {
+      const out = await fishTts(text);
+      return { ...out, engine: 'fish-audio' };
+    } catch (err) {
+      if (!process.env.GEMINI_API_KEY) throw err;
+    }
+  }
+  const audioBase64 = await generateSpeechAudio(text, voiceName, style);
+  return { audioBase64, mimeType: 'audio/wav', engine: 'gemini' };
+}
+
 export async function generateSpeechAudio(text: string, voiceName: VoicePersona = 'Fenrir', style?: string): Promise<string> {
   const ai = getAiClient();
   const cleanText = text.replace(/[#*`_~[\]]/g, '').trim().slice(0, 1800);
@@ -897,17 +918,20 @@ export async function executeDeviceTool(
       const text = String(args.text || '');
       const voice = (args.voiceName as VoicePersona) || preferredVoice;
       let audioBase64 = '';
+      let audioMime = 'audio/wav';
       try {
-        audioBase64 = await generateSpeechAudio(text, voice);
+        const sp = await synthesizeSpeech(text, voice);
+        audioBase64 = sp.audioBase64;
+        audioMime = sp.mimeType;
       } catch {
-        // Text fallback
+        // Text fallback (device speaks with its own voice)
       }
       const { summary } = await dispatchDeviceCommand({
         roomId,
         type: 'speak',
         targetQuery: target,
         source: 'assistant',
-        payload: { text, voiceName: voice, audioBase64 },
+        payload: { text, voiceName: voice, audioBase64, audioMime },
       });
       return { result: summary };
     }

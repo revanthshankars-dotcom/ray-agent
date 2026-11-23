@@ -44,7 +44,7 @@ import {
   createRoutinePlanFromGoal,
   executeDeviceTool,
   findSemanticBrainMatches,
-  generateSpeechAudio,
+  synthesizeSpeech,
   getOllamaToolDeclarations,
   resolvePendingConfirmation,
   runAssistantChatTurn,
@@ -88,6 +88,7 @@ import { dailyBudget, getEngineStatus, getKeySources, loadUsage, normalizeProvid
 import { installShutdownFlush, persistenceBackend } from './server/persistence.ts';
 import { getVapidPublicKey, initWakeServices, sendPush } from './server/wake.ts';
 import { zipDirectory } from './server/zip.ts';
+import { checkFishKey, getFishKey, getFishStatus } from './server/fishAudio.ts';
 import { checkMetaSignature, handleMetaWebhook, metaStatus, verifyMetaWebhook } from './server/meta.ts';
 import type { AppConnector, BrainNote, VoicePersona } from './src/types/relay.ts';
 
@@ -176,6 +177,13 @@ async function startServer() {
     return 0;
   });
   const wake = await initWakeServices();
+  if (getFishKey()) {
+    const fish = await checkFishKey();
+    console.log(
+      `[RAY] Fish Audio key: ${fish.valid === true ? 'VALID' : fish.valid === false ? 'INVALID (rejected)' : 'could not verify'}` +
+        ` status=${fish.status ?? 'n/a'}${fish.credit !== undefined ? ` credit=${fish.credit}` : ''}${fish.error ? ` error=${fish.error.slice(0, 120)}` : ''}`
+    );
+  }
   console.log(
     `[RAY] storage=${persistenceBackend()} roomsRestored=${hydrated} push=${wake.pushReady} stableTokens=${hasStableRoomSecret()}`
   );
@@ -265,6 +273,7 @@ async function startServer() {
       devicesOnline,
       bridgesOnline,
       googleOAuthClient: Boolean(process.env.GOOGLE_CLIENT_ID),
+      fishAudio: getFishStatus(),
       hasGeminiKey: Boolean(process.env.GEMINI_API_KEY),
       hasOpenRouterKey: hasOpenRouterConfigured(),
       storage: persistenceBackend(),
@@ -342,7 +351,7 @@ async function startServer() {
   });
 
   app.get('/api/voice/capabilities', (_req, res) => {
-    res.json({ live: Boolean(process.env.GEMINI_API_KEY), serverTts: Boolean(process.env.GEMINI_API_KEY) });
+    res.json({ live: Boolean(process.env.GEMINI_API_KEY), serverTts: Boolean(process.env.GEMINI_API_KEY || getFishKey()), fishAudio: getFishStatus() });
   });
 
   app.get('/api/push/vapid', (_req, res) => {
@@ -633,10 +642,9 @@ async function startServer() {
       }
       if (type === 'speak' && typeof payload?.text === 'string' && !payload.audioBase64) {
         try {
-          enrichedPayload.audioBase64 = await generateSpeechAudio(
-            payload.text,
-            (payload.voiceName as VoicePersona) || 'Fenrir'
-          );
+          const sp = await synthesizeSpeech(payload.text, (payload.voiceName as VoicePersona) || 'Fenrir');
+          enrichedPayload.audioBase64 = sp.audioBase64;
+          enrichedPayload.audioMime = sp.mimeType;
         } catch {
           // Text fallback
         }
@@ -1232,8 +1240,8 @@ async function startServer() {
         res.status(400).json({ error: 'Missing text for TTS' });
         return;
       }
-      const audioBase64 = await generateSpeechAudio(text, voiceName || 'Fenrir', style);
-      res.json({ audioBase64, mimeType: 'audio/wav' });
+      const sp = await synthesizeSpeech(text, voiceName || 'Fenrir', style);
+      res.json({ audioBase64: sp.audioBase64, mimeType: sp.mimeType, engine: sp.engine });
     } catch (err) {
       res.status(500).json({ error: sanitizeErrorMessage(err, 'Speech generation failed') });
     }

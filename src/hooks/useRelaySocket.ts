@@ -141,7 +141,7 @@ export function useRelaySocket(
 
           if (audioBase64) {
             try {
-              const audio = new Audio(`data:audio/wav;base64,${audioBase64}`);
+              const audio = new Audio(`data:${typeof p.audioMime === 'string' ? p.audioMime : 'audio/wav'};base64,${audioBase64}`);
               await audio.play();
               played = true;
             } catch {
