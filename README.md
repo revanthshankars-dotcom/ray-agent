@@ -22,6 +22,11 @@ Deploys with `min-instances=1` (never sleeps), stores the Second Brain + device 
 
 Pages builds the web app from `main` (`npm ci --legacy-peer-deps && npx vite build`, output `dist`). The Pages Functions in `functions/` forward `/api/*`, `/ws` and `/live-jarvis` (WebSockets included) to the RAY hub, because Pages can't run the Node server itself. Set `RAY_BACKEND_URL` in the Pages project to your hub URL (for example your Render URL).
 
+## Cloudflare edge (live)
+
+- Worker **`ray-hub`** → https://ray-hub.revanthshankar-s.workers.dev forwards the whole app (web, API, WebSockets) to the RAY hub once `RAY_BACKEND_URL` is set on it, and pings the hub every 10 minutes so Render's free plan never sleeps. Source: `cloudflare/worker.js`.
+- KV namespace **`ray-state`** stores RAY's Second Brain, devices and queued commands (used by the hub when `CLOUDFLARE_API_TOKEN` is set).
+
 ## Connect your devices (RAY → **Connections**)
 
 | Device | How | What RAY can do |

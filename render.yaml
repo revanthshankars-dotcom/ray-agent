@@ -27,8 +27,10 @@ services:
         sync: false
       - key: CLOUDFLARE_API_TOKEN  # cfut_… (Workers AI + KV storage)
         sync: false
-      - key: CLOUDFLARE_ACCOUNT_ID # optional, auto-discovered from the token
-        sync: false
+      - key: CLOUDFLARE_ACCOUNT_ID # your Cloudflare account (not a secret)
+        value: 4f777e7938510fe7d9a0d547628226a7
+      - key: RAY_CF_KV_NAMESPACE_ID # KV namespace "ray-state" created for RAY's durable storage
+        value: 89c9320c21c04bd193922996f772c0aa
       - key: GEMINI_API_KEY
         sync: false
       - key: CEREBRAS_API_KEY
