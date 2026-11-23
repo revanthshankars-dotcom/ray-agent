@@ -63,7 +63,7 @@ function rawEnv(name: string): string | null {
  */
 const KEY_ALIASES: Record<string, string[]> = {
   GROQ_API_KEY: ['GROQ_KEY', 'GROQ_TOKEN', 'GROQ'],
-  OPENROUTER_API_KEY: ['OPENROUTER_KEY', 'OPEN_ROUTER_API_KEY', 'OPENROUTER'],
+  OPENROUTER_API_KEY: ['OPENROUTER_KEY', 'OPEN_ROUTER_API_KEY', 'OPEN_ROUTER_KEY', 'OPENROUTER'],
   OPENCODE_API_KEY: ['OPENCODE_KEY', 'OPENCODE_ZEN_API_KEY', 'OPENCODE_ZEN_KEY', 'ZEN_API_KEY', 'OPENCODE'],
   CLOUDFLARE_API_TOKEN: ['CLOUDFLARE_API_KEY', 'CLOUDFLARE_TOKEN', 'CF_API_TOKEN', 'CF_TOKEN', 'CLOUDFLARE_AI_TOKEN', 'CLOUDFLARE'],
   CLOUDFLARE_ACCOUNT_ID: ['CF_ACCOUNT_ID', 'CLOUDFLARE_ACCOUNT'],
@@ -76,7 +76,7 @@ const KEY_ALIASES: Record<string, string[]> = {
   HUGGINGFACE_API_KEY: ['HF_TOKEN', 'HF_API_KEY', 'HUGGINGFACE_TOKEN', 'HUGGING_FACE_HUB_TOKEN'],
   COHERE_API_KEY: ['COHERE_KEY', 'CO_API_KEY'],
   DEEPSEEK_API_KEY: ['DEEPSEEK_KEY', 'DEEP_SEEK_API_KEY'],
-  ZHIPU_API_KEY: ['ZHIPUAI_API_KEY', 'GLM_API_KEY', 'BIGMODEL_API_KEY'],
+  ZHIPU_API_KEY: ['ZAI_API_KEY', 'Z_AI_API_KEY', 'ZAI_KEY', 'ZHIPUAI_API_KEY', 'GLM_API_KEY', 'BIGMODEL_API_KEY'],
   SILICONFLOW_API_KEY: ['SILICONFLOW_KEY', 'SILICON_FLOW_API_KEY'],
   DASHSCOPE_API_KEY: ['QWEN_API_KEY', 'ALIBABA_API_KEY', 'DASHSCOPE_KEY'],
   NOVITA_API_KEY: ['NOVITA_KEY'],
@@ -97,30 +97,115 @@ const KEY_PREFIXES: Record<string, RegExp> = {
 
 const keySource: Record<string, string> = {};
 
-function env(name: string): string | null {
-  const direct = rawEnv(name);
-  if (direct) {
-    keySource[name] = name;
-    return direct;
-  }
-  for (const alias of KEY_ALIASES[name] || []) {
-    const v = rawEnv(alias);
-    if (v) {
-      keySource[name] = alias;
-      return v;
+/** Uppercase letters/digits only: "GROQ API_KEY" → "GROQAPIKEY". */
+function normName(n: string): string {
+  return n.toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+/** Edit distance ≤ limit (small strings only). */
+function withinDistance(a: string, b: string, limit: number): boolean {
+  if (Math.abs(a.length - b.length) > limit) return false;
+  const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let diag = prev[0];
+    prev[0] = i;
+    let rowMin = prev[0];
+    for (let j = 1; j <= b.length; j++) {
+      const tmp = prev[j];
+      prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, diag + (a[i - 1] === b[j - 1] ? 0 : 1));
+      diag = tmp;
+      rowMin = Math.min(rowMin, prev[j]);
     }
+    if (rowMin > limit) return false;
   }
-  const re = KEY_PREFIXES[name];
-  if (re) {
-    for (const [k, val] of Object.entries(process.env)) {
-      const v = (val || '').trim();
-      if (re.test(v)) {
-        keySource[name] = k;
-        return v;
-      }
-    }
-  }
+  return prev[b.length] <= limit;
+}
+
+/** Does an env var NAME (possibly misspelled / spaced / numbered) refer to this provider key? */
+function nameMatches(envName: string, canonical: string): 'exact' | 'fuzzy' | null {
+  const n = normName(envName);
+  const targets = [canonical, ...(KEY_ALIASES[canonical] || [])].map(normName);
+  if (targets.includes(n)) return 'exact';
+  // Second keys: OPENCODE_API_KEY_2, OPENCODE API KEYZ, GROQ_API_KEYS …
+  const stripped = n.replace(/(KEYS?|TOKENS?)(Z|S|\d{1,2}|BACKUP|ALT|2ND|SECOND)$/, '$1').replace(/\d{1,2}$/, '');
+  if (targets.includes(stripped)) return 'fuzzy';
+  // Typos: SLIICONFLOW_API_KEY ≈ SILICONFLOW_API_KEY (one edit, long names only).
+  if (/GROK|XAI/.test(n) && canonical === 'GROQ_API_KEY') return null; // xAI Grok ≠ Groq
+  // Long names tolerate 2 edits (covers swapped letters like SLII↔SILI).
+  if (n.length >= 12 && targets.some((t) => t.length >= 12 && withinDistance(n, t, n.length >= 14 ? 2 : 1))) return 'fuzzy';
   return null;
+}
+
+interface FoundKey {
+  value: string;
+  from: string;
+}
+let keyCache: { sig: string; map: Map<string, FoundKey[]> } | null = null;
+
+/** Every key available for a provider, from any env var that plausibly holds it. */
+export function allKeys(name: string): FoundKey[] {
+  const sig = Object.keys(process.env).length + '|' + Object.keys(process.env).filter((k) => /KEY|TOKEN|SECRET/i.test(k)).join(',');
+  if (!keyCache || keyCache.sig !== sig) keyCache = { sig, map: new Map() };
+  const cached = keyCache.map.get(name);
+  if (cached) return cached;
+
+  const found: FoundKey[] = [];
+  const add = (value: string | null, from: string) => {
+    if (value && !found.some((f) => f.value === value)) found.push({ value, from });
+  };
+  add(rawEnv(name), name);
+  for (const alias of KEY_ALIASES[name] || []) add(rawEnv(alias), alias);
+  const prefix = KEY_PREFIXES[name];
+  for (const [k, val] of Object.entries(process.env)) {
+    const v = rawEnv(k);
+    if (!v) continue;
+    const match = nameMatches(k, name);
+    // Fuzzy names must also look like this provider's key when we know its format.
+    if (match === 'exact' || (match === 'fuzzy' && (!prefix || prefix.test(v)))) add(v, k);
+    else if (prefix && prefix.test(v)) add(v, k);
+    void val;
+  }
+  keyCache.map.set(name, found);
+  return found;
+}
+
+const keyCooldownUntil = new Map<string, number>();
+
+/** Put one key on cooldown (rate limit / bad key). Returns true if another key for the same provider is still usable. */
+export function markKeyFailed(name: string, key: string, status: number, retryAfterSec?: number): boolean {
+  const secs = status === 401 || status === 403 ? 6 * 3600 : status === 402 ? 6 * 3600 : status === 429 ? Math.max(10, retryAfterSec || 60) : 0;
+  if (!secs) return false;
+  keyCooldownUntil.set(key, Date.now() + secs * 1000);
+  return allKeys(name).some((k) => k.value !== key && (keyCooldownUntil.get(k.value) || 0) <= Date.now());
+}
+
+/** First healthy key for a provider (rotates to backups when one is rate-limited or rejected). */
+function env(name: string): string | null {
+  const keys = allKeys(name);
+  if (keys.length === 0) return null;
+  const healthy = keys.find((k) => (keyCooldownUntil.get(k.value) || 0) <= Date.now()) || keys[0];
+  keySource[name] = keys.length > 1 ? `${healthy.from} (+${keys.length - 1} backup)` : healthy.from;
+  return healthy.value;
+}
+
+/** Canonical key variable per provider (for key rotation). */
+export const PROVIDER_KEY_ENV: Record<string, string> = {
+  groq: 'GROQ_API_KEY', cerebras: 'CEREBRAS_API_KEY', gemini: 'GEMINI_API_KEY', mistral: 'MISTRAL_API_KEY',
+  github: 'GITHUB_MODELS_TOKEN', openrouter: 'OPENROUTER_API_KEY', opencode: 'OPENCODE_API_KEY', nvidia: 'NVIDIA_API_KEY',
+  cloudflare: 'CLOUDFLARE_API_TOKEN', sambanova: 'SAMBANOVA_API_KEY', huggingface: 'HUGGINGFACE_API_KEY', cohere: 'COHERE_API_KEY',
+  deepseek: 'DEEPSEEK_API_KEY', zhipu: 'ZHIPU_API_KEY', siliconflow: 'SILICONFLOW_API_KEY', dashscope: 'DASHSCOPE_API_KEY',
+  novita: 'NOVITA_API_KEY',
+};
+
+/** True when the GLM key is a Z.ai (international) key rather than mainland Zhipu. */
+function isZai(): boolean {
+  return /^zai$/i.test(process.env.ZHIPU_REGION || '') || /Z_?AI/i.test(keyFrom('ZHIPU_API_KEY'));
+}
+
+/** Name of the env var that supplied a key — used e.g. to pick Z.ai vs Zhipu endpoints. */
+function keyFrom(name: string): string {
+  env(name);
+  return keySource[name] || '';
 }
 
 /**
@@ -133,6 +218,8 @@ export function normalizeProviderEnv(): string[] {
     if (rawEnv(name)) continue;
     const v = env(name);
     if (v) {
+      // Remember Z.ai (international) origin before the key is copied to ZHIPU_API_KEY.
+      if (name === 'ZHIPU_API_KEY' && /Z_?AI/i.test(keySource[name] || '') && !process.env.ZHIPU_REGION) process.env.ZHIPU_REGION = 'zai';
       process.env[name] = v;
       found.push(`${name} ← ${keySource[name]}`);
     }
@@ -391,16 +478,24 @@ export const PROVIDERS: ProviderDef[] = [
   },
   {
     id: 'zhipu',
-    label: 'Zhipu GLM (Flash models free)',
-    baseUrl: () => (env('ZHIPU_BASE_URL') || 'https://open.bigmodel.cn/api/paas/v4').replace(/\/+$/, ''),
+    label: 'Z.ai / Zhipu GLM (Flash models free)',
+    // Z.ai is Zhipu's international platform (keys saved as ZAI_API_KEY use api.z.ai);
+    // mainland Zhipu keys use open.bigmodel.cn. Override with ZHIPU_BASE_URL.
+    baseUrl: () =>
+      (
+        env('ZHIPU_BASE_URL') ||
+        (isZai()
+          ? 'https://api.z.ai/api/paas/v4'
+          : 'https://open.bigmodel.cn/api/paas/v4')
+      ).replace(/\/+$/, ''),
     apiKey: () => env('ZHIPU_API_KEY'),
     rpd: 5000,
     rpm: 30,
     supportsTools: true,
     tiers: {
-      fast: { prefer: [/glm-[\d.]+-flash$/i, /flash/i], fallback: 'glm-4-flash' },
-      large: { prefer: [/glm-[\d.]+-flash$/i, /flash/i], fallback: 'glm-4-flash' },
-      code: { prefer: [/glm-[\d.]+-flash$/i], fallback: 'glm-4-flash' },
+      fast: { prefer: [/glm-[\d.]+-flash$/i, /flash/i], fallback: isZai() ? 'glm-4.5-flash' : 'glm-4-flash' },
+      large: { prefer: [/glm-[\d.]+-flash$/i, /flash/i], fallback: isZai() ? 'glm-4.5-flash' : 'glm-4-flash' },
+      code: { prefer: [/glm-[\d.]+-flash$/i], fallback: isZai() ? 'glm-4.5-flash' : 'glm-4-flash' },
       vision: { prefer: [/glm-[\d.]+v-flash/i], fallback: 'glm-4v-flash' },
     },
     modelFilter: (id) => /flash/i.test(id),

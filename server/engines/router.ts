@@ -42,7 +42,9 @@ import {
   isAvailable,
   isModelAvailable,
   isProviderConfigured,
+  markKeyFailed,
   maxTokensFor,
+  PROVIDER_KEY_ENV,
   loadUsage,
   quotaUsed,
   recordFailure,
@@ -220,8 +222,10 @@ async function completeWithFailover(
   opts?: { maxTokens?: number; timeoutMs?: number; kind?: string }
 ): Promise<CompletionResult & { provider: ProviderDef; model: string }> {
   const errors: string[] = [];
+  let keyRotations = 0;
   for (let i = 0; i < candidates.length; i++) {
     const { p, model } = candidates[i];
+    const usedKey = p.apiKey() || '';
     if (!isModelAvailable(p, model)) continue;
     onSwitch?.({ provider: p.label, model, reason: i === 0 ? undefined : errors[errors.length - 1] });
     try {
@@ -238,6 +242,14 @@ async function completeWithFailover(
       return { ...out, provider: p, model };
     } catch (err) {
       const pe = err instanceof ProviderError ? err : new ProviderError(sanitizeErrorMessage(err), 0);
+      // Several keys for one provider (e.g. two OpenCode keys): switch key, retry same engine.
+      const keyEnv = PROVIDER_KEY_ENV[p.id];
+      if (keyEnv && usedKey && [401, 402, 403, 429].includes(pe.status) && keyRotations < 4 && markKeyFailed(keyEnv, usedKey, pe.status, pe.retryAfter)) {
+        keyRotations++;
+        errors.push(`${pe.message} (switching to backup key)`);
+        i--;
+        continue;
+      }
       recordFailure(p.id, pe.status, pe.retryAfter, model);
       errors.push(pe.message);
     }
