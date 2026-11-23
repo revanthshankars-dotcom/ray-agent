@@ -1,0 +1,1181 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Blocks, Bot, Brain, ClipboardList, FolderOpen, Home, Layers, MonitorSmartphone } from 'lucide-react';
+import { TopBar } from './components/TopBar';
+import type { ActiveTab } from './components/TopBar';
+import { Sidebar } from './components/Sidebar';
+import { DashboardView } from './components/DashboardView';
+import { AssistantView } from './components/AssistantView';
+import { SecondBrainView } from './components/SecondBrainView';
+import { FilesSystemView } from './components/FilesSystemView';
+import { AppsConnectorsView } from './components/AppsConnectorsView';
+import { DevicesView } from './components/DevicesView';
+import { RoutinesView } from './components/RoutinesView';
+import { HandoffView } from './components/HandoffView';
+import { PairDeviceModal } from './components/PairDeviceModal';
+import { CameraModal } from './components/CameraModal';
+import { IncomingCommandBar } from './components/IncomingCommandBar';
+import { OfflineIndicator } from './components/OfflineIndicator';
+import { useRelaySocket } from './hooks/useRelaySocket';
+import type { SnapshotReceivedEvent } from './hooks/useRelaySocket';
+import { useJarvisVoice } from './hooks/useJarvisVoice';
+import { useScreenShare } from './hooks/useScreenShare';
+import { useLocalBridgeMonitor } from './hooks/useLocalBridgeMonitor';
+import { useFirebase } from './contexts/FirebaseContext';
+import { playHudSound } from './utils/hudAudio';
+import { authFetch } from './utils/roomAuth';
+import type {
+  AppConnector,
+  BrainNote,
+  ChatAttachment,
+  ChatMessage,
+  ConfirmationRequest,
+  EngineSettings,
+  ProtocolName,
+  SharedTask,
+  TaskAnalysisResult,
+  VoicePersona,
+} from './types/relay';
+
+function getInitialRoomId(): string {
+  if (typeof window === 'undefined') return 'RLY-HOME';
+  const params = new URLSearchParams(window.location.search);
+  const fromUrl = params.get('room');
+  if (fromUrl) {
+    const normalized = fromUrl.trim().toUpperCase().replace(/[^A-Z0-9-]/g, '');
+    if (normalized.length >= 3) {
+      localStorage.setItem('relay_room_id', normalized);
+      return normalized;
+    }
+  }
+  return localStorage.getItem('relay_room_id') || 'RLY-HOME';
+}
+
+const VALID_VOICES: VoicePersona[] = ['Kore', 'Puck', 'Charon', 'Fenrir', 'Zephyr'];
+
+const DEFAULT_ENGINE_SETTINGS: EngineSettings = {
+  provider: 'gemini',
+  ollamaUrl: 'http://127.0.0.1:11434',
+  ollamaModel: 'llama3.2',
+  openrouterModel: 'openrouter/free',
+  groqModel: 'llama-3.3-70b-versatile',
+  anthropicModel: 'claude-3-5-sonnet-20241022',
+  openaiModel: 'gpt-4o',
+  hfModel: 'meta-llama/Meta-Llama-3-8B-Instruct',
+  useBridgeProxy: false,
+  tokenUsage: {
+    usedTokens: 14250,
+    limitTokens: 100000,
+    renewalDate: '2026-12-01',
+    costOptimized: true,
+  },
+};
+
+function loadInitialEngineSettings(): EngineSettings {
+  if (typeof window === 'undefined') return DEFAULT_ENGINE_SETTINGS;
+  try {
+    const raw = localStorage.getItem('jarvis_engine_settings');
+    if (!raw) return DEFAULT_ENGINE_SETTINGS;
+    const parsed = JSON.parse(raw) as Partial<EngineSettings>;
+    const validProviders = ['gemini', 'openrouter', 'ollama', 'groq', 'anthropic', 'openai', 'huggingface'];
+    const provider = validProviders.includes(parsed.provider || '')
+      ? (parsed.provider as EngineSettings['provider'])
+      : 'gemini';
+    const rawOrModel =
+      typeof parsed.openrouterModel === 'string' && parsed.openrouterModel.trim()
+        ? parsed.openrouterModel.trim()
+        : 'openrouter/free';
+    return {
+      provider,
+      ollamaUrl: typeof parsed.ollamaUrl === 'string' && parsed.ollamaUrl.trim() ? parsed.ollamaUrl : 'http://127.0.0.1:11434',
+      ollamaModel: typeof parsed.ollamaModel === 'string' && parsed.ollamaModel.trim() ? parsed.ollamaModel : 'llama3.2',
+      openrouterModel:
+        rawOrModel === 'meta-llama/llama-3.3-70b-instruct:free' ? 'openrouter/free' : rawOrModel,
+      groqModel: typeof parsed.groqModel === 'string' && parsed.groqModel.trim() ? parsed.groqModel : 'llama-3.3-70b-versatile',
+      anthropicModel: typeof parsed.anthropicModel === 'string' && parsed.anthropicModel.trim() ? parsed.anthropicModel : 'claude-3-5-sonnet-20241022',
+      openaiModel: typeof parsed.openaiModel === 'string' && parsed.openaiModel.trim() ? parsed.openaiModel : 'gpt-4o',
+      hfModel: typeof parsed.hfModel === 'string' && parsed.hfModel.trim() ? parsed.hfModel : 'meta-llama/Meta-Llama-3-8B-Instruct',
+      useBridgeProxy: Boolean(parsed.useBridgeProxy),
+      tokenUsage: parsed.tokenUsage || DEFAULT_ENGINE_SETTINGS.tokenUsage,
+    };
+  } catch {
+    return DEFAULT_ENGINE_SETTINGS;
+  }
+}
+
+export default function App() {
+  const [roomId, setRoomId] = useState<string>(getInitialRoomId);
+  const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
+  const [pairModalOpen, setPairModalOpen] = useState(false);
+  const [manualCameraOpen, setManualCameraOpen] = useState(false);
+  const [darkMode, setDarkMode] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return localStorage.getItem('relay_theme') === 'dark';
+  });
+
+  const [voice, setVoice] = useState<VoicePersona>(() => {
+    if (typeof window === 'undefined') return 'Fenrir';
+    const saved = localStorage.getItem('jarvis_voice') as VoicePersona | null;
+    return saved && VALID_VOICES.includes(saved) ? saved : 'Fenrir';
+  });
+  const [wakeEnabled, setWakeEnabled] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return localStorage.getItem('jarvis_wake') === 'true';
+  });
+  const [wakeSensitivity, setWakeSensitivity] = useState<number>(() => {
+    if (typeof window === 'undefined') return 0.75;
+    const num = Number(localStorage.getItem('jarvis_wake_sensitivity'));
+    return Number.isFinite(num) && num >= 0.3 && num <= 1 ? num : 0.75;
+  });
+
+  const [engineSettings, setEngineSettings] = useState<EngineSettings>(loadInitialEngineSettings);
+  // Strictly in-memory Notion integration token (never stored in localStorage/sessionStorage/Firestore)
+  const [notionToken, setNotionToken] = useState<string>('');
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('jarvis_engine_settings', JSON.stringify(engineSettings));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [engineSettings]);
+
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [localAnalyses, setLocalAnalyses] = useState<TaskAnalysisResult[]>([]);
+  const [pendingConfirmations, setPendingConfirmations] = useState<ConfirmationRequest[]>([]);
+  const [targetDeviceHint, setTargetDeviceHint] = useState('auto');
+  const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
+  const [draftPrompt, setDraftPrompt] = useState<string>('');
+
+  const {
+    user,
+    authReady,
+    profileReady,
+    authError,
+    googleAccessToken,
+    userProfile,
+    cloudTasks,
+    cloudAnalyses,
+    cloudRoutines,
+    cloudMessages,
+    cloudHandoffs,
+    cloudBrainNotes,
+    cloudConnectors,
+    signInWithGoogle,
+    connectGoogleWorkspace,
+    signOutUser,
+    updatePreferences,
+    saveTaskToCloud,
+    toggleTaskInCloud,
+    deleteTaskFromCloud,
+    saveAnalysisToCloud,
+    deleteAnalysisFromCloud,
+    saveRoutineToCloud,
+    deleteRoutineFromCloud,
+    saveMessageToCloud,
+    updateMessageInCloud,
+    clearMessagesInCloud,
+    saveHandoffToCloud,
+    deleteHandoffFromCloud,
+    saveBrainNoteToCloud,
+    deleteBrainNoteFromCloud,
+    saveConnectorToCloud,
+    deleteConnectorFromCloud,
+  } = useFirebase();
+
+  useEffect(() => {
+    const root = document.documentElement;
+    if (darkMode) {
+      root.classList.add('dark');
+      localStorage.setItem('relay_theme', 'dark');
+    } else {
+      root.classList.remove('dark');
+      localStorage.setItem('relay_theme', 'light');
+    }
+  }, [darkMode]);
+
+  // Global keyboard shortcuts (Alt+H/R/B/F/A)
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!e.altKey || e.ctrlKey || e.metaKey) return;
+      const key = e.key.toLowerCase();
+      if (key === 'h') {
+        e.preventDefault();
+        setActiveTab('dashboard');
+      } else if (key === 'r') {
+        e.preventDefault();
+        setActiveTab('assistant');
+      } else if (key === 'b') {
+        e.preventDefault();
+        setActiveTab('brain');
+      } else if (key === 'f') {
+        e.preventDefault();
+        setActiveTab('files');
+      } else if (key === 'a') {
+        e.preventDefault();
+        setActiveTab('apps');
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  // Hydrate preferences from Firestore userProfile when available
+  useEffect(() => {
+    if (!userProfile) return;
+    if (VALID_VOICES.includes(userProfile.preferredVoice)) {
+      setVoice(userProfile.preferredVoice);
+      localStorage.setItem('jarvis_voice', userProfile.preferredVoice);
+    }
+    setWakeEnabled(Boolean(userProfile.wakeEnabled));
+    localStorage.setItem('jarvis_wake', String(Boolean(userProfile.wakeEnabled)));
+    if (typeof userProfile.wakeSensitivity === 'number') {
+      const clamped = Math.max(0.3, Math.min(1, userProfile.wakeSensitivity));
+      setWakeSensitivity(clamped);
+      localStorage.setItem('jarvis_wake_sensitivity', String(clamped));
+    }
+  }, [userProfile]);
+
+  const handleSnapshotReceived = useCallback((evt: SnapshotReceivedEvent) => {
+    setPendingAttachments((prev) => [
+      ...prev,
+      {
+        id: `snap-${Date.now()}`,
+        name: `${evt.deviceName} snapshot.jpg`,
+        mimeType: 'image/jpeg',
+        dataUrl: evt.dataUrl,
+      },
+    ]);
+  }, []);
+
+  const [localBridgeOnline, setLocalBridgeOnline] = useState(false);
+
+  const {
+    identity,
+    status,
+    roomToken,
+    roomAuthError,
+    applyManualRoomToken,
+    snapshot,
+    incomingActions,
+    dismissAction,
+    pendingSnapshotRequest,
+    clearSnapshotRequest,
+    submitSnapshot,
+    renameDevice,
+    removeDevice,
+    shareLocationTelemetry,
+    createTask,
+    toggleTask,
+    deleteTask,
+    pushHandoff,
+    deleteHandoff,
+    createTimer,
+    cancelTimer,
+    deleteRoutine,
+  } = useRelaySocket(roomId, handleSnapshotReceived, localBridgeOnline);
+
+  const bridgeMonitor = useLocalBridgeMonitor(roomId, engineSettings.ollamaUrl, roomToken);
+  useEffect(() => {
+    setLocalBridgeOnline(bridgeMonitor.status === 'connected');
+  }, [bridgeMonitor.status]);
+
+  const screenShare = useScreenShare();
+
+  const handleAddConfirmation = useCallback((req: ConfirmationRequest) => {
+    setPendingConfirmations((prev) => {
+      if (prev.some((p) => p.id === req.id)) return prev;
+      return [...prev, req];
+    });
+    playHudSound('alert');
+  }, []);
+
+  const {
+    voiceState,
+    userCaption,
+    jarvisCaption,
+    liveError,
+    wakeSupported,
+    startLiveSession,
+    stopLiveSession,
+    emergencyStop,
+  } = useJarvisVoice({
+    roomId,
+    deviceName: identity.name,
+    voiceName: voice,
+    wakeEnabled,
+    wakeSensitivity,
+    googleAccessToken,
+    notionToken,
+    onConfirmationRequired: handleAddConfirmation,
+  });
+
+  // Track snapshot items & deleted items so Gemini tool creations sync to Firestore without resurrecting deletes
+  const knownSnapshotIdsRef = useRef<Set<string>>(new Set());
+  const deletedCloudKeysRef = useRef<Set<string>>(new Set());
+  const cloudEnabled = Boolean(user && profileReady);
+
+  // Sync cloudMessages into Assistant message state when signed in
+  const prevCloudCountRef = useRef(0);
+  useEffect(() => {
+    if (!cloudEnabled) {
+      prevCloudCountRef.current = 0;
+      return;
+    }
+    if (cloudMessages.length === 0 && prevCloudCountRef.current === 0) return;
+    prevCloudCountRef.current = cloudMessages.length;
+    setMessages((prev) => {
+      const cloudMap = new Map(cloudMessages.map((m) => [m.id, m]));
+      const merged: ChatMessage[] = cloudMessages.map((cm) => {
+        const localMatch = prev.find((lm) => lm.id === cm.id);
+        return localMatch?.attachments?.length
+          ? { ...cm, attachments: localMatch.attachments }
+          : cm;
+      });
+      for (const lm of prev) {
+        if (!cloudMap.has(lm.id)) {
+          merged.push(lm);
+        }
+      }
+      return merged.sort((a, b) => a.createdAt - b.createdAt);
+    });
+  }, [cloudEnabled, cloudMessages]);
+
+  // Auto-persist newly created server-side Gemini tasks, routines, handoffs, and Second Brain notes to Firestore
+  useEffect(() => {
+    if (!cloudEnabled) return;
+    for (const t of snapshot.tasks) {
+      const key = `task:${t.id}`;
+      if (!knownSnapshotIdsRef.current.has(key)) {
+        knownSnapshotIdsRef.current.add(key);
+        if (!deletedCloudKeysRef.current.has(key) && !cloudTasks.some((ct) => ct.id === t.id)) {
+          void saveTaskToCloud(t);
+        }
+      }
+    }
+    for (const r of snapshot.routines) {
+      const key = `routine:${r.id}`;
+      if (!knownSnapshotIdsRef.current.has(key)) {
+        knownSnapshotIdsRef.current.add(key);
+        if (!deletedCloudKeysRef.current.has(key) && !cloudRoutines.some((cr) => cr.id === r.id)) {
+          void saveRoutineToCloud(r);
+        }
+      }
+    }
+    for (const h of snapshot.handoffs) {
+      const key = `handoff:${h.id}`;
+      if (!knownSnapshotIdsRef.current.has(key)) {
+        knownSnapshotIdsRef.current.add(key);
+        if (!deletedCloudKeysRef.current.has(key) && !cloudHandoffs.some((ch) => ch.id === h.id)) {
+          void saveHandoffToCloud(h);
+        }
+      }
+    }
+    for (const b of snapshot.brainNotes || []) {
+      const key = `brain:${b.id}:${b.updatedAt}`;
+      if (!knownSnapshotIdsRef.current.has(key)) {
+        knownSnapshotIdsRef.current.add(key);
+        if (!deletedCloudKeysRef.current.has(`brain:${b.id}`)) {
+          const existing = cloudBrainNotes.find((cb) => cb.id === b.id);
+          if (!existing || b.updatedAt > existing.updatedAt) {
+            void saveBrainNoteToCloud(b);
+          }
+        }
+      }
+    }
+  }, [
+    cloudEnabled,
+    snapshot.tasks,
+    snapshot.routines,
+    snapshot.handoffs,
+    snapshot.brainNotes,
+    cloudTasks,
+    cloudRoutines,
+    cloudHandoffs,
+    cloudBrainNotes,
+    saveTaskToCloud,
+    saveRoutineToCloud,
+    saveHandoffToCloud,
+    saveBrainNoteToCloud,
+  ]);
+
+  const effectiveTasks = useMemo(
+    () => (cloudEnabled ? cloudTasks : snapshot.tasks),
+    [cloudEnabled, cloudTasks, snapshot.tasks]
+  );
+
+  const effectiveRoutines = useMemo(
+    () => (cloudEnabled ? cloudRoutines : snapshot.routines),
+    [cloudEnabled, cloudRoutines, snapshot.routines]
+  );
+
+  const effectiveHandoffs = useMemo(
+    () => (cloudEnabled ? cloudHandoffs : snapshot.handoffs),
+    [cloudEnabled, cloudHandoffs, snapshot.handoffs]
+  );
+
+  const effectiveAnalyses = useMemo(
+    () => (cloudEnabled ? cloudAnalyses : localAnalyses),
+    [cloudEnabled, cloudAnalyses, localAnalyses]
+  );
+
+  const effectiveBrainNotes = useMemo(() => {
+    const roomNotes = snapshot.brainNotes || [];
+    if (!cloudEnabled) return roomNotes;
+    const map = new Map<string, BrainNote>();
+    for (const rn of roomNotes) {
+      if (!deletedCloudKeysRef.current.has(`brain:${rn.id}`)) {
+        map.set(rn.id, rn);
+      }
+    }
+    for (const cn of cloudBrainNotes) {
+      const existing = map.get(cn.id);
+      if (!existing || cn.updatedAt >= existing.updatedAt) {
+        map.set(cn.id, cn);
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => b.updatedAt - a.updatedAt);
+  }, [cloudEnabled, cloudBrainNotes, snapshot.brainNotes]);
+
+  const effectiveConnectors = useMemo(() => {
+    const roomConns = snapshot.connectors || [];
+    if (!cloudEnabled) return roomConns;
+    const map = new Map<string, AppConnector>();
+    for (const rc of roomConns) map.set(rc.id, rc);
+    for (const cc of cloudConnectors) map.set(cc.id, cc);
+    return Array.from(map.values()).sort((a, b) => b.updatedAt - a.updatedAt);
+  }, [cloudEnabled, cloudConnectors, snapshot.connectors]);
+
+  const hasBridgeOnline = useMemo(
+    () =>
+      bridgeMonitor.status === 'connected' ||
+      snapshot.devices.some(
+        (d) => d.online && (d.type === 'bridge' || d.capabilities.includes('os-bridge'))
+      ),
+    [bridgeMonitor.status, snapshot.devices]
+  );
+
+  const handleChangeVoice = useCallback(
+    (nextVoice: VoicePersona) => {
+      setVoice(nextVoice);
+      localStorage.setItem('jarvis_voice', nextVoice);
+      if (cloudEnabled) {
+        void updatePreferences({ preferredVoice: nextVoice });
+      }
+    },
+    [cloudEnabled, updatePreferences]
+  );
+
+  const handleToggleWake = useCallback(() => {
+    setWakeEnabled((prev) => {
+      const next = !prev;
+      localStorage.setItem('jarvis_wake', String(next));
+      if (cloudEnabled) {
+        void updatePreferences({ wakeEnabled: next });
+      }
+      return next;
+    });
+  }, [cloudEnabled, updatePreferences]);
+
+  const handleChangeWakeSensitivity = useCallback(
+    (val: number) => {
+      const clamped = Math.max(0.3, Math.min(1, val));
+      setWakeSensitivity(clamped);
+      localStorage.setItem('jarvis_wake_sensitivity', String(clamped));
+      if (cloudEnabled) {
+        void updatePreferences({ wakeSensitivity: clamped });
+      }
+    },
+    [cloudEnabled, updatePreferences]
+  );
+
+  const handleCreateTask = useCallback(
+    (
+      title: string,
+      assignedDevice = 'All Devices',
+      meta?: Pick<SharedTask, 'category' | 'priority' | 'effortMinutes' | 'analysisId'>
+    ) => {
+      if (cloudEnabled) {
+        const task: SharedTask = {
+          id: `tsk-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          title,
+          completed: false,
+          assignedDevice,
+          category: meta?.category || 'general',
+          priority: meta?.priority || 'medium',
+          effortMinutes: meta?.effortMinutes ?? 15,
+          analysisId: meta?.analysisId,
+          createdAt: Date.now(),
+        };
+        void saveTaskToCloud(task);
+      } else {
+        createTask(title, assignedDevice);
+      }
+    },
+    [cloudEnabled, createTask, saveTaskToCloud]
+  );
+
+  const handleToggleTask = useCallback(
+    (id: string) => {
+      if (snapshot.tasks.some((t) => t.id === id)) {
+        toggleTask(id);
+      }
+      if (cloudEnabled) {
+        const target = cloudTasks.find((t) => t.id === id) || snapshot.tasks.find((t) => t.id === id);
+        if (target) {
+          void toggleTaskInCloud(id, !target.completed);
+        }
+      }
+    },
+    [cloudEnabled, cloudTasks, snapshot.tasks, toggleTask, toggleTaskInCloud]
+  );
+
+  const handleDeleteTask = useCallback(
+    (id: string) => {
+      deletedCloudKeysRef.current.add(`task:${id}`);
+      deleteTask(id);
+      if (cloudEnabled) {
+        void deleteTaskFromCloud(id);
+      }
+    },
+    [cloudEnabled, deleteTask, deleteTaskFromCloud]
+  );
+
+  const handlePushHandoff = useCallback(
+    (params: {
+      label: string;
+      content: string;
+      kind: 'text' | 'link' | 'code' | 'image';
+      targetDevice: string;
+    }) => {
+      if (cloudEnabled) {
+        void saveHandoffToCloud({
+          id: `hof-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          label: params.label,
+          content: params.content,
+          kind: params.kind,
+          sourceDevice: identity.name,
+          targetDevice: params.targetDevice,
+          createdAt: Date.now(),
+        });
+      } else {
+        pushHandoff(params);
+      }
+    },
+    [cloudEnabled, identity.name, pushHandoff, saveHandoffToCloud]
+  );
+
+  const handleDeleteHandoff = useCallback(
+    (id: string) => {
+      deletedCloudKeysRef.current.add(`handoff:${id}`);
+      deleteHandoff(id);
+      if (cloudEnabled) {
+        void deleteHandoffFromCloud(id);
+      }
+    },
+    [cloudEnabled, deleteHandoff, deleteHandoffFromCloud]
+  );
+
+  const handleDeleteRoutine = useCallback(
+    (id: string) => {
+      deletedCloudKeysRef.current.add(`routine:${id}`);
+      deleteRoutine(id);
+      if (cloudEnabled) {
+        void deleteRoutineFromCloud(id);
+      }
+    },
+    [cloudEnabled, deleteRoutine, deleteRoutineFromCloud]
+  );
+
+  const handleSaveAnalysis = useCallback(
+    (analysis: TaskAnalysisResult) => {
+      setLocalAnalyses((prev) => [analysis, ...prev.filter((a) => a.id !== analysis.id)].slice(0, 30));
+      if (cloudEnabled) {
+        void saveAnalysisToCloud(analysis);
+      }
+    },
+    [cloudEnabled, saveAnalysisToCloud]
+  );
+
+  const handleDeleteAnalysis = useCallback(
+    (id: string) => {
+      setLocalAnalyses((prev) => prev.filter((a) => a.id !== id));
+      if (cloudEnabled) {
+        void deleteAnalysisFromCloud(id);
+      }
+    },
+    [cloudEnabled, deleteAnalysisFromCloud]
+  );
+
+  const handlePersistMessage = useCallback(
+    (msg: ChatMessage) => {
+      if (cloudEnabled) {
+        void saveMessageToCloud(roomId, msg);
+      }
+    },
+    [cloudEnabled, roomId, saveMessageToCloud]
+  );
+
+  const handleUpdatePersistedMessage = useCallback(
+    (msg: ChatMessage) => {
+      if (cloudEnabled) {
+        void updateMessageInCloud(msg.id, {
+          text: msg.text,
+          toolCalls: msg.toolCalls,
+          sources: msg.sources,
+        });
+      }
+    },
+    [cloudEnabled, updateMessageInCloud]
+  );
+
+  const handleClearHistory = useCallback(() => {
+    setMessages([]);
+    if (cloudEnabled) {
+      void clearMessagesInCloud();
+    }
+  }, [clearMessagesInCloud, cloudEnabled]);
+
+  const handleSaveBrainNote = useCallback(
+    async (note: BrainNote) => {
+      deletedCloudKeysRef.current.delete(`brain:${note.id}`);
+      await authFetch('/api/brain/notes', roomId, {
+        method: 'POST',
+        body: JSON.stringify({ roomId, note }),
+      }).catch(() => {});
+      if (cloudEnabled) {
+        await saveBrainNoteToCloud(note);
+      }
+    },
+    [cloudEnabled, roomId, saveBrainNoteToCloud]
+  );
+
+  const handleDeleteBrainNote = useCallback(
+    async (noteId: string) => {
+      deletedCloudKeysRef.current.add(`brain:${noteId}`);
+      await authFetch(`/api/brain/notes/${encodeURIComponent(noteId)}?room=${encodeURIComponent(roomId)}`, roomId, {
+        method: 'DELETE',
+      }).catch(() => {});
+      if (cloudEnabled) {
+        await deleteBrainNoteFromCloud(noteId);
+      }
+    },
+    [cloudEnabled, deleteBrainNoteFromCloud, roomId]
+  );
+
+  const handleSaveConnector = useCallback(
+    async (connector: AppConnector) => {
+      const res = await authFetch('/api/connectors', roomId, {
+        method: 'POST',
+        body: JSON.stringify({ roomId, connector }),
+      });
+      if (!res.ok) {
+        const errBody = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(errBody.error || 'Failed to save connector');
+      }
+      if (cloudEnabled) {
+        await saveConnectorToCloud(connector);
+      }
+    },
+    [cloudEnabled, roomId, saveConnectorToCloud]
+  );
+
+  const handleDeleteConnector = useCallback(
+    async (connectorId: string) => {
+      await authFetch(
+        `/api/connectors/${encodeURIComponent(connectorId)}?room=${encodeURIComponent(roomId)}`,
+        roomId,
+        { method: 'DELETE' }
+      ).catch(() => {});
+      if (cloudEnabled) {
+        await deleteConnectorFromCloud(connectorId);
+      }
+    },
+    [cloudEnabled, deleteConnectorFromCloud, roomId]
+  );
+
+  const handleToggleScreenControlArmed = useCallback(async () => {
+    const nextArmed = !Boolean(snapshot.screenControlArmed);
+    await authFetch('/api/screen/arm', roomId, {
+      method: 'POST',
+      body: JSON.stringify({ roomId, armed: nextArmed }),
+    }).catch(() => {});
+    playHudSound(nextArmed ? 'affirmative' : 'blip');
+  }, [roomId, snapshot.screenControlArmed]);
+
+  const handleEmergencyStopAll = useCallback(async () => {
+    screenShare.stopScreenShare();
+    await Promise.allSettled([
+      emergencyStop(),
+      authFetch('/api/screen/arm', roomId, {
+        method: 'POST',
+        body: JSON.stringify({ roomId, armed: false }),
+      }),
+    ]);
+  }, [emergencyStop, roomId, screenShare]);
+
+  const handleRunProtocol = useCallback(
+    async (protocol: ProtocolName) => {
+      const res = await authFetch('/api/protocols/run', roomId, {
+        method: 'POST',
+        body: JSON.stringify({ roomId, protocol }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { summary?: string };
+      playHudSound('affirmative');
+      if (data.summary) {
+        const msg: ChatMessage = {
+          id: `proto-${Date.now()}`,
+          role: 'assistant',
+          text: data.summary,
+          createdAt: Date.now(),
+        };
+        setMessages((prev) => [...prev, msg]);
+        if (cloudEnabled) {
+          void saveMessageToCloud(roomId, msg);
+        }
+      }
+    },
+    [cloudEnabled, roomId, saveMessageToCloud]
+  );
+
+  const handleResolveConfirmation = useCallback(
+    async (id: string, approved: boolean) => {
+      setPendingConfirmations((prev) => prev.filter((c) => c.id !== id));
+      try {
+        const res = await authFetch(
+          '/api/confirmations/resolve',
+          roomId,
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              roomId,
+              confirmationId: id,
+              approved,
+              sourceDeviceName: identity.name,
+              preferredVoice: voice,
+              customConnectors: effectiveConnectors,
+            }),
+          },
+          { googleAccessToken, notionToken }
+        );
+        const data = (await res.json()) as {
+          summary?: string;
+          speechResponse?: string;
+          error?: string;
+        };
+        const text = data.speechResponse || data.summary || (approved ? 'Executed, Ray.' : 'Cancelled, Ray.');
+        playHudSound(approved ? 'affirmative' : 'alert');
+        const msg: ChatMessage = {
+          id: `conf-${Date.now()}`,
+          role: 'assistant',
+          text,
+          createdAt: Date.now(),
+        };
+        setMessages((prev) => [...prev, msg]);
+        if (cloudEnabled) {
+          void saveMessageToCloud(roomId, msg);
+        }
+      } catch (err) {
+        const msg: ChatMessage = {
+          id: `conf-err-${Date.now()}`,
+          role: 'assistant',
+          text: `Unable to resolve confirmation: ${err instanceof Error ? err.message : 'Request failed'}`,
+          createdAt: Date.now(),
+        };
+        setMessages((prev) => [...prev, msg]);
+      }
+    },
+    [cloudEnabled, effectiveConnectors, googleAccessToken, identity.name, notionToken, roomId, saveMessageToCloud, voice]
+  );
+
+  const handleChangeRoom = (nextRoom: string) => {
+    const cleaned = nextRoom.trim().toUpperCase().replace(/[^A-Z0-9-]/g, '');
+    if (cleaned.length < 3) return;
+    localStorage.setItem('relay_room_id', cleaned);
+    const url = new URL(window.location.href);
+    url.searchParams.set('room', cleaned);
+    url.searchParams.delete('token');
+    window.history.replaceState({}, '', url.toString());
+    setRoomId(cleaned);
+    setPairModalOpen(false);
+  };
+
+  const handleCameraCapture = (dataUrl: string) => {
+    if (pendingSnapshotRequest) {
+      submitSnapshot(dataUrl, pendingSnapshotRequest.commandId, pendingSnapshotRequest.reason);
+    } else {
+      setPendingAttachments((prev) => [
+        ...prev,
+        {
+          id: `cam-${Date.now()}`,
+          name: `camera-${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.jpg`,
+          mimeType: 'image/jpeg',
+          dataUrl,
+        },
+      ]);
+      setManualCameraOpen(false);
+    }
+  };
+
+  const handleAskRayWithContext = useCallback(
+    (prompt: string, imageAttachment?: { name: string; dataUrl: string; mimeType: string }) => {
+      if (imageAttachment) {
+        setPendingAttachments((prev) => [
+          ...prev,
+          {
+            id: `ctx-${Date.now()}`,
+            name: imageAttachment.name,
+            mimeType: imageAttachment.mimeType,
+            dataUrl: imageAttachment.dataUrl,
+          },
+        ]);
+      }
+      setDraftPrompt(prompt);
+      setActiveTab('assistant');
+    },
+    []
+  );
+
+  const cameraOpen = manualCameraOpen || Boolean(pendingSnapshotRequest);
+  const showEmergencyStop =
+    voiceState === 'connecting' ||
+    voiceState === 'listening' ||
+    voiceState === 'thinking' ||
+    voiceState === 'speaking' ||
+    voiceState === 'standby' ||
+    screenShare.isSharing ||
+    Boolean(snapshot.screenControlArmed);
+
+  const displayName = userProfile?.displayName || user?.displayName || 'Ray';
+
+  return (
+    <div className="h-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-hidden">
+      <TopBar
+        activeTab={activeTab}
+        onSelectTab={setActiveTab}
+        onOpenPairModal={() => setPairModalOpen(true)}
+        onEmergencyStop={() => void handleEmergencyStopAll()}
+        showEmergencyStop={showEmergencyStop}
+      />
+
+      <OfflineIndicator />
+
+      <div className="flex-1 flex min-h-0 overflow-hidden">
+        <Sidebar
+          activeTab={activeTab}
+          onSelectTab={setActiveTab}
+          roomId={roomId}
+          socketStatus={status}
+          devices={snapshot.devices}
+          localDeviceId={identity.id}
+          timers={snapshot.timers}
+          darkMode={darkMode}
+          onToggleDarkMode={() => setDarkMode((d) => !d)}
+          onOpenPairModal={() => setPairModalOpen(true)}
+          onSelectDeviceTarget={(deviceName) => {
+            setTargetDeviceHint(deviceName);
+            setActiveTab('assistant');
+          }}
+          onCancelTimer={cancelTimer}
+          user={user}
+          authReady={authReady}
+          authError={authError}
+          onSignIn={signInWithGoogle}
+          onSignOut={async () => {
+            setNotionToken('');
+            await signOutUser();
+            setMessages([]);
+          }}
+        />
+
+        <main
+          className={`flex-1 min-w-0 pb-12 md:pb-0 ${
+            activeTab === 'assistant' || activeTab === 'brain' ? 'overflow-hidden' : 'overflow-y-auto'
+          }`}
+        >
+          <div style={{ height: '233.656px', resize: 'vertical', overflow: 'auto', minHeight: '100%' }}>
+            {activeTab === 'dashboard' && (
+            <DashboardView
+              roomId={roomId}
+              roomToken={roomToken}
+              bridgeMonitor={bridgeMonitor}
+              userName={displayName}
+              userPhotoUrl={user?.photoURL}
+              devices={snapshot.devices}
+              messages={messages}
+              tasks={effectiveTasks}
+              timers={snapshot.timers}
+              notes={effectiveBrainNotes}
+              connectors={effectiveConnectors}
+              engineSettings={engineSettings}
+              onChangeEngineSettings={setEngineSettings}
+              voiceState={voiceState}
+              hasBridgeOnline={hasBridgeOnline}
+              screenSharing={screenShare.isSharing}
+              screenControlArmed={Boolean(snapshot.screenControlArmed)}
+              googleAuthorized={Boolean(googleAccessToken)}
+              onSelectTab={setActiveTab}
+              onAskRay={(prompt) => {
+                setDraftPrompt(prompt);
+                setActiveTab('assistant');
+              }}
+              onAskRayWithContext={handleAskRayWithContext}
+              onToggleVoice={() => {
+                if (voiceState === 'off') {
+                  void startLiveSession();
+                } else {
+                  stopLiveSession(false);
+                }
+              }}
+              onEmergencyStop={() => void handleEmergencyStopAll()}
+              onOpenPairModal={() => setPairModalOpen(true)}
+              onToggleTask={handleToggleTask}
+              onCreateTask={(title) => handleCreateTask(title)}
+              onCreateTimer={createTimer}
+              onSaveNote={handleSaveBrainNote}
+              onSaveConnector={handleSaveConnector}
+              onConnectGoogleWorkspace={connectGoogleWorkspace}
+              onToggleScreenControlArmed={handleToggleScreenControlArmed}
+              onToggleScreenShare={async () => {
+                if (screenShare.isSharing) {
+                  screenShare.stopScreenShare();
+                } else {
+                  await screenShare.startScreenShare();
+                }
+              }}
+              onCaptureBrowserScreenFrame={screenShare.captureScreenFrame}
+              onRunProtocol={handleRunProtocol}
+            />
+          )}
+
+          {activeTab === 'assistant' && (
+            <AssistantView
+              roomId={roomId}
+              userName={displayName}
+              localDeviceName={identity.name}
+              devices={snapshot.devices}
+              messages={messages}
+              setMessages={setMessages}
+              targetDeviceHint={targetDeviceHint}
+              setTargetDeviceHint={setTargetDeviceHint}
+              onOpenCamera={() => setManualCameraOpen(true)}
+              pendingAttachments={pendingAttachments}
+              setPendingAttachments={setPendingAttachments}
+              onPushToHandoff={(label, content) =>
+                handlePushHandoff({
+                  label,
+                  content,
+                  kind: 'text',
+                  targetDevice: targetDeviceHint === 'auto' ? 'all' : targetDeviceHint,
+                })
+              }
+              draftPrompt={draftPrompt}
+              onClearDraftPrompt={() => setDraftPrompt('')}
+              voice={voice}
+              onChangeVoice={handleChangeVoice}
+              wakeEnabled={wakeEnabled}
+              onToggleWake={handleToggleWake}
+              wakeSensitivity={wakeSensitivity}
+              onChangeWakeSensitivity={handleChangeWakeSensitivity}
+              wakeSupported={wakeSupported}
+              voiceState={voiceState}
+              userCaption={userCaption}
+              jarvisCaption={jarvisCaption}
+              liveError={liveError}
+              onStartLiveVoice={startLiveSession}
+              onStopLiveVoice={() => stopLiveSession(false)}
+              onEmergencyStop={() => void handleEmergencyStopAll()}
+              pendingConfirmations={pendingConfirmations}
+              onAddConfirmation={handleAddConfirmation}
+              onResolveConfirmation={handleResolveConfirmation}
+              veronicaMode={Boolean(snapshot.veronicaMode)}
+              onPersistMessage={handlePersistMessage}
+              onUpdatePersistedMessage={handleUpdatePersistedMessage}
+              onClearHistory={handleClearHistory}
+              engineSettings={engineSettings}
+              onChangeEngineSettings={setEngineSettings}
+              googleAccessToken={googleAccessToken}
+              notionToken={notionToken}
+              connectors={effectiveConnectors}
+              screenShare={screenShare}
+              screenControlArmed={Boolean(snapshot.screenControlArmed)}
+              onToggleScreenControlArmed={handleToggleScreenControlArmed}
+              hasBridgeOnline={hasBridgeOnline}
+              bridgeMonitor={bridgeMonitor}
+              roomToken={roomToken}
+            />
+          )}
+
+          {activeTab === 'brain' && (
+            <SecondBrainView
+              roomId={roomId}
+              notes={effectiveBrainNotes}
+              hasBridgeOnline={hasBridgeOnline}
+              googleAccessToken={googleAccessToken}
+              notionToken={notionToken}
+              connectors={effectiveConnectors}
+              onConnectGoogleWorkspace={connectGoogleWorkspace}
+              onSaveConnector={handleSaveConnector}
+              onSaveNote={handleSaveBrainNote}
+              onDeleteNote={handleDeleteBrainNote}
+              onAskJarvis={(prompt) => {
+                setDraftPrompt(prompt);
+                setActiveTab('assistant');
+              }}
+              onOpenAppsTab={() => setActiveTab('apps')}
+            />
+          )}
+
+          {activeTab === 'files' && (
+            <FilesSystemView
+              roomId={roomId}
+              devices={snapshot.devices}
+              hasBridgeOnline={hasBridgeOnline}
+              screenSharing={screenShare.isSharing}
+              screenControlArmed={Boolean(snapshot.screenControlArmed)}
+              onToggleScreenShare={async () => {
+                if (screenShare.isSharing) {
+                  screenShare.stopScreenShare();
+                } else {
+                  await screenShare.startScreenShare();
+                }
+              }}
+              onToggleScreenControlArmed={handleToggleScreenControlArmed}
+              onCaptureBrowserScreenFrame={screenShare.captureScreenFrame}
+              onOpenPairModal={() => setPairModalOpen(true)}
+              onAskRayWithContext={handleAskRayWithContext}
+              onSaveToBrain={handleSaveBrainNote}
+            />
+          )}
+
+          {activeTab === 'apps' && (
+            <AppsConnectorsView
+              roomId={roomId}
+              googleAccessToken={googleAccessToken}
+              notionToken={notionToken}
+              onChangeNotionToken={setNotionToken}
+              onConnectGoogleWorkspace={connectGoogleWorkspace}
+              connectors={effectiveConnectors}
+              onSaveConnector={handleSaveConnector}
+              onDeleteConnector={handleDeleteConnector}
+              onConfirmationRequired={handleAddConfirmation}
+              onAskJarvis={(prompt) => {
+                setDraftPrompt(prompt);
+                setActiveTab('assistant');
+              }}
+            />
+          )}
+
+          {activeTab === 'devices' && (
+            <DevicesView
+              roomId={roomId}
+              devices={snapshot.devices}
+              commands={snapshot.commands}
+              localDeviceId={identity.id}
+              onRenameDevice={renameDevice}
+              onRemoveDevice={removeDevice}
+              onShareLocation={shareLocationTelemetry}
+              onOpenPairModal={() => setPairModalOpen(true)}
+            />
+          )}
+
+          {activeTab === 'routines' && (
+            <RoutinesView
+              roomId={roomId}
+              localDeviceName={identity.name}
+              devices={snapshot.devices}
+              tasks={effectiveTasks}
+              timers={snapshot.timers}
+              routines={effectiveRoutines}
+              analyses={effectiveAnalyses}
+              engineSettings={engineSettings}
+              googleAccessToken={googleAccessToken}
+              notionToken={notionToken}
+              customConnectors={effectiveConnectors}
+              onCreateTask={handleCreateTask}
+              onToggleTask={handleToggleTask}
+              onDeleteTask={handleDeleteTask}
+              onCreateTimer={createTimer}
+              onCancelTimer={cancelTimer}
+              onDeleteRoutine={handleDeleteRoutine}
+              onSaveAnalysis={handleSaveAnalysis}
+              onDeleteAnalysis={handleDeleteAnalysis}
+            />
+          )}
+
+          {activeTab === 'handoff' && (
+            <HandoffView
+              handoffs={effectiveHandoffs}
+              devices={snapshot.devices}
+              onPushHandoff={handlePushHandoff}
+              onDeleteHandoff={handleDeleteHandoff}
+              onAskAssistant={(prompt) => {
+                setDraftPrompt(prompt);
+                setActiveTab('assistant');
+              }}
+            />
+          )}
+          </div>
+        </main>
+      </div>
+
+      {/* Mobile Bottom Nav */}
+      <nav className="md:hidden fixed bottom-0 inset-x-0 h-12 border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 grid grid-cols-8 z-30">
+        {(
+          [
+            { id: 'dashboard', label: 'Home', icon: Home },
+            { id: 'assistant', label: 'RAY', icon: Bot },
+            { id: 'brain', label: 'Brain', icon: Brain },
+            { id: 'files', label: 'Files', icon: FolderOpen },
+            { id: 'apps', label: 'Apps', icon: Blocks },
+            { id: 'devices', label: 'Devices', icon: MonitorSmartphone },
+            { id: 'routines', label: 'Tasks', icon: ClipboardList },
+            { id: 'handoff', label: 'Handoff', icon: Layers },
+          ] as const
+        ).map((item) => {
+          const Icon = item.icon;
+          const active = activeTab === item.id;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setActiveTab(item.id)}
+              className={`flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium ${
+                active
+                  ? 'text-blue-600 dark:text-blue-400'
+                  : 'text-slate-500 dark:text-slate-400'
+              }`}
+            >
+              <Icon className="w-4 h-4" />
+              <span>{item.label}</span>
+            </button>
+          );
+        })}
+      </nav>
+
+      <IncomingCommandBar actions={incomingActions} onDismiss={dismissAction} />
+
+      <PairDeviceModal
+        open={pairModalOpen}
+        roomId={roomId}
+        roomToken={roomToken}
+        roomAuthError={roomAuthError}
+        bridgeStatus={bridgeMonitor.status}
+        bridgeStartupInstalled={bridgeMonitor.startupInstalled}
+        ollamaRunning={bridgeMonitor.ollamaRunning}
+        onApplyRoomToken={applyManualRoomToken}
+        onClose={() => setPairModalOpen(false)}
+        onChangeRoom={handleChangeRoom}
+      />
+
+      <CameraModal
+        open={cameraOpen}
+        reason={pendingSnapshotRequest?.reason}
+        onClose={() => {
+          setManualCameraOpen(false);
+          clearSnapshotRequest();
+        }}
+        onCapture={handleCameraCapture}
+      />
+    </div>
+  );
+}
