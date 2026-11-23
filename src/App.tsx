@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Blocks, Bot, Brain, Cable, ClipboardList, FolderOpen, Home, Layers, LayoutGrid, MonitorSmartphone, X } from 'lucide-react';
+import { Blocks, Bot, Brain, Cable, Orbit, ClipboardList, FolderOpen, Home, Layers, LayoutGrid, MonitorSmartphone, X } from 'lucide-react';
 import { TopBar } from './components/TopBar';
 import type { ActiveTab } from './components/TopBar';
 import { Sidebar } from './components/Sidebar';
@@ -12,6 +12,7 @@ import { DevicesView } from './components/DevicesView';
 import { RoutinesView } from './components/RoutinesView';
 import { HandoffView } from './components/HandoffView';
 import { ConnectionsView } from './components/ConnectionsView';
+import { Brain3DView } from './components/Brain3DView';
 import { usePushWake } from './hooks/usePushWake';
 import { PairDeviceModal } from './components/PairDeviceModal';
 import { CameraModal } from './components/CameraModal';
@@ -298,6 +299,7 @@ export default function App() {
   const screenShare = useScreenShare();
   const pushWake = usePushWake(roomId, identity.id);
   const [moreNavOpen, setMoreNavOpen] = useState(false);
+  const [brainFocusNoteId, setBrainFocusNoteId] = useState<string | null>(null);
 
   const handleAddConfirmation = useCallback((req: ConfirmationRequest) => {
     setPendingConfirmations((prev) => {
@@ -1042,6 +1044,21 @@ export default function App() {
                 setActiveTab('assistant');
               }}
               onOpenAppsTab={() => setActiveTab('apps')}
+              focusNoteId={brainFocusNoteId}
+            />
+          )}
+
+          {activeTab === 'brain3d' && (
+            <Brain3DView
+              notes={effectiveBrainNotes}
+              onOpenInEditor={(id) => {
+                setBrainFocusNoteId(id);
+                setActiveTab('brain');
+              }}
+              onAskRay={(prompt) => {
+                setDraftPrompt(prompt);
+                setActiveTab('assistant');
+              }}
             />
           )}
 
@@ -1168,6 +1185,7 @@ export default function App() {
             <div className="grid grid-cols-3 gap-2">
               {(
                 [
+                  { id: 'brain', label: 'Notes', icon: Brain },
                   { id: 'files', label: 'Files & OS', icon: FolderOpen },
                   { id: 'apps', label: 'Apps', icon: Blocks },
                   { id: 'devices', label: 'Devices', icon: MonitorSmartphone },
@@ -1204,7 +1222,7 @@ export default function App() {
           [
             { id: 'dashboard', label: 'Home', icon: Home },
             { id: 'assistant', label: 'RAY', icon: Bot },
-            { id: 'brain', label: 'Brain', icon: Brain },
+            { id: 'brain3d', label: '3D Brain', icon: Orbit },
             { id: 'connect', label: 'Connect', icon: Cable },
           ] as const
         ).map((item) => {
@@ -1230,7 +1248,7 @@ export default function App() {
           type="button"
           onClick={() => setMoreNavOpen(true)}
           className={`h-14 flex flex-col items-center justify-center gap-1 text-[11px] font-medium ${
-            ['files', 'apps', 'devices', 'routines', 'handoff'].includes(activeTab) ? 'text-blue-600 dark:text-blue-400' : 'text-slate-500 dark:text-slate-400'
+            ['brain', 'files', 'apps', 'devices', 'routines', 'handoff'].includes(activeTab) ? 'text-blue-600 dark:text-blue-400' : 'text-slate-500 dark:text-slate-400'
           }`}
         >
           <span className="px-3 py-0.5"><LayoutGrid className="w-5 h-5" /></span>

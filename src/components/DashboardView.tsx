@@ -572,11 +572,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const displayActiveWindow =
     activeWindowTitle || primaryTelemetryDevice?.telemetry?.activeWindow || '';
   const engineLabel =
-    engineSettings.provider === 'openrouter'
+    engineSettings.provider === 'auto'
+      ? engineSettings.routerMode && engineSettings.routerMode !== 'auto'
+        ? `Auto · ${engineSettings.routerMode}`
+        : 'Auto · free engines'
+      : engineSettings.provider === 'openrouter'
       ? `OpenRouter · ${engineSettings.openrouterModel}`
       : engineSettings.provider === 'ollama'
       ? `Ollama · ${engineSettings.ollamaModel}`
-      : 'Gemini · Cloud';
+      : engineSettings.provider === 'gemini'
+      ? 'Gemini · Cloud'
+      : `${engineSettings.provider[0].toUpperCase()}${engineSettings.provider.slice(1)}`;
 
   return (
     <div className="p-4 sm:p-6 max-w-7xl mx-auto space-y-5">
@@ -853,20 +859,30 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
           <div className="flex items-end justify-between gap-2">
             <div>
-              <div className="font-mono text-xl font-semibold text-slate-900 dark:text-slate-100">
-                {notes.length} notes · {onlineDevices.length} online
+              <div className="text-xl font-semibold text-slate-900 dark:text-slate-100 tabular-nums leading-tight">
+                {notes.length} notes
+                <span className="text-sm font-medium text-slate-500 dark:text-slate-400"> · {onlineDevices.length} online</span>
               </div>
               <div className="text-[11px] text-slate-500 dark:text-slate-400">
                 {fsRoots.length > 0 ? `${fsRoots.length} OS roots mounted` : `${openTasks.length} open tasks`}
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => onSelectTab('files')}
-              className="px-2.5 py-1.5 text-xs font-medium border border-slate-200 dark:border-slate-700 hover:border-blue-600 rounded-md text-slate-800 dark:text-slate-200 whitespace-nowrap shrink-0"
-            >
-              Files &amp; OS
-            </button>
+            <div className="flex flex-col gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => onSelectTab('brain3d')}
+                className="px-2.5 py-1.5 text-xs font-semibold rounded-md text-white bg-gradient-to-r from-cyan-600 to-blue-600 hover:opacity-90 whitespace-nowrap"
+              >
+                3D Brain
+              </button>
+              <button
+                type="button"
+                onClick={() => onSelectTab('files')}
+                className="px-2.5 py-1.5 text-xs font-medium border border-slate-200 dark:border-slate-700 hover:border-blue-600 rounded-md text-slate-800 dark:text-slate-200 whitespace-nowrap"
+              >
+                Files &amp; OS
+              </button>
+            </div>
           </div>
         </div>
       </section>
@@ -895,7 +911,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
               {/* Engine Switcher */}
               <div className="flex items-center p-0.5 bg-slate-100 dark:bg-slate-950 rounded-lg border border-slate-200 dark:border-slate-800">
-                {(['gemini', 'openrouter', 'ollama'] as const).map((prov) => (
+                {(['auto', 'gemini', 'ollama'] as const).map((prov) => (
                   <button
                     key={prov}
                     type="button"
@@ -908,7 +924,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                     }`}
                   >
-                    {prov}
+                    {prov === 'auto' ? 'Auto' : prov === 'ollama' ? 'Local' : 'Gemini'}
                   </button>
                 ))}
               </div>

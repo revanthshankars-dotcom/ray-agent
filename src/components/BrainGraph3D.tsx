@@ -34,10 +34,13 @@ export function BrainGraph3D({
   notes,
   onOpenNote,
   showTags = true,
+  heightClass = 'h-[520px]',
 }: {
   notes: BrainNote[];
   onOpenNote: (noteId: string) => void;
   showTags?: boolean;
+  /** Tailwind height for the canvas area (page view passes a viewport-based height). */
+  heightClass?: string;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -173,7 +176,7 @@ export function BrainGraph3D({
   const linkCount = data.links.filter((l) => l.kind === 'wikilink').length;
 
   return (
-    <div className={fullscreen ? 'fixed inset-0 z-50 bg-slate-950 p-3' : 'relative'}>
+    <div className={fullscreen ? 'fixed inset-0 z-50 bg-slate-950 p-3' : 'relative min-w-0 w-full'}>
       <div className="flex flex-wrap items-center gap-2 mb-2">
         <div className="flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-slate-100">
           <Box className="w-4 h-4 text-cyan-500" />
@@ -217,8 +220,8 @@ export function BrainGraph3D({
         </div>
       </div>
 
-      <div className="relative rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800">
-        <div ref={containerRef} className={fullscreen ? 'h-[calc(100vh-70px)] w-full' : 'h-[520px] w-full'} />
+      <div className="relative w-full min-w-0 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800">
+        <div ref={containerRef} style={{ maxWidth: '100%' }} className={fullscreen ? 'h-[calc(100vh-70px)] w-full' : `${heightClass} w-full`} />
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center text-sm text-slate-500 gap-2">
             <Loader2 className="w-4 h-4 animate-spin" /> Loading 3D engine…

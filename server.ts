@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import http from 'http';
+import { execSync } from 'child_process';
 import path from 'path';
 import { WebSocketServer } from 'ws';
 import {
@@ -82,8 +83,8 @@ import {
   validateScreenControlAction,
 } from './server/security.ts';
 import { executeAppConnectorAction, executeGoogleWorkspaceAction } from './server/workspace.ts';
-import { runAutoChatTurn } from './server/engines/router.ts';
-import { dailyBudget, getEngineStatus, loadUsage } from './server/engines/providers.ts';
+import { getEngineAssignments, runAutoChatTurn } from './server/engines/router.ts';
+import { dailyBudget, getEngineStatus, getKeySources, loadUsage, normalizeProviderEnv } from './server/engines/providers.ts';
 import { installShutdownFlush, persistenceBackend } from './server/persistence.ts';
 import { getVapidPublicKey, initWakeServices, sendPush } from './server/wake.ts';
 import { zipDirectory } from './server/zip.ts';
@@ -156,7 +157,19 @@ function requireRoomAuth(req: Request, res: Response, next: NextFunction): void 
   next();
 }
 
+const SERVER_BUILD_ID = (() => {
+  const env = process.env.RENDER_GIT_COMMIT || process.env.RAY_BUILD_ID || '';
+  if (env) return env.slice(0, 7);
+  try {
+    return execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+  } catch {
+    return 'unknown';
+  }
+})();
+
 async function startServer() {
+  const remapped = normalizeProviderEnv();
+  if (remapped.length) console.log('[RAY] Engine keys found under other names:', remapped.join(', '));
   installShutdownFlush();
   const hydrated = await hydrateRoomsFromStorage().catch((err) => {
     console.warn('[RAY] Could not hydrate rooms from storage:', err);
@@ -244,6 +257,7 @@ async function startServer() {
     const bridgesOnline = listRoomIds().reduce((n, r) => n + getRoomDevices(r).filter((d) => d.online && d.type === 'bridge').length, 0);
     res.json({
       ok: true,
+      buildId: SERVER_BUILD_ID,
       uptimeSec: Math.round(process.uptime()),
       enginesConfigured: engines.filter((e) => e.configured).map((e) => e.id),
       enginesAvailable: engines.filter((e) => e.available).length,
@@ -261,7 +275,12 @@ async function startServer() {
 
   app.get('/api/engines/status', requireRoomAuth, async (_req, res) => {
     await loadUsage();
-    res.json({ engines: getEngineStatus(), budget: dailyBudget() });
+    res.json({
+      engines: getEngineStatus(),
+      budget: dailyBudget(),
+      assignments: await getEngineAssignments(),
+      keySources: getKeySources(),
+    });
   });
 
   // Meta (WhatsApp Cloud API / Instagram Messaging) webhook

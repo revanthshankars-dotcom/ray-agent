@@ -22,6 +22,7 @@ import {
   WifiOff,
   X,
   Cable,
+  Orbit,
 } from 'lucide-react';
 import type { User } from 'firebase/auth';
 import type { ActiveTab } from './TopBar';
@@ -66,6 +67,7 @@ const SIDEBAR_NAV: Array<{ id: ActiveTab; label: string; icon: React.ComponentTy
   { id: 'dashboard', label: 'Home', icon: Home },
   { id: 'assistant', label: 'AI Assistant', icon: Bot },
   { id: 'brain', label: 'Second Brain', icon: Brain },
+  { id: 'brain3d', label: '3D Brain Graph', icon: Orbit },
   { id: 'files', label: 'Files & OS', icon: FolderOpen },
   { id: 'apps', label: 'Apps & Connectors', icon: Blocks },
   { id: 'devices', label: 'Devices', icon: MonitorSmartphone },
@@ -345,7 +347,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       <div className="p-4 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between">
-        <span className="text-xs text-slate-500 dark:text-slate-400">Appearance</span>
+        <span className="text-xs text-slate-500 dark:text-slate-400 flex flex-col">
+          Appearance
+          <span className="font-mono text-[10px] text-slate-400 dark:text-slate-500" title={`Built ${__RAY_BUILD_TIME__}`}>
+            build {__RAY_BUILD_ID__}
+          </span>
+        </span>
         <button
           type="button"
           onClick={onToggleDarkMode}

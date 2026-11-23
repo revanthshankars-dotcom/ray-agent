@@ -2,11 +2,28 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import fs from 'fs';
 import path from 'path';
+import {execSync} from 'child_process';
 import {defineConfig} from 'vite';
+
+// Build id shown in the UI so you can confirm which commit is live (Render sets RENDER_GIT_COMMIT).
+function resolveBuildId(): string {
+  const fromEnv = process.env.RENDER_GIT_COMMIT || process.env.RAY_BUILD_ID || '';
+  if (fromEnv) return fromEnv.slice(0, 7);
+  try {
+    return execSync('git rev-parse --short HEAD', {stdio: ['ignore', 'pipe', 'ignore']}).toString().trim();
+  } catch {
+    return 'dev';
+  }
+}
+const BUILD_ID = resolveBuildId();
 import {VitePWA} from 'vite-plugin-pwa';
 
 export default defineConfig(() => {
   return {
+    define: {
+      __RAY_BUILD_ID__: JSON.stringify(BUILD_ID),
+      __RAY_BUILD_TIME__: JSON.stringify(new Date().toISOString()),
+    },
     plugins: [
       react(),
       tailwindcss(),

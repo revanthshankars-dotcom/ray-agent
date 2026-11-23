@@ -127,6 +127,8 @@ export function ConnectionsView({
   wakeEnabled: boolean;
 }) {
   const [engines, setEngines] = useState<EngineStatus[]>([]);
+  const [assignments, setAssignments] = useState<Record<string, string[]>>({});
+  const [budget, setBudget] = useState<{ usedTokens: number; capTokens: number } | null>(null);
   const [health, setHealth] = useState<HubHealth>({});
   const [loading, setLoading] = useState(false);
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
@@ -142,7 +144,10 @@ export function ConnectionsView({
         authFetch(`/api/engines/status?room=${encodeURIComponent(roomId)}`, roomId).then((r) => r.json()),
       ]);
       setHealth(h as HubHealth);
-      setEngines(((e as { engines?: EngineStatus[] }).engines || []) as EngineStatus[]);
+      const ej = e as { engines?: EngineStatus[]; assignments?: Record<string, string[]>; budget?: { usedTokens: number; capTokens: number } };
+      setEngines((ej.engines || []) as EngineStatus[]);
+      setAssignments(ej.assignments || {});
+      setBudget(ej.budget || null);
     } catch {
       // offline
     } finally {
@@ -189,7 +194,7 @@ export function ConnectionsView({
               <p className="text-xs uppercase tracking-[0.2em] text-cyan-300/80">Connections</p>
               <h1 className="font-display text-2xl font-bold mt-1">RAY is {readyCount >= 4 ? 'fully connected' : 'partly connected'}</h1>
               <p className="text-sm text-slate-300 mt-1 max-w-xl">
-                {readyCount}/{checklist.length} links active · voice: {voicePipeline === 'live' ? 'Gemini Live' : 'free pipeline'}
+                {readyCount}/{checklist.length} links active · voice: {voicePipeline === 'live' && health.hasGeminiKey ? 'Gemini Live' : 'free pipeline'}
                 {wakeEnabled ? ' · "Hey Ray" listening' : ''} · {configured.length} AI engines ready
               </p>
             </div>
@@ -351,6 +356,49 @@ export function ConnectionsView({
           <p className="text-xs text-slate-600 dark:text-slate-400 mt-2">
             <b>Auto</b> picks the best engine per task (fast models for quick replies, coders for code, big models for reasoning, vision for images, Gemini for live web). <b>Swarm</b> splits big questions across several small models in parallel — RAY switches to it by itself when the big models near their daily limit.
           </p>
+
+          {Object.keys(assignments).length > 0 && (
+            <div className="mt-4 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+              <div className="px-3 py-2 bg-slate-50 dark:bg-slate-800/60 text-[11px] font-semibold uppercase tracking-wide text-slate-500 flex items-center justify-between">
+                <span>Who handles what — right now</span>
+                {budget && (
+                  <span className="normal-case tracking-normal font-mono">
+                    {budget.usedTokens.toLocaleString()} tokens today{budget.capTokens ? ` / ${budget.capTokens.toLocaleString()} cap` : ''}
+                  </span>
+                )}
+              </div>
+              <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+                {Object.entries(assignments).map(([job, chain]) => (
+                  <li key={job} className="px-3 py-2.5 grid grid-cols-1 sm:grid-cols-[220px_1fr] gap-1 sm:gap-3 items-start">
+                    <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">{job}</span>
+                    {chain.length === 0 ? (
+                      <span className="text-xs text-amber-600">No engine available — add a key</span>
+                    ) : (
+                      <span className="flex flex-wrap items-center gap-1">
+                        {chain.map((c, i) => (
+                          <span key={c} className="inline-flex items-center gap-1">
+                            <span
+                              className={`text-[11px] px-2 py-0.5 rounded-md font-mono ${
+                                i === 0
+                                  ? 'bg-emerald-500/12 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
+                                  : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
+                              }`}
+                            >
+                              {c}
+                            </span>
+                            {i < chain.length - 1 && <span className="text-slate-300 dark:text-slate-600 text-xs">→</span>}
+                          </span>
+                        ))}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              <p className="px-3 py-2 text-[11px] text-slate-500 border-t border-slate-100 dark:border-slate-800">
+                Green = first choice. If it fails or hits a limit, the same request moves to the next engine automatically.
+              </p>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 mt-4">
             {configured.map((e) => (

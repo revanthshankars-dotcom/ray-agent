@@ -2,7 +2,7 @@ import React from 'react';
 import { OctagonX } from 'lucide-react';
 import { PWAInstallButton } from './PWAInstallButton';
 
-export type ActiveTab = 'dashboard' | 'assistant' | 'brain' | 'files' | 'apps' | 'devices' | 'routines' | 'handoff' | 'connect';
+export type ActiveTab = 'dashboard' | 'assistant' | 'brain' | 'files' | 'apps' | 'devices' | 'routines' | 'handoff' | 'connect' | 'brain3d';
 
 interface TopBarProps {
   activeTab: ActiveTab;
@@ -15,7 +15,8 @@ interface TopBarProps {
 const NAV_ITEMS: Array<{ id: ActiveTab; label: string }> = [
   { id: 'dashboard', label: 'Home' },
   { id: 'assistant', label: 'Assistant' },
-  { id: 'brain', label: 'Brain' },
+  { id: 'brain', label: 'Notes' },
+  { id: 'brain3d', label: '3D Brain' },
   { id: 'files', label: 'Files & OS' },
   { id: 'apps', label: 'Apps' },
   { id: 'devices', label: 'Devices' },

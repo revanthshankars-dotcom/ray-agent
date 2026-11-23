@@ -41,6 +41,8 @@ interface SecondBrainViewProps {
   onDeleteNote: (noteId: string) => Promise<void> | void;
   onAskJarvis: (prompt: string) => void;
   onOpenAppsTab: () => void;
+  /** Open this note in the editor (e.g. from the 3D graph page). */
+  focusNoteId?: string | null;
 }
 
 const GOOGLE_BRAIN_APPS = [
@@ -171,12 +173,19 @@ export const SecondBrainView: React.FC<SecondBrainViewProps> = ({
   onDeleteNote,
   onAskJarvis,
   onOpenAppsTab,
+  focusNoteId,
 }) => {
   const [selectedId, setSelectedId] = useState<string>(() => notes[0]?.id || '');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedFolder, setSelectedFolder] = useState<string>('all');
   const [selectedTag, setSelectedTag] = useState<string>('all');
   const [viewMode, setViewMode] = useState<'split' | 'edit' | 'preview' | 'graph' | '3d'>('split');
+  useEffect(() => {
+    if (focusNoteId) {
+      setSelectedId(focusNoteId);
+      setViewMode('split');
+    }
+  }, [focusNoteId]);
   const [showAppsRail, setShowAppsRail] = useState(true);
   const [showLocalSync, setShowLocalSync] = useState(false);
 

@@ -50,10 +50,99 @@ async function discoverCloudflareAccount(): Promise<void> {
   }
 }
 
-function env(name: string): string | null {
-  const v = (process.env[name] || '').trim();
-  if (!v || /^(unset|none|my_[a-z0-9_]+|changeme)$/i.test(v)) return null;
+function rawEnv(name: string): string | null {
+  const v = (process.env[name] || '').trim().replace(/^["']|["']$/g, '');
+  if (!v || /^(unset|none|null|my_[a-z0-9_]+|changeme|your[_-].*)$/i.test(v)) return null;
   return v;
+}
+
+/**
+ * Keys set in Render (or any host) are picked up automatically even if they were saved
+ * under a different variable name: first the canonical name, then common aliases, then a
+ * scan of ALL environment values for the provider's key format.
+ */
+const KEY_ALIASES: Record<string, string[]> = {
+  GROQ_API_KEY: ['GROQ_KEY', 'GROQ_TOKEN', 'GROQ'],
+  OPENROUTER_API_KEY: ['OPENROUTER_KEY', 'OPEN_ROUTER_API_KEY', 'OPENROUTER'],
+  OPENCODE_API_KEY: ['OPENCODE_KEY', 'OPENCODE_ZEN_API_KEY', 'OPENCODE_ZEN_KEY', 'ZEN_API_KEY', 'OPENCODE'],
+  CLOUDFLARE_API_TOKEN: ['CLOUDFLARE_API_KEY', 'CLOUDFLARE_TOKEN', 'CF_API_TOKEN', 'CF_TOKEN', 'CLOUDFLARE_AI_TOKEN', 'CLOUDFLARE'],
+  CLOUDFLARE_ACCOUNT_ID: ['CF_ACCOUNT_ID', 'CLOUDFLARE_ACCOUNT'],
+  GEMINI_API_KEY: ['GOOGLE_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY', 'GEMINI_KEY', 'GOOGLE_AI_API_KEY'],
+  CEREBRAS_API_KEY: ['CEREBRAS_KEY'],
+  MISTRAL_API_KEY: ['MISTRAL_KEY'],
+  GITHUB_MODELS_TOKEN: ['GITHUB_MODELS_KEY', 'GH_MODELS_TOKEN'],
+  NVIDIA_API_KEY: ['NVIDIA_NIM_API_KEY', 'NIM_API_KEY', 'NVIDIA_KEY'],
+  SAMBANOVA_API_KEY: ['SAMBANOVA_KEY'],
+  HUGGINGFACE_API_KEY: ['HF_TOKEN', 'HF_API_KEY', 'HUGGINGFACE_TOKEN', 'HUGGING_FACE_HUB_TOKEN'],
+  COHERE_API_KEY: ['COHERE_KEY', 'CO_API_KEY'],
+  DEEPSEEK_API_KEY: ['DEEPSEEK_KEY', 'DEEP_SEEK_API_KEY'],
+  ZHIPU_API_KEY: ['ZHIPUAI_API_KEY', 'GLM_API_KEY', 'BIGMODEL_API_KEY'],
+  SILICONFLOW_API_KEY: ['SILICONFLOW_KEY', 'SILICON_FLOW_API_KEY'],
+  DASHSCOPE_API_KEY: ['QWEN_API_KEY', 'ALIBABA_API_KEY', 'DASHSCOPE_KEY'],
+  NOVITA_API_KEY: ['NOVITA_KEY'],
+  LLM7_API_KEY: ['LLM7_KEY'],
+};
+
+/** Unmistakable key formats, used when the variable name is unknown. */
+const KEY_PREFIXES: Record<string, RegExp> = {
+  GROQ_API_KEY: /^gsk_[A-Za-z0-9]{20,}$/,
+  OPENROUTER_API_KEY: /^sk-or-(v1-)?[A-Za-z0-9]{20,}$/,
+  OPENCODE_API_KEY: /^oc_sk_[A-Za-z0-9_-]{16,}$/,
+  CLOUDFLARE_API_TOKEN: /^cfut_[A-Za-z0-9]{20,}$/,
+  GEMINI_API_KEY: /^AIza[0-9A-Za-z_-]{30,}$/,
+  CEREBRAS_API_KEY: /^csk-[A-Za-z0-9]{20,}$/,
+  HUGGINGFACE_API_KEY: /^hf_[A-Za-z0-9]{30,}$/,
+  NVIDIA_API_KEY: /^nvapi-[A-Za-z0-9_-]{20,}$/,
+};
+
+const keySource: Record<string, string> = {};
+
+function env(name: string): string | null {
+  const direct = rawEnv(name);
+  if (direct) {
+    keySource[name] = name;
+    return direct;
+  }
+  for (const alias of KEY_ALIASES[name] || []) {
+    const v = rawEnv(alias);
+    if (v) {
+      keySource[name] = alias;
+      return v;
+    }
+  }
+  const re = KEY_PREFIXES[name];
+  if (re) {
+    for (const [k, val] of Object.entries(process.env)) {
+      const v = (val || '').trim();
+      if (re.test(v)) {
+        keySource[name] = k;
+        return v;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Copy keys found under aliases / by format into their canonical names so every module
+ * (Gemini Live, legacy Groq/OpenRouter/HF paths, health checks) sees them. Returns names only.
+ */
+export function normalizeProviderEnv(): string[] {
+  const found: string[] = [];
+  for (const name of Object.keys(KEY_ALIASES)) {
+    if (rawEnv(name)) continue;
+    const v = env(name);
+    if (v) {
+      process.env[name] = v;
+      found.push(`${name} ← ${keySource[name]}`);
+    }
+  }
+  return found;
+}
+
+/** Which environment variable each configured key was read from (names only, never values). */
+export function getKeySources(): Record<string, string> {
+  return { ...keySource };
 }
 
 export const PROVIDERS: ProviderDef[] = [

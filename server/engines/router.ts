@@ -1,4 +1,20 @@
 /**
+ * ENGINE ASSIGNMENT CLAUSE
+ * ------------------------
+ * RAY assigns every request to an engine automatically; the user never has to pick one.
+ *   1. Each request is classified (quick reply, chat, device action/tools, code, deep
+ *      reasoning, image/vision, live web) and sent to the best FREE engine for that job.
+ *   2. Every configured key is used — whatever name it was stored under — and engines
+ *      without keys are skipped silently.
+ *   3. If an engine errors, times out, runs out of credit or hits a rate/daily limit, the
+ *      same request moves to the next engine in that job's chain within the same turn.
+ *   4. When the large models approach their daily limits (≥85%), big questions are split
+ *      across several small models running in parallel and merged ("swarm").
+ *   5. A server-side daily token budget (RAY_DAILY_TOKEN_CAP) is never exceeded, and RAY
+ *      never silently switches to a paid engine ahead of free ones.
+ *   6. Every reply records which engine/model answered it.
+ * Pinning an engine in the UI only moves it to the front of the chain; fallback still applies.
+ *
  * RAY Engine Router
  * -----------------
  * Picks the best FREE engine for each request and switches automatically:
@@ -509,4 +525,23 @@ export async function quickComplete(prompt: string, system = 'You are RAY, a con
     { maxTokens: 800, timeoutMs: 25000 }
   );
   return out.content;
+}
+
+/** Live view of the assignment clause: which engines currently handle each kind of task. */
+export async function getEngineAssignments(): Promise<Record<string, string[]>> {
+  await loadUsage();
+  const labels: Record<TaskKind, string> = {
+    quick: 'Quick replies & simple commands',
+    chat: 'Everyday chat & writing',
+    tools: 'Device actions (open apps/tabs, files, messages)',
+    code: 'Code',
+    reasoning: 'Hard reasoning & long analysis',
+    vision: 'Images & screen reading',
+  };
+  const out: Record<string, string[]> = {};
+  for (const kind of Object.keys(labels) as TaskKind[]) {
+    const cands = await buildCandidates(kind, kind === 'tools');
+    out[labels[kind]] = cands.slice(0, 4).map((c) => `${c.p.label} · ${c.model}`);
+  }
+  return out;
 }
