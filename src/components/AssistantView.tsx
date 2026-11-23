@@ -929,6 +929,19 @@ export const AssistantView: React.FC<AssistantViewProps> = ({
             <div className="flex items-center p-0.5 bg-slate-100 dark:bg-slate-800 rounded-lg">
               <button
                 type="button"
+                title="Auto-routes across all free engines and switches on limits"
+                onClick={() => onChangeEngineSettings((prev) => ({ ...prev, provider: 'auto', routerMode: prev.routerMode || 'auto' }))}
+                className={`inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                  engineSettings.provider === 'auto'
+                    ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-sm'
+                    : 'text-slate-600 dark:text-slate-400'
+                }`}
+              >
+                <Sparkles className="w-3 h-3 text-cyan-500" />
+                <span>Auto (free)</span>
+              </button>
+              <button
+                type="button"
                 onClick={() => onChangeEngineSettings((prev) => ({ ...prev, provider: 'gemini' }))}
                 className={`inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
                   engineSettings.provider === 'gemini'

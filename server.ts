@@ -19,6 +19,15 @@ import {
   getRoomConnectors,
   getRoomSnapshot,
   handleSocketConnection,
+  getIncomingMessages,
+  getPushSubscriptions,
+  getRoomDevices,
+  hasStableRoomSecret,
+  hydrateRoomsFromStorage,
+  markMessagesRead,
+  onIncomingMessage,
+  recordIncomingMessage,
+  savePushSubscription,
   isRoomScreenControlArmed,
   normalizeRoomId,
   setRoomInterrupted,
@@ -72,6 +81,12 @@ import {
   validateScreenControlAction,
 } from './server/security.ts';
 import { executeAppConnectorAction, executeGoogleWorkspaceAction } from './server/workspace.ts';
+import { runAutoChatTurn } from './server/engines/router.ts';
+import { getEngineStatus, loadUsage } from './server/engines/providers.ts';
+import { installShutdownFlush, persistenceBackend } from './server/persistence.ts';
+import { getVapidPublicKey, initWakeServices, sendPush } from './server/wake.ts';
+import { zipDirectory } from './server/zip.ts';
+import { checkMetaSignature, handleMetaWebhook, metaStatus, verifyMetaWebhook } from './server/meta.ts';
 import type { AppConnector, BrainNote, VoicePersona } from './src/types/relay.ts';
 
 function extractRoomToken(req: Request): string {
@@ -112,12 +127,48 @@ function requireRoomAuth(req: Request, res: Response, next: NextFunction): void 
 }
 
 async function startServer() {
+  installShutdownFlush();
+  const hydrated = await hydrateRoomsFromStorage().catch((err) => {
+    console.warn('[RAY] Could not hydrate rooms from storage:', err);
+    return 0;
+  });
+  const wake = await initWakeServices();
+  console.log(
+    `[RAY] storage=${persistenceBackend()} roomsRestored=${hydrated} push=${wake.pushReady} stableTokens=${hasStableRoomSecret()}`
+  );
+  if (!hasStableRoomSecret()) {
+    console.warn(
+      '[RAY] RELAY_MASTER_SECRET is not set. Room tokens are stored on local disk; on Cloud Run they reset on every restart and bridges must re-pair. Set RELAY_MASTER_SECRET (any long random string) to make pairing permanent.'
+    );
+  }
+
   const app = express();
   const server = http.createServer(app);
   const wssMesh = new WebSocketServer({ noServer: true });
   const wssLive = new WebSocketServer({ noServer: true });
 
-  app.use(express.json({ limit: '18mb' }));
+  app.use(
+    express.json({
+      limit: '18mb',
+      verify: (req, _res, buf) => {
+        if ((req as Request).url?.startsWith('/api/meta/webhook')) (req as Request & { rawBody?: Buffer }).rawBody = Buffer.from(buf);
+      },
+    })
+  );
+
+  // Incoming WhatsApp/Instagram message -> wake & alert devices that are offline (online ones get a live event).
+  onIncomingMessage((roomId, msg) => {
+    const subs = getPushSubscriptions(roomId);
+    const offline = getRoomDevices(roomId).filter((d) => !d.online && subs[d.id]);
+    for (const d of offline) {
+      void sendPush(subs[d.id], {
+        title: `${msg.app[0].toUpperCase()}${msg.app.slice(1)} · ${msg.from}`,
+        body: msg.text.slice(0, 180),
+        url: '/?view=assistant',
+        tag: `ray-msg-${msg.app}`,
+      });
+    }
+  });
 
   const aiLimiter = createRateLimiter({ windowMs: 60_000, max: 45 });
   const deviceLimiter = createRateLimiter({ windowMs: 60_000, max: 90 });
@@ -161,7 +212,91 @@ async function startServer() {
       ok: true,
       hasGeminiKey: Boolean(process.env.GEMINI_API_KEY),
       hasOpenRouterKey: hasOpenRouterConfigured(),
+      storage: persistenceBackend(),
+      stableTokens: hasStableRoomSecret(),
+      pushReady: Boolean(getVapidPublicKey()),
     });
+  });
+
+  app.get('/api/engines/status', requireRoomAuth, async (_req, res) => {
+    await loadUsage();
+    res.json({ engines: getEngineStatus() });
+  });
+
+  // Meta (WhatsApp Cloud API / Instagram Messaging) webhook
+  app.get('/api/meta/webhook', (req, res) => {
+    const challenge = verifyMetaWebhook(req.query as Record<string, unknown>);
+    if (challenge === null) {
+      res.sendStatus(403);
+      return;
+    }
+    res.status(200).send(challenge);
+  });
+
+  app.post('/api/meta/webhook', async (req, res) => {
+    const raw = (req as Request & { rawBody?: Buffer }).rawBody;
+    if (!checkMetaSignature(raw, req.headers['x-hub-signature-256'] as string | undefined)) {
+      res.sendStatus(401);
+      return;
+    }
+    res.sendStatus(200); // ack fast, Meta retries otherwise
+    try {
+      await handleMetaWebhook(req.body);
+    } catch (err) {
+      console.warn('[RAY meta] webhook processing failed:', sanitizeErrorMessage(err));
+    }
+  });
+
+  app.get('/api/messages', requireRoomAuth, (req, res) => {
+    const roomId = normalizeRoomId(String(req.query.room || 'RLY-HOME'));
+    res.json({ messages: getIncomingMessages(roomId, { limit: 100 }), meta: metaStatus() });
+  });
+
+  app.post('/api/messages/read', requireRoomAuth, (req, res) => {
+    const { roomId, ids } = req.body as { roomId: string; ids?: string[] };
+    res.json({ updated: markMessagesRead(normalizeRoomId(roomId), ids) });
+  });
+
+  // Manual/test injection (e.g. iOS Shortcuts automation forwarding a notification).
+  app.post('/api/messages/incoming', deviceLimiter, requireRoomAuth, (req, res) => {
+    const { roomId, app: chatApp, from, text } = req.body as { roomId: string; app: string; from: string; text: string };
+    const saved = recordIncomingMessage(normalizeRoomId(roomId), {
+      app: String(chatApp || 'unknown'),
+      from: String(from || 'Unknown'),
+      text: String(text || ''),
+      receivedAt: Date.now(),
+      viaDevice: 'API',
+    });
+    res.json({ ok: Boolean(saved), message: saved });
+  });
+
+  app.get('/api/extension/ray-tabs.zip', (_req, res) => {
+    try {
+      const buf = zipDirectory(path.resolve(process.cwd(), 'extension', 'ray-tabs'), 'ray-tabs');
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', 'attachment; filename="ray-tabs-extension.zip"');
+      res.send(buf);
+    } catch (err) {
+      res.status(500).json({ error: sanitizeErrorMessage(err, 'Extension package unavailable') });
+    }
+  });
+
+  app.get('/api/voice/capabilities', (_req, res) => {
+    res.json({ live: Boolean(process.env.GEMINI_API_KEY), serverTts: Boolean(process.env.GEMINI_API_KEY) });
+  });
+
+  app.get('/api/push/vapid', (_req, res) => {
+    res.json({ publicKey: getVapidPublicKey() });
+  });
+
+  app.post('/api/push/subscribe', deviceLimiter, requireRoomAuth, (req, res) => {
+    const { roomId, deviceId, subscription } = req.body as { roomId: string; deviceId: string; subscription: unknown };
+    if (!deviceId || !subscription || typeof subscription !== 'object') {
+      res.status(400).json({ error: 'deviceId and subscription are required.' });
+      return;
+    }
+    savePushSubscription(normalizeRoomId(roomId), String(deviceId).slice(0, 120), subscription);
+    res.json({ ok: true });
   });
 
   app.get('/api/capabilities', (_req, res) => {
@@ -735,7 +870,8 @@ async function startServer() {
         userLocation?: { latitude: number; longitude: number };
         preferredVoice?: VoicePersona;
         engine?: {
-          provider?: 'gemini' | 'openrouter' | 'ollama' | 'groq' | 'anthropic' | 'openai' | 'huggingface';
+          provider?: 'auto' | 'gemini' | 'openrouter' | 'ollama' | 'groq' | 'anthropic' | 'openai' | 'huggingface';
+          routerMode?: string;
           ollamaUrl?: string;
           ollamaModel?: string;
           openrouterModel?: string;
@@ -750,7 +886,86 @@ async function startServer() {
       const googleAccessToken = extractBearerToken(req);
       const notionToken = extractNotionToken(req);
 
-      if (engine?.provider === 'openrouter') {
+      const toolExecutor = (toolName: string, toolArgs: Record<string, unknown>) =>
+        executeDeviceTool(normalizedRoom, sourceDeviceName || 'Web Client', toolName, toolArgs, preferredVoice || 'Fenrir', {
+          googleAccessToken,
+          notionToken,
+          customConnectors,
+          userCommand: message || '',
+        });
+
+      const runGeminiNative = () =>
+        runAssistantChatTurn({
+          roomId: normalizedRoom,
+          sourceDeviceName: sourceDeviceName || 'Web Client',
+          targetDeviceHint,
+          message: message || '',
+          history: history || [],
+          attachments: attachments || [],
+          deepThinking: Boolean(deepThinking),
+          enableSearch: enableSearch !== false,
+          groundingMode: groundingMode || 'auto',
+          userLocation,
+          preferredVoice: preferredVoice || 'Fenrir',
+          googleAccessToken,
+          notionToken,
+          customConnectors,
+          onEvent: sendEvent,
+        });
+
+      if (!engine?.provider || engine.provider === 'auto') {
+        const sysPrompt = buildJarvisSystemInstruction(normalizedRoom, sourceDeviceName || 'Web Client', targetDeviceHint, false, {
+          hasGoogleToken: Boolean(googleAccessToken),
+          customConnectors,
+        });
+        let routed: { handled: boolean; needsGeminiNative?: boolean } = { handled: false };
+        try {
+          routed = await runAutoChatTurn({
+            roomId: normalizedRoom,
+            message: message || '',
+            history: history || [],
+            attachments: attachments || [],
+            systemInstruction: sysPrompt,
+            tools: getOllamaToolDeclarations(),
+            executeTool: toolExecutor,
+            onEvent: sendEvent,
+            mode: engine?.routerMode || 'auto',
+            deepThinking: Boolean(deepThinking),
+          });
+        } catch (routerErr) {
+          sendEvent({ type: 'engine', data: { phase: 'router-failed', reason: sanitizeErrorMessage(routerErr) } });
+        }
+        if (!routed.handled) {
+          if (process.env.GEMINI_API_KEY) {
+            await runGeminiNative();
+          } else {
+            // Last resort: the user's own local Ollama through the desktop bridge.
+            const ollama = await fetchOllamaModels({ roomId: normalizedRoom, useBridgeProxy: true }).catch(() => null);
+            if (ollama?.ok && ollama.models.length > 0) {
+              sendEvent({ type: 'engine', data: { provider: 'Local Ollama', model: ollama.models[0], reason: 'cloud engines unavailable' } });
+              await runOllamaChatTurn({
+                roomId: normalizedRoom,
+                sourceDeviceName: sourceDeviceName || 'Web Client',
+                targetDeviceHint,
+                message: message || '',
+                history: history || [],
+                attachments: attachments || [],
+                ollamaModel: ollama.models[0],
+                useBridgeProxy: true,
+                systemInstruction: sysPrompt,
+                ollamaTools: getOllamaToolDeclarations(),
+                executeTool: toolExecutor,
+                onEvent: sendEvent,
+              });
+            } else {
+              sendEvent({
+                type: 'error',
+                data: 'No AI engine is reachable. Add a free key (GROQ_API_KEY, CEREBRAS_API_KEY, MISTRAL_API_KEY, GEMINI_API_KEY…) or start Ollama on a PC running the RAY bridge.',
+              });
+            }
+          }
+        }
+      } else if (engine?.provider === 'openrouter') {
         const sysPrompt = buildJarvisSystemInstruction(
           normalizedRoom,
           sourceDeviceName || 'Web Client',
@@ -771,19 +986,7 @@ async function startServer() {
           openrouterModel: engine.openrouterModel || 'openrouter/free',
           systemInstruction: sysPrompt,
           tools: getOllamaToolDeclarations(),
-          executeTool: (toolName, toolArgs) =>
-            executeDeviceTool(
-              normalizedRoom,
-              sourceDeviceName || 'Web Client',
-              toolName,
-              toolArgs,
-              preferredVoice || 'Fenrir',
-              {
-                googleAccessToken,
-                notionToken,
-                customConnectors,
-              }
-            ),
+          executeTool: toolExecutor,
           onEvent: sendEvent,
         });
       } else if (engine?.provider === 'groq') {
@@ -807,19 +1010,7 @@ async function startServer() {
           groqModel: engine.groqModel || 'llama-3.3-70b-versatile',
           systemInstruction: sysPrompt,
           tools: getOllamaToolDeclarations(),
-          executeTool: (toolName, toolArgs) =>
-            executeDeviceTool(
-              normalizedRoom,
-              sourceDeviceName || 'Web Client',
-              toolName,
-              toolArgs,
-              preferredVoice || 'Fenrir',
-              {
-                googleAccessToken,
-                notionToken,
-                customConnectors,
-              }
-            ),
+          executeTool: toolExecutor,
           onEvent: sendEvent,
         });
       } else if (engine?.provider === 'huggingface') {
@@ -864,34 +1055,14 @@ async function startServer() {
           ollamaUrl: engine.ollamaUrl,
           ollamaModel: engine.ollamaModel || 'llama3.2',
           useBridgeProxy: Boolean(engine.useBridgeProxy),
+          autoBridgeFallback: true,
           systemInstruction: sysPrompt,
           ollamaTools: getOllamaToolDeclarations(),
-          executeTool: (toolName, toolArgs) =>
-            executeDeviceTool(normalizedRoom, sourceDeviceName || 'Web Client', toolName, toolArgs, preferredVoice || 'Fenrir', {
-              googleAccessToken,
-              notionToken,
-              customConnectors,
-            }),
+          executeTool: toolExecutor,
           onEvent: sendEvent,
         });
       } else {
-        await runAssistantChatTurn({
-          roomId: normalizedRoom,
-          sourceDeviceName: sourceDeviceName || 'Web Client',
-          targetDeviceHint,
-          message: message || '',
-          history: history || [],
-          attachments: attachments || [],
-          deepThinking: Boolean(deepThinking),
-          enableSearch: enableSearch !== false,
-          groundingMode: groundingMode || 'auto',
-          userLocation,
-          preferredVoice: preferredVoice || 'Fenrir',
-          googleAccessToken,
-          notionToken,
-          customConnectors,
-          onEvent: sendEvent,
-        });
+        await runGeminiNative();
       }
     } catch (err) {
       sendEvent({ type: 'error', data: sanitizeErrorMessage(err, 'AI engine request failed') });

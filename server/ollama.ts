@@ -61,6 +61,13 @@ export async function fetchOllamaModels(params: {
       source: 'direct',
     };
   } catch (err) {
+    // The RAY server usually runs in the cloud, where 127.0.0.1 is NOT your PC.
+    // Transparently route through the Desktop/Android bridge that runs next to Ollama.
+    const viaBridge = await dispatchBridgeProxyCall(params.roomId, { action: 'ollama_tags', ollamaUrl: safeUrl }, 8000);
+    if (viaBridge.ok) {
+      const payload = viaBridge.data as { models?: Array<{ name: string }> };
+      return { ok: true, models: (payload?.models || []).map((m) => m.name), source: 'bridge' };
+    }
     return {
       ok: false,
       models: [],
@@ -74,6 +81,7 @@ async function callOllamaChat(params: {
   roomId: string;
   ollamaUrl?: string;
   useBridgeProxy?: boolean;
+  autoBridgeFallback?: boolean;
   body: Record<string, unknown>;
 }): Promise<{ message?: { role?: string; content?: string; tool_calls?: Array<{ function?: { name?: string; arguments?: Record<string, unknown> } }> } }> {
   const safeUrl = assertLocalOllamaUrl(params.ollamaUrl);
@@ -82,7 +90,7 @@ async function callOllamaChat(params: {
     const proxyRes = await dispatchBridgeProxyCall(
       params.roomId,
       { action: 'ollama_chat', ollamaUrl: safeUrl, body: params.body },
-      45000
+      175000
     );
     if (!proxyRes.ok) {
       throw new Error(proxyRes.error || 'Bridge Ollama chat failed');
@@ -96,10 +104,21 @@ async function callOllamaChat(params: {
     };
   }
 
+  if (params.autoBridgeFallback) {
+    // The RAY server usually runs in the cloud where 127.0.0.1 is not your PC:
+    // probe quickly, and route through the bridge that sits next to Ollama if unreachable.
+    const reachable = await fetch(`${safeUrl}/api/tags`, { signal: AbortSignal.timeout(1500) })
+      .then((r) => r.ok)
+      .catch(() => false);
+    if (!reachable) {
+      return callOllamaChat({ ...params, useBridgeProxy: true, autoBridgeFallback: false });
+    }
+  }
   const resp = await fetch(`${safeUrl}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(params.body),
+    signal: AbortSignal.timeout(180000),
   });
   if (!resp.ok) {
     const errBody = await resp.text().catch(() => '');
@@ -124,6 +143,7 @@ export async function runOllamaChatTurn(input: {
   ollamaUrl?: string;
   ollamaModel: string;
   useBridgeProxy?: boolean;
+  autoBridgeFallback?: boolean;
   systemInstruction: string;
   ollamaTools: Array<{ type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } }>;
   executeTool: (name: string, args: Record<string, unknown>) => Promise<{ result: string; confirmation?: unknown }>;
@@ -169,6 +189,7 @@ export async function runOllamaChatTurn(input: {
         roomId: input.roomId,
         ollamaUrl: input.ollamaUrl,
         useBridgeProxy: input.useBridgeProxy,
+        autoBridgeFallback: input.autoBridgeFallback ?? !input.useBridgeProxy,
         body: {
           model,
           stream: false,
@@ -184,6 +205,7 @@ export async function runOllamaChatTurn(input: {
           roomId: input.roomId,
           ollamaUrl: input.ollamaUrl,
           useBridgeProxy: input.useBridgeProxy,
+          autoBridgeFallback: input.autoBridgeFallback ?? !input.useBridgeProxy,
           body: { model, stream: false, messages },
         });
       } else {
