@@ -51,7 +51,7 @@ export const PairDeviceModal: React.FC<PairDeviceModalProps> = ({
     typeof window !== 'undefined'
       ? `${window.location.origin}/?room=${encodeURIComponent(roomId)}${
           roomToken ? `&token=${encodeURIComponent(roomToken)}` : ''
-        }`
+        }&connect=1`
       : '';
 
   useEffect(() => {

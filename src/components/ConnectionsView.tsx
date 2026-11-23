@@ -21,6 +21,7 @@ import {
 import type { DeviceInfo, EngineSettings, IncomingMessage } from '../types/relay';
 import { authFetch, getStoredRoomToken } from '../utils/roomAuth';
 import type { PushWakeStatus } from '../hooks/usePushWake';
+import { ConnectThisDevice } from './ConnectThisDevice';
 
 interface EngineStatus {
   id: string;
@@ -115,6 +116,9 @@ export function ConnectionsView({
   onEnablePush,
   voicePipeline,
   wakeEnabled,
+  bridgeConnected,
+  onEnableWake,
+  pwa,
 }: {
   roomId: string;
   devices: DeviceInfo[];
@@ -122,9 +126,12 @@ export function ConnectionsView({
   engineSettings: EngineSettings;
   onChangeEngineSettings: (updater: (prev: EngineSettings) => EngineSettings) => void;
   pushStatus: PushWakeStatus;
-  onEnablePush: () => void;
+  onEnablePush: () => Promise<boolean> | void;
   voicePipeline: 'live' | 'classic';
   wakeEnabled: boolean;
+  bridgeConnected: boolean;
+  onEnableWake: () => void;
+  pwa: { canInstall: boolean; isInstalled: boolean; promptInstall: () => Promise<boolean> };
 }) {
   const [engines, setEngines] = useState<EngineStatus[]>([]);
   const [assignments, setAssignments] = useState<Record<string, string[]>>({});
@@ -135,6 +142,12 @@ export function ConnectionsView({
   const token = getStoredRoomToken(roomId);
   const bridgeUrl = `${origin}/api/bridge-script?room=${encodeURIComponent(roomId)}&token=${encodeURIComponent(token)}`;
   const bridgeFile = `relay-bridge-${roomId.toLowerCase()}.mjs`;
+  const [qr, setQr] = useState('');
+  const pcOs = typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent) ? 'win' : typeof navigator !== 'undefined' && /Mac OS X/i.test(navigator.userAgent) ? 'mac' : 'linux';
+  useEffect(() => {
+    const join = `${origin}/?room=${encodeURIComponent(roomId)}&token=${encodeURIComponent(token)}&connect=1`;
+    void import('qrcode').then((m) => m.default.toDataURL(join, { width: 240, margin: 1 })).then(setQr).catch(() => setQr(''));
+  }, [origin, roomId, token]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -198,13 +211,25 @@ export function ConnectionsView({
                 {wakeEnabled ? ' · "Hey Ray" listening' : ''} · {configured.length} AI engines ready
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => void refresh()}
-              className="self-start md:self-auto inline-flex items-center gap-2 h-9 px-3 rounded-lg bg-white/10 hover:bg-white/15 text-sm"
-            >
-              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Refresh
-            </button>
+            <div className="self-start md:self-auto flex items-center gap-2">
+              <ConnectThisDevice
+                roomId={roomId}
+                bridgeConnected={bridgeConnected}
+                onEnablePush={async () => Boolean(await onEnablePush())}
+                onEnableWake={onEnableWake}
+                canInstallApp={pwa.canInstall}
+                onInstallApp={pwa.promptInstall}
+                isInstalled={pwa.isInstalled}
+              />
+              <button
+                type="button"
+                onClick={() => void refresh()}
+                aria-label="Refresh"
+                className="inline-flex items-center gap-2 h-11 px-3 rounded-xl bg-white/10 hover:bg-white/15 text-sm"
+              >
+                <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+              </button>
+            </div>
           </div>
           <div className="relative grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 mt-5">
             {checklist.map((c) => {
@@ -240,13 +265,28 @@ export function ConnectionsView({
               Opens real tabs and apps, reads files, sees the screen and runs local Ollama. Run it once — it installs itself to start on boot and reconnects forever.
             </p>
             <div className="mt-3 space-y-2">
-              <a
-                href={bridgeUrl}
-                download={bridgeFile}
-                className="inline-flex items-center gap-2 h-9 px-3 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold"
-              >
-                <Download className="w-4 h-4" /> Download bridge
-              </a>
+              <div className="flex flex-wrap gap-2">
+                <a
+                  href={`/api/bridge-installer?room=${encodeURIComponent(roomId)}&token=${encodeURIComponent(token)}&os=${pcOs}`}
+                  className="inline-flex items-center gap-2 h-9 px-3 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold"
+                >
+                  <Download className="w-4 h-4" /> One-click installer ({pcOs === 'win' ? 'Windows' : pcOs === 'mac' ? 'macOS' : 'Linux'})
+                </a>
+                <a
+                  href={bridgeUrl}
+                  download={bridgeFile}
+                  className="inline-flex items-center gap-2 h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 text-xs font-medium"
+                >
+                  Manual download
+                </a>
+              </div>
+              <p className="text-[11px] text-slate-500">
+                {pcOs === 'win'
+                  ? 'Double-click “ray-connect.cmd” (choose More info → Run anyway if Windows asks). It installs Node.js if needed and keeps RAY connected from boot.'
+                  : pcOs === 'mac'
+                  ? 'Right-click “ray-connect.command” → Open the first time. It installs Node.js if needed and keeps RAY connected from login.'
+                  : 'Run: bash ~/Downloads/ray-connect.sh — installs Node.js if needed and keeps RAY connected.'}
+              </p>
               <CopyLine text={`cd Downloads && npm install ws && node ${bridgeFile}`} />
               <p className="text-[11px] text-slate-500">Needs Node.js 18+. Ollama (if installed) is started automatically.</p>
             </div>
@@ -259,8 +299,15 @@ export function ConnectionsView({
               <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Android phone</h2>
               <span className="ml-auto"><Dot ok={Boolean(phoneBridge)} warn={Boolean(phoneApp && !phoneBridge)} /></span>
             </div>
-            <p className="text-xs text-slate-600 dark:text-slate-400 mt-2">
-              Install <b>Termux</b>, <b>Termux:API</b> and <b>Termux:Boot</b> from F-Droid, then paste this in Termux. RAY can then open apps &amp; links on the phone and relay WhatsApp / Instagram notifications.
+            <div className="mt-3 flex items-center gap-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 p-3">
+              {qr ? <img src={qr} alt="Scan to connect your phone" className="w-28 h-28 rounded-lg bg-white p-1" /> : <div className="w-28 h-28" />}
+              <div className="text-xs text-slate-600 dark:text-slate-300 space-y-1">
+                <p className="font-semibold text-slate-900 dark:text-slate-100">One tap: scan with your phone camera</p>
+                <p>It opens RAY already paired. Tap <b>Connect everything</b> and allow the pop-ups — wake-ups, calls, voice and alerts are on.</p>
+              </div>
+            </div>
+            <p className="text-xs text-slate-600 dark:text-slate-400 mt-3">
+              <b>Optional, for full control</b> (open apps, read WhatsApp/Instagram notifications, dial contacts): install <b>Termux</b>, <b>Termux:API</b> and <b>Termux:Boot</b> from F-Droid, then paste this in Termux. RAY can then open apps &amp; links on the phone and relay WhatsApp / Instagram notifications.
             </p>
             <div className="mt-3 space-y-2">
               <CopyLine text={`pkg install -y nodejs termux-api && mkdir -p ~/ray && cd ~/ray && curl -fsSL "${bridgeUrl}" -o ${bridgeFile} && npm install ws && node ${bridgeFile}`} />

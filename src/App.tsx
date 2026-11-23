@@ -14,6 +14,7 @@ import { HandoffView } from './components/HandoffView';
 import { ConnectionsView } from './components/ConnectionsView';
 import { Brain3DView } from './components/Brain3DView';
 import { usePushWake } from './hooks/usePushWake';
+import { usePWAInstall } from './hooks/usePWAInstall';
 import { useDeviceCall } from './hooks/useDeviceCall';
 import { CallScreen } from './components/CallScreen';
 import { PairDeviceModal } from './components/PairDeviceModal';
@@ -123,7 +124,10 @@ function loadInitialEngineSettings(): EngineSettings {
 
 export default function App() {
   const [roomId, setRoomId] = useState<string>(getInitialRoomId);
-  const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
+  // Opened from the pairing QR (…&connect=1) → go straight to the one-tap connect screen.
+  const [activeTab, setActiveTab] = useState<ActiveTab>(() =>
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('connect') ? 'connect' : 'dashboard'
+  );
   const [pairModalOpen, setPairModalOpen] = useState(false);
   const [manualCameraOpen, setManualCameraOpen] = useState(false);
   const [darkMode, setDarkMode] = useState<boolean>(() => {
@@ -301,6 +305,7 @@ export default function App() {
 
   const screenShare = useScreenShare();
   const pushWake = usePushWake(roomId, identity.id);
+  const pwa = usePWAInstall();
   const deviceCall = useDeviceCall({
     roomId,
     myDeviceId: identity.id,
@@ -1166,9 +1171,12 @@ export default function App() {
               engineSettings={engineSettings}
               onChangeEngineSettings={setEngineSettings}
               pushStatus={pushWake.status}
-              onEnablePush={() => void pushWake.enable()}
+              onEnablePush={() => pushWake.enable()}
               voicePipeline={voicePipeline}
               wakeEnabled={wakeEnabled}
+              bridgeConnected={bridgeMonitor.status === 'connected'}
+              onEnableWake={() => setWakeEnabled(true)}
+              pwa={pwa}
             />
           )}
 

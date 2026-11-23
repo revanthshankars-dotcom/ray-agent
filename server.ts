@@ -88,6 +88,7 @@ import { dailyBudget, getEngineStatus, getKeySources, loadUsage, normalizeProvid
 import { installShutdownFlush, persistenceBackend } from './server/persistence.ts';
 import { getVapidPublicKey, initWakeServices, sendPush } from './server/wake.ts';
 import { zipDirectory } from './server/zip.ts';
+import { buildInstaller } from './server/installer.ts';
 import { getIceServers, listScheduledCalls, cancelScheduledCall, startCallScheduler } from './server/calls.ts';
 import { checkFishKey, fishUsable, getFishKey, getFishStatus } from './server/fishAudio.ts';
 import { checkMetaSignature, handleMetaWebhook, metaStatus, verifyMetaWebhook } from './server/meta.ts';
@@ -426,6 +427,26 @@ async function startServer() {
     res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(script);
+  });
+
+  // One-click PC connection: a double-clickable installer for this room (Windows/macOS/Linux).
+  app.get('/api/bridge-installer', (req, res) => {
+    const roomId = normalizeRoomId(String(req.query.room || 'RLY-HOME'));
+    const boot = getOrIssueRoomBootstrap(roomId, extractRoomToken(req));
+    if (!boot.authorized || !boot.roomToken) {
+      res.status(401).json({ error: boot.error || 'Valid room token required.' });
+      return;
+    }
+    const proto = String(req.headers['x-forwarded-proto'] || 'http').split(',')[0];
+    const host = String(req.headers['x-forwarded-host'] || req.headers.host || 'localhost:3000').split(',')[0];
+    const bridgeUrl = `${proto}://${host}/api/bridge-script?room=${encodeURIComponent(roomId)}&token=${encodeURIComponent(boot.roomToken)}`;
+    const osParam = String(req.query.os || 'win');
+    const os = osParam === 'mac' ? 'mac' : osParam === 'linux' ? 'linux' : 'win';
+    const out = buildInstaller(os, bridgeUrl, roomId);
+    res.setHeader('Content-Type', out.type);
+    res.setHeader('Content-Disposition', `attachment; filename="${out.filename}"`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(out.body);
   });
 
   app.post('/api/protocols/run', deviceLimiter, requireRoomAuth, async (req, res) => {
