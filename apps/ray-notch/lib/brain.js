@@ -85,12 +85,18 @@ function parseIntent(raw) {
   if ((m = low.match(/^(?:open|launch|start|run)\s+(?:the\s+)?(?:app\s+)?([a-z0-9][a-z0-9 .+-]{1,40})$/)) && !/\b(doc|docs|sheet|website|site|page|tab|\.com|youtube|gmail|google|search|new)\b/.test(m[1]) && !/\bon (my )?(phone|mobile)\b/.test(low)) {
     return { kind: 'open-app', app: m[1].replace(/\s+(app|application)$/, '') };
   }
+
+  // Screen shortcut: "what's on my screen", "read my screen", bare "screen"
+  if (/^(?:what(?:'?s|\s+is)\s+on\s+(?:my\s+|the\s+)?screen|read\s+(?:my\s+)?screen|(?:show|describe|analyse|analyze)\s+(?:my\s+)?screen|^screen$)$/i.test(low)) {
+    return { kind: 'screen', question: t || 'What is on the screen right now? Describe it briefly.' };
+  }
   return null;
 }
 
 /** Does the request need a look at the screen? ("where's the Export button", "summarise this page") */
 function wantsScreen(text) {
-  return /\b(this (page|screen|window|tab|email|error|message|document|doc|chart|code)|on (my|the) screen|where'?s the|where is the|find the .* button|what am i looking at|read this|summari[sz]e this|explain this)\b/i.test(String(text || ''));
+  return /\b(this (page|screen|window|tab|email|error|message|document|doc|chart|code)|on (my|the) screen|where'?s the|where is the|find the .* button|what am i looking at|read this|summari[sz]e this|explain this|what(?:'?s| is) on (my|the) screen|read (my )?screen|describe (my )?screen)\b/i.test(String(text || ''))
+    || /^screen$/i.test(String(text || '').trim());
 }
 
 module.exports = { parseIntent, parseDuration, wantsScreen };

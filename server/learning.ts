@@ -413,6 +413,7 @@ export async function withRecallAsync(roomId: string, systemInstruction: string,
   const core = new Set(memoryExcerpt(roomId, 12).split('\n'));
   const mem = r.memory.filter((m) => !core.has(`- ${m}`));
   if (mem.length) parts.push(`What RAY remembers that fits this request (closest in meaning — use it):\n${mem.map((m) => `- ${m}`).join('\n')}`);
+  if (r.triples?.length) parts.push(`Related facts about entities in this request:\n${r.triples.map((t) => t.entity ? `${t.entity}'s ${t.attr}: ${t.value}` : `${t.attr}: ${t.value}`).join('\n')}`);
   if (r.passages.length) parts.push(`From RAY's notes and Knowledge (cite if used, may be dated):\n${r.passages.map((p) => `### ${p.title}\n${p.text}`).join('\n\n')}`);
   const notes = getRoomBrainNotes(roomId);
   const skills = r.skills

@@ -249,6 +249,20 @@ async function runIntent(i, text) {
       const r = await ray.action('open_app', { target: i.app });
       return r.ok ? `Opening ${titleCase(i.app)}.` : null; // bridge missing -> let RAY try
     }
+    case 'screen': {
+      // Capture screen then send to RAY (online) or the local bridge (offline).
+      ui({ phase: 'working', text: i.question, step: 'Taking a screenshot…' });
+      const att = await screenAttachment();
+      if (!att) return 'I could not capture the screen.';
+      if (!ray || !ray.online) {
+        // Offline: ask the local SmolVLM2 via the bridge /ask endpoint.
+        try {
+          const j = await ray.bridge('/ask', { text: i.question, image: att[0].dataBase64 });
+          return String(j.answer || 'I see your screen but could not interpret it offline.');
+        } catch { return "I'm offline — the PC bridge isn't running."; }
+      }
+      return await ray.chat(i.question, { attachments: att, history: [] });
+    }
     default:
       return null;
   }

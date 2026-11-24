@@ -25,9 +25,17 @@ interface Unit {
   text: string;
   v: Int8Array;
 }
+/** Entity–attribute–value triple extracted from memory notes so related facts surface together. */
+interface Triple {
+  entity: string;  // "Priya"
+  attr: string;    // "birthday"
+  value: string;   // "12 March"
+  noteId: string;
+}
 interface RoomIndex {
   provider: string;
   units: Map<string, Unit>;
+  triples: Triple[];
   building: Promise<void> | null;
   loaded: boolean;
 }
@@ -40,6 +48,30 @@ const MIN_SCORE_BY: Record<string, number> = { gemini: 0.45, 'cloudflare-qwen3':
 const RELATIVE = 0.85;
 const CF_EMBED_MODEL = process.env.RAY_CF_EMBED_MODEL || '@cf/qwen/qwen3-embedding-0.6b';
 const CF_QUERY_PREFIX = 'Instruct: Given a personal question or request, retrieve the memory facts, notes or playbooks that help answer it\nQuery: ';
+
+/**
+ * Extract entity–attribute–value triples from a memory text so related facts surface together.
+ * Patterns: "X is Y", "X's Y is Z", "X: Y", "X — Y".
+ * Runs locally (no LLM call) so it's always free.
+ */
+function extractTriples(text: string, noteId: string): Triple[] {
+  const out: Triple[] = [];
+  const lines = text.split(/\n+/);
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line || line.length > 300) continue;
+    // "Priya's birthday is 12 March" / "My sister's name is Priya"
+    let m = line.match(/^([A-Z][a-z]+(?:'s)?)\s+([a-z][a-z ]{1,30})\s+(?:is|are|was)\s+(.{1,120})$/i);
+    if (m) { out.push({ entity: m[1].replace(/'s$/i, ''), attr: m[2].trim().toLowerCase(), value: m[3].trim(), noteId }); continue; }
+    // "birthday: 12 March" / "phone: +91 ..."
+    m = line.match(/^([a-z][a-z ]{1,40}):\s+(.{1,120})$/i);
+    if (m) { out.push({ entity: '', attr: m[1].trim().toLowerCase(), value: m[2].trim(), noteId }); continue; }
+    // "Priya — my sister"
+    m = line.match(/^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s+[—–-]\s+(.{1,120})$/);
+    if (m) { out.push({ entity: m[1], attr: 'description', value: m[2].trim(), noteId }); }
+  }
+  return out.slice(0, 50);
+}
 
 function env(n: string): string {
   const v = (process.env[n] || '').trim();
@@ -158,11 +190,12 @@ function collect(roomId: string): Array<Omit<Unit, 'v'>> {
 interface Stored {
   provider: string;
   units: Array<Omit<Unit, 'v'> & { v: string }>;
+  triples?: Triple[];
 }
 async function getIndex(roomId: string): Promise<RoomIndex> {
   let idx = rooms.get(roomId);
   if (!idx) {
-    idx = { provider: '', units: new Map(), building: null, loaded: false };
+    idx = { provider: '', units: new Map(), triples: [], building: null, loaded: false };
     rooms.set(roomId, idx);
   }
   if (!idx.loaded) {
@@ -171,6 +204,7 @@ async function getIndex(roomId: string): Promise<RoomIndex> {
     if (s?.units?.length) {
       idx.provider = s.provider;
       for (const u of s.units) idx.units.set(u.h, { ...u, v: new Int8Array(Buffer.from(u.v, 'base64')) });
+      if (s.triples?.length) idx.triples = s.triples;
     }
   }
   return idx;
@@ -178,7 +212,11 @@ async function getIndex(roomId: string): Promise<RoomIndex> {
 function persist(roomId: string, idx: RoomIndex) {
   scheduleSave(
     `semantic-${roomId}`,
-    () => ({ provider: idx.provider, units: [...idx.units.values()].map((u) => ({ ...u, v: Buffer.from(u.v.buffer, u.v.byteOffset, u.v.byteLength).toString('base64') })) }) as unknown as Record<string, unknown>,
+    () => ({
+      provider: idx.provider,
+      units: [...idx.units.values()].map((u) => ({ ...u, v: Buffer.from(u.v.buffer, u.v.byteOffset, u.v.byteLength).toString('base64') })),
+      triples: idx.triples,
+    }) as unknown as Record<string, unknown>,
     5000
   );
 }
@@ -210,6 +248,8 @@ export async function refreshIndex(roomId: string): Promise<{ added: number; tot
         }
       });
     }
+    // Rebuild triples from all current memory notes (cheap — no LLM).
+    idx.triples = wanted.filter((u) => u.kind === 'memory').flatMap((u) => extractTriples(u.text, u.noteId));
     if (added || todo.length !== wanted.length) persist(roomId, idx);
   })().finally(() => {
     idx.building = null;
@@ -222,6 +262,8 @@ export interface Recall {
   memory: string[];
   passages: Array<{ title: string; text: string; score: number }>;
   skills: Array<{ noteId: string; title: string; score: number }>;
+  /** Entity–attribute–value facts related to entities mentioned in the query. */
+  triples: Array<{ entity: string; attr: string; value: string }>;
 }
 
 /** The facts, passages and playbooks closest in meaning to this message, or null when unavailable. */
@@ -244,7 +286,7 @@ export async function semanticRecall(roomId: string, message: string): Promise<R
   const all = [...idx.units.values()].map((u) => ({ u, s: cosineQ(q, u.v) })).sort((a, b) => b.s - a.s);
   const best = all[0]?.s || 0;
   const scored = all.filter((x) => x.s >= floor && x.s >= best * RELATIVE);
-  const out: Recall = { memory: [], passages: [], skills: [] };
+  const out: Recall = { memory: [], passages: [], skills: [], triples: [] };
   const seenNotes = new Set<string>();
   for (const { u, s } of scored) {
     if (u.kind === 'memory' && out.memory.length < 10) out.memory.push(u.text);
@@ -252,6 +294,17 @@ export async function semanticRecall(roomId: string, message: string): Promise<R
     else if ((u.kind === 'knowledge' || u.kind === 'note') && out.passages.length < 4 && !seenNotes.has(`${u.noteId}:${u.kind}`)) {
       seenNotes.add(`${u.noteId}:${u.kind}`);
       out.passages.push({ title: u.title, text: u.text.replace(/^[^\n]*\n/, '').slice(0, 900), score: s });
+    }
+  }
+  // Add entity–attribute–value triples for entities mentioned in the query.
+  if (idx.triples.length) {
+    const words = text.toLowerCase().split(/\W+/).filter((w) => w.length > 2);
+    for (const t of idx.triples) {
+      if (out.triples.length >= 10) break;
+      const matchable = [t.entity, t.attr, t.value].join(' ').toLowerCase();
+      if (words.some((w) => matchable.includes(w))) {
+        out.triples.push({ entity: t.entity, attr: t.attr, value: t.value });
+      }
     }
   }
   return out;

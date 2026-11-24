@@ -23,6 +23,7 @@ import { authFetch, getStoredRoomToken } from '../utils/roomAuth';
 import type { PushWakeStatus } from '../hooks/usePushWake';
 import { ConnectThisDevice } from './ConnectThisDevice';
 import { AutopilotCard } from './AutopilotCard';
+import { SkillStoreCard } from './SkillStoreCard';
 import { EngineBalance } from './EngineBalance';
 import { EngineLimits } from './EngineLimits';
 import { LocalBrainCard } from './LocalBrainCard';
@@ -580,6 +581,17 @@ export function ConnectionsView({
         </Card>
 
         <AutopilotCard roomId={roomId} />
+
+        {/* Skill Store */}
+        <Card>
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-lg">🧩</span>
+            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Skills</h2>
+            <span className="text-xs text-slate-500">Ready-made playbooks RAY follows</span>
+          </div>
+          <p className="text-xs text-slate-500 dark:text-slate-400">Search and install skills from Orbit — written by AI experts, never override your rules.</p>
+          <SkillStoreCard roomId={roomId} />
+        </Card>
 
         {/* Messages */}
         <Card>
