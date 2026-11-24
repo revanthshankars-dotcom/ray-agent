@@ -199,14 +199,20 @@ export async function runOllamaChatTurn(input: {
       });
     } catch (err) {
       // Fallback without tools in case the selected local Ollama model doesn't support native tool calling
+      // A 400 means Ollama rejected the request itself (model can't do tools or images, bad tool schema,
+      // older bridges hide the reason). Retry without tools and images instead of failing.
       const msg = sanitizeErrorMessage(err);
-      if (/does not support tools/i.test(msg)) {
+      if (/does not support|returned 400|\(400\)|invalid|unmarshal|images?/i.test(msg)) {
+        const plain = messages.map((m) => {
+          const { images: _drop, ...rest } = m as Record<string, unknown> & { images?: unknown };
+          return rest;
+        });
         data = await callOllamaChat({
           roomId: input.roomId,
           ollamaUrl: input.ollamaUrl,
           useBridgeProxy: input.useBridgeProxy,
           autoBridgeFallback: input.autoBridgeFallback ?? !input.useBridgeProxy,
-          body: { model, stream: false, messages },
+          body: { model, stream: false, messages: plain },
         });
       } else {
         throw err;

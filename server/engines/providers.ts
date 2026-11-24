@@ -627,10 +627,13 @@ export async function listProviderModels(p: ProviderDef): Promise<string[]> {
   }
 }
 
+/** Models that can't chat (images, speech, embeddings, moderation) — never pick them for a reply. */
+export const NON_CHAT_MODEL = /image|imagen|dall-?e|flux|stable-?diffusion|sdxl|tts|speech|whisper|audio|transcri|embed|rerank|moderation|guard|ocr|playai|orpheus/i;
+
 export async function resolveModel(p: ProviderDef, tier: ModelTier): Promise<string | null> {
   const spec = p.tiers[tier] || p.tiers.large || p.tiers.fast;
   if (!spec) return null;
-  const live = await listProviderModels(p);
+  const live = (await listProviderModels(p)).filter((m) => !NON_CHAT_MODEL.test(m));
   for (const re of spec.prefer) {
     const hit = live.filter((m) => re.test(m)).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0];
     if (hit) return hit;

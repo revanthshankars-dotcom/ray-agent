@@ -42,6 +42,8 @@ import {
   dailyBudget,
   isAvailable,
   isModelAvailable,
+  listProviderModels,
+  NON_CHAT_MODEL,
   isProviderConfigured,
   markKeyFailed,
   maxTokensFor,
@@ -103,7 +105,7 @@ export function classifyTask(
 const CHAINS: Record<TaskKind, Array<[string, ModelTier]>> = {
   quick: [['groq', 'fast'], ['openrouter', 'fast'], ['cerebras', 'fast'], ['groq', 'large'], ['gemini', 'fast'], ['mistral', 'fast'], ['opencode', 'fast'], ['sambanova', 'fast'], ['nvidia', 'fast'], ['github', 'fast'], ['cloudflare', 'fast'], ['zhipu', 'fast'], ['siliconflow', 'fast'], ['deepseek', 'fast'], ['custom', 'large'], ['llm7', 'fast']],
   chat: [['groq', 'large'], ['groq', 'fast'], ['openrouter', 'large'], ['cerebras', 'large'], ['opencode', 'large'], ['gemini', 'large'], ['mistral', 'large'], ['github', 'large'], ['nvidia', 'large'], ['sambanova', 'large'], ['cohere', 'large'], ['cloudflare', 'large'], ['huggingface', 'large'], ['deepseek', 'large'], ['zhipu', 'large'], ['dashscope', 'large'], ['siliconflow', 'large'], ['novita', 'large'], ['custom', 'large'], ['llm7', 'large']],
-  tools: [['groq', 'large'], ['groq', 'fast'], ['openrouter', 'large'], ['cerebras', 'large'], ['opencode', 'large'], ['gemini', 'large'], ['mistral', 'large'], ['github', 'large'], ['nvidia', 'large'], ['sambanova', 'large'], ['deepseek', 'large'], ['zhipu', 'large'], ['dashscope', 'large'], ['custom', 'large'], ['llm7', 'large']],
+  tools: [['groq', 'large'], ['groq', 'fast'], ['openrouter', 'large'], ['cerebras', 'large'], ['opencode', 'large'], ['gemini', 'large'], ['mistral', 'large'], ['github', 'large'], ['nvidia', 'large'], ['sambanova', 'large'], ['deepseek', 'large'], ['zhipu', 'large'], ['dashscope', 'large'], ['siliconflow', 'large'], ['custom', 'large'], ['llm7', 'large']],
   code: [['groq', 'code'], ['opencode', 'code'], ['openrouter', 'code'], ['mistral', 'code'], ['cerebras', 'code'], ['github', 'code'], ['groq', 'fast'], ['gemini', 'code'], ['nvidia', 'code'], ['cloudflare', 'code'], ['huggingface', 'code'], ['deepseek', 'code'], ['dashscope', 'code'], ['zhipu', 'code'], ['siliconflow', 'code'], ['custom', 'large'], ['llm7', 'code']],
   reasoning: [['groq', 'reasoning'], ['openrouter', 'reasoning'], ['gemini', 'reasoning'], ['github', 'reasoning'], ['cerebras', 'reasoning'], ['opencode', 'reasoning'], ['mistral', 'reasoning'], ['groq', 'fast'], ['nvidia', 'reasoning'], ['sambanova', 'reasoning'], ['cloudflare', 'reasoning'], ['deepseek', 'reasoning'], ['dashscope', 'reasoning'], ['novita', 'reasoning'], ['custom', 'large'], ['llm7', 'reasoning']],
   vision: [['openrouter', 'vision'], ['gemini', 'vision'], ['groq', 'vision'], ['mistral', 'vision'], ['github', 'vision'], ['nvidia', 'vision'], ['zhipu', 'vision'], ['dashscope', 'vision'], ['custom', 'vision']],
@@ -111,6 +113,34 @@ const CHAINS: Record<TaskKind, Array<[string, ModelTier]>> = {
 
 function providerById(id: string): ProviderDef | undefined {
   return PROVIDERS.find((p) => p.id === id);
+}
+
+// Second ring for tool tasks: other free tool-capable models. Each has its own daily limit, so when the
+// main models of a provider are used up for the day these usually still answer (before local Ollama).
+const ALT_TOOL_MODELS: Array<[string, RegExp[]]> = [
+  ['groq', [/^llama-3\.3-70b-versatile$/, /^moonshotai\/kimi-k2-instruct(-\d+)?$/, /^qwen\/qwen3-32b$/, /^meta-llama\/llama-4-(scout|maverick)/, /^llama-3\.1-8b-instant$/]],
+  ['cerebras', [/gpt-oss-120b/, /qwen-3-235b/, /llama-3\.3-70b/, /qwen-3-32b/, /llama3\.1-8b/]],
+  ['mistral', [/^mistral-small-latest$/, /^ministral-8b-latest$/, /^open-mistral-nemo/, /^mistral-medium-latest$/]],
+  ['github', [/gpt-4\.1-mini/, /gpt-4o-mini/, /Llama-3\.3-70B/i]],
+  ['sambanova', [/Llama-3\.3-70B/i, /Llama-4-Maverick/i, /DeepSeek-V3/i]],
+  ['siliconflow', [/Qwen\/Qwen[\d.]+-7B-Instruct$/, /glm-4-9b/i]],
+  ['llm7', [/gpt-4\.1-mini/, /gpt-4\.1-nano/, /mistral-small/, /deepseek-v3/]],
+];
+
+async function altToolCandidates(have: Array<{ p: ProviderDef; model: string }>) {
+  const out: Array<{ p: ProviderDef; model: string; tier: ModelTier }> = [];
+  for (const [id, pats] of ALT_TOOL_MODELS) {
+    const p = providerById(id);
+    if (!p || !p.supportsTools || !isAvailable(p)) continue;
+    const live = (await listProviderModels(p).catch(() => [] as string[])).filter((m) => !NON_CHAT_MODEL.test(m));
+    for (const re of pats) {
+      const model = live.find((m) => re.test(m));
+      if (model && isModelAvailable(p, model) && !have.some((c) => c.p.id === id && c.model === model) && !out.some((c) => c.p.id === id && c.model === model)) {
+        out.push({ p, model, tier: 'large' });
+      }
+    }
+  }
+  return out;
 }
 
 async function buildCandidates(kind: TaskKind, needsTools: boolean, pinned?: string) {
@@ -511,6 +541,7 @@ export async function runAutoChatTurn(input: RouterChatInput): Promise<{ handled
   // Always keep a tool-capable fallback list when tools are involved.
   const fallbackTools = needsTools ? candidates : await buildCandidates('tools', true);
   let all = [...candidates, ...fallbackTools.filter((c) => !candidates.some((x) => x.p.id === c.p.id && x.model === c.model))];
+  if (needsTools) all = [...all, ...(await altToolCandidates(all))];
   const pinnedProvider = pinned ? providerById(pinned) : undefined;
   if (pinnedProvider && input.pinnedModel && isModelAvailable(pinnedProvider, input.pinnedModel)) {
     all = [{ p: pinnedProvider, model: input.pinnedModel, tier: 'large' as ModelTier }, ...all.filter((c) => !(c.p.id === pinned && c.model === input.pinnedModel))];

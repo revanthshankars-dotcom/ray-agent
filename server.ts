@@ -85,7 +85,7 @@ import {
   validateScreenControlAction,
 } from './server/security.ts';
 import { executeAppConnectorAction, executeGoogleWorkspaceAction } from './server/workspace.ts';
-import { getEngineAssignments, runAutoChatTurn } from './server/engines/router.ts';
+import { getEngineAssignments, runAutoChatTurn, selectRelevantTools } from './server/engines/router.ts';
 import { dailyBudget, getEngineStatus, getKeySources, loadUsage, normalizeProviderEnv } from './server/engines/providers.ts';
 import { installShutdownFlush, persistenceBackend } from './server/persistence.ts';
 import { getVapidPublicKey, initWakeServices, sendPush } from './server/wake.ts';
@@ -1290,7 +1290,7 @@ async function startServer() {
                 ollamaModel: ollama.models[0],
                 useBridgeProxy: true,
                 systemInstruction: sysPrompt,
-                ollamaTools: getOllamaToolDeclarations(),
+                ollamaTools: selectRelevantTools(message || '', getOllamaToolDeclarations()) as ReturnType<typeof getOllamaToolDeclarations>,
                 executeTool: toolExecutor,
                 onEvent: sendEvent,
               });
@@ -1398,7 +1398,7 @@ async function startServer() {
           useBridgeProxy: ollamaPick ? ollamaPick.viaBridge : Boolean(engine.useBridgeProxy),
           autoBridgeFallback: true,
           systemInstruction: sysPrompt,
-          ollamaTools: getOllamaToolDeclarations(),
+          ollamaTools: selectRelevantTools(message || '', getOllamaToolDeclarations()) as ReturnType<typeof getOllamaToolDeclarations>,
           executeTool: toolExecutor,
           onEvent: sendEvent,
         });
