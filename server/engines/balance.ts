@@ -44,6 +44,8 @@ interface ProviderState {
   probedAt?: number;
   probeNote?: string;
   countSince?: number;
+  lastOkAt?: number;
+  lastOkModel?: string;
 }
 interface Saved {
   day: string;
@@ -93,6 +95,8 @@ const save = () => scheduleSave('engine-balance', () => state as unknown as Reco
 
 // Groq / Cerebras / GitHub limit each model separately; the rest limit the account.
 const PER_MODEL = new Set(['groq', 'cerebras', 'github', 'gemini']);
+// Accounts with free AND paid models: a credit error only concerns the paid model.
+const MIXED_FREE_PAID = new Set(['siliconflow', 'openrouter', 'novita', 'llm7', 'cloudflare']);
 const scopeOf = (id: string, model: string) => (PER_MODEL.has(id) ? model : '');
 
 function setMeter(id: string, m: Omit<Meter, 'key' | 'at'>) {
@@ -155,6 +159,8 @@ export function noteSuccess(id: string, model: string, tokens: number) {
   const p = prov(id);
   p.tokensByModel[model] = (p.tokensByModel[model] || 0) + Math.max(0, tokens || 0);
   p.requestsByModel[model] = (p.requestsByModel[model] || 0) + 1;
+  p.lastOkAt = Date.now();
+  p.lastOkModel = model;
   // A success means any block on this model has lifted.
   p.blocks = p.blocks.filter((b) => b.scope !== model && !(b.scope === '*' && b.until === undefined));
   save();
@@ -193,8 +199,14 @@ export function noteError(id: string, model: string, status: number, message: st
     setMeter(id, { scope: '', unit: 'requests', window: 'day', limit: Number.isFinite(lim) && lim > 0 ? lim : undefined, remaining: 0, resetsAt: until, source: 'provider' });
     block(id, '*', 'Free-model requests for today used up (OpenRouter daily cap; buying 10 credits raises it to 1,000/day)', until);
   } else if (/余额不足|无可用资源包|充值|insufficient (balance|credit|funds|quota)|top ?up|recharge|out of credits?|credit balance is too low|payment required/.test(low) || status === 402) {
-    setMeter(id, { scope: '', unit: 'credit', window: 'balance', remaining: 0, source: 'provider' });
-    block(id, '*', /余额不足|无可用资源包|充值/.test(msg) ? 'No balance left ("余额不足" = insufficient balance — the free credit is used up; top up to continue)' : 'No credit left on this account (top up to continue)');
+    const zh = /余额不足|无可用资源包|充值/.test(msg);
+    if (MIXED_FREE_PAID.has(id)) {
+      // Free and paid models share the account: only this (paid) model needs credit.
+      block(id, model, `Needs paid credit${zh ? ' ("余额不足" = insufficient balance)' : ''} — RAY uses the free models instead`, Date.now() + 6 * 3600_000, true);
+    } else {
+      setMeter(id, { scope: '', unit: 'credit', window: 'balance', remaining: 0, source: 'provider' });
+      block(id, '*', zh ? 'No balance left ("余额不足" = insufficient balance — the free credit is used up; top up to continue)' : 'No credit left on this account (top up to continue)');
+    }
   } else if (/quota exceeded.*(per ?day|perday|daily)|generate_content_free_tier_requests|requests? per day/i.test(msg)) {
     // Gemini: "Quota exceeded for metric: …free_tier_requests, limit: 250, model: gemini-2.5-flash … Please retry in 41s"
     const lim = msg.match(/limit: (\d+)/i);
@@ -220,6 +232,12 @@ export function blockedReason(id: string, model?: string): string | null {
   const now = Date.now();
   const b = p.blocks.find((x) => (x.scope === '*' || (model && x.scope === model)) && (x.until ? x.until > now : now - x.at < 6 * 3600_000));
   return b ? b.reason : null;
+}
+
+/** Worth re-testing now: nothing blocked, or only "no credit" marks (they have no known reset). */
+export function canRecheck(id: string): boolean {
+  const p = state.providers[id];
+  return !p || !p.blocks.some((b) => b.scope === '*' && b.until && b.until > Date.now());
 }
 
 // --- balance APIs ------------------------------------------------------------------------------------
@@ -331,7 +349,11 @@ export async function balanceView(id: string): Promise<BalanceView> {
   else if (worst) status = frac(worst) <= 0 ? 'empty' : frac(worst) < 0.15 ? 'low' : worst.source === 'estimate' && !firm.length ? 'unknown' : 'ok';
   else if (meters.length) status = 'ok';
 
-  let headline = 'No numbers from this provider yet — they appear after its next reply (or press Check now).';
+  const recentOk = p.lastOkAt && Date.now() - p.lastOkAt < 30 * 60_000;
+  if (status === 'unknown' && recentOk) status = 'ok';
+  let headline = recentOk
+    ? `Answering normally (last reply ${new Date(p.lastOkAt!).toISOString().slice(11, 16)} UTC). This provider publishes no remaining-balance numbers.`
+    : 'No numbers from this provider yet — they appear after its next reply (or press Check now).';
   const wholeBlock = blocks.find((b) => b.scope === '*');
   if (wholeBlock) headline = wholeBlock.reason;
   else if (worst) headline = `${worst.source === 'estimate' ? '≈ ' : ''}${worst.unit === 'credit' ? `${worst.currency || ''} ${worst.remaining.toFixed(2)}`.trim() : fmt(worst.remaining)}${worst.limit ? ` of ${fmt(worst.limit)}` : ''} ${unitLabel(worst)} left${worst.scope && worst.scope !== 'credits' ? ` · ${worst.scope}` : ''}`;

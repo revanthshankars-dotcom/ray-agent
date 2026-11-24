@@ -33,7 +33,7 @@
  */
 import { isRoomInterrupted, setRoomInterrupted } from '../hub.ts';
 import { sanitizeErrorMessage } from '../security.ts';
-import { balanceView, blockedReason, noteError, noteHeaders, noteSuccess, probeBalances } from './balance.ts';
+import { balanceView, blockedReason, canRecheck, noteError, noteHeaders, noteSuccess, probeBalances } from './balance.ts';
 import { mcpKnownWords } from '../mcpConnectors.ts';
 import {
   PROVIDERS,
@@ -774,11 +774,12 @@ export async function getEngineBalances(refresh = false) {
     // headers, or with the exact "used up / no balance" error — the only way to know for most of them.
     await Promise.all(
       configured
-        .filter((p) => p.id !== 'custom' && !blockedReason(p.id) && Date.now() - (lastPing.get(p.id) || 0) > 10 * 60_000)
+        .filter((p) => p.id !== 'custom' && canRecheck(p.id) && Date.now() - (lastPing.get(p.id) || 0) > 10 * 60_000)
         .map(async (p) => {
           lastPing.set(p.id, Date.now());
-          const model = await resolveModel(p, HEADER_PROVIDERS.has(p.id) ? 'large' : 'fast').catch(() => null);
-          if (!model || blockedReason(p.id, model)) return;
+          // Test the model RAY actually routes to first (tools/large tier), not a random one.
+          const model = await resolveModel(p, 'large').catch(() => null);
+          if (!model) return;
           await callCompletion(p, model, [{ role: 'user', content: 'hi' }], undefined, { maxTokens: 1, timeoutMs: 12000 }).catch(() => undefined);
         })
     );
