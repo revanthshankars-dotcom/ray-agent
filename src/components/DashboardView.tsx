@@ -1,3 +1,4 @@
+import { RayMark } from './RayMark';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowRight,
@@ -597,8 +598,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               className="w-11 h-11 rounded-full object-cover border border-slate-200 dark:border-slate-700 shrink-0"
             />
           ) : (
-            <div className="w-11 h-11 rounded-full bg-blue-600 text-white font-display font-bold text-base flex items-center justify-center shrink-0">
-              {userName.slice(0, 1).toUpperCase()}
+            <div className="shrink-0" aria-hidden>
+              <RayMark wordmark={false} size="lg" />
             </div>
           )}
           <div className="min-w-0">

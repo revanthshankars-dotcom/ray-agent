@@ -1,5 +1,4 @@
-import React, { useMemo } from 'react';
-import { Mic, Radio } from 'lucide-react';
+import React from 'react';
 import type { LiveVoiceState } from '../types/relay';
 
 interface RayCoreFaceProps {
@@ -17,7 +16,7 @@ const STATE_COPY: Record<
 > = {
   off: {
     label: 'Core Standby',
-    sub: 'Tap orb to engage RAY Live Voice',
+    sub: 'Tap RAY to talk',
     ringClass: 'text-blue-600 dark:text-blue-400',
     coreGlowClass: 'bg-blue-600/10 dark:bg-blue-500/15 border-blue-600/35 dark:border-blue-400/35',
   },
@@ -68,23 +67,6 @@ export const RayCoreFace: React.FC<RayCoreFaceProps> = ({
   onToggleVoice,
 }) => {
   const meta = STATE_COPY[voiceState] || STATE_COPY.off;
-  const activeMotion =
-    voiceState === 'listening' ||
-    voiceState === 'thinking' ||
-    voiceState === 'speaking' ||
-    voiceState === 'connecting';
-
-  const radialTicks = useMemo(() => {
-    const count = compact ? 24 : 36;
-    return Array.from({ length: count }, (_, idx) => {
-      const deg = (idx / count) * 360;
-      const major = idx % 3 === 0;
-      return { deg, major, idx };
-    });
-  }, [compact]);
-
-  const sizePx = compact ? 76 : 164;
-
   return (
     <div
       className={
@@ -111,107 +93,39 @@ export const RayCoreFace: React.FC<RayCoreFaceProps> = ({
         aria-label={voiceState === 'off' ? 'Activate RAY Voice Core' : 'Toggle RAY Voice Core'}
         className="group relative flex items-center justify-center focus-visible:outline-2 focus-visible:outline-blue-600 rounded-full shrink-0"
       >
-        <div className="relative flex items-center justify-center">
-          <svg
-            width={sizePx}
-            height={sizePx}
-            viewBox="0 0 200 200"
-            className={`${meta.ringClass} overflow-visible`}
-            aria-hidden="true"
-          >
-            {/* Outer segmented ring */}
-            <circle
-              cx="100"
-              cy="100"
-              r="90"
-              fill="none"
-              stroke="currentColor"
-              strokeOpacity="0.22"
-              strokeWidth="2"
-              strokeDasharray="16 8 4 8"
-              className={`origin-center ${
-                activeMotion
-                  ? 'animate-[spin_8s_linear_infinite]'
-                  : 'animate-[spin_28s_linear_infinite]'
-              } motion-reduce:animate-none`}
-            />
-
-            {/* Counter-rotating arc ring */}
-            <circle
-              cx="100"
-              cy="100"
-              r="76"
-              fill="none"
-              stroke="currentColor"
-              strokeOpacity={activeMotion ? '0.85' : '0.45'}
-              strokeWidth="3.5"
-              strokeLinecap="round"
-              strokeDasharray="72 44 28 44"
-              className={`origin-center ${
-                voiceState === 'thinking' || voiceState === 'connecting'
-                  ? 'animate-[spin_4s_linear_infinite_reverse]'
-                  : 'animate-[spin_16s_linear_infinite_reverse]'
-              } motion-reduce:animate-none`}
-            />
-
-            {/* Radial HUD ticks */}
-            <g className="origin-center">
-              {radialTicks.map((t) => (
-                <line
-                  key={t.idx}
-                  x1="100"
-                  y1={t.major ? '28' : '32'}
-                  x2="100"
-                  y2={activeMotion && t.idx % 2 === 0 ? '38' : '36'}
-                  stroke="currentColor"
-                  strokeOpacity={t.major ? '0.6' : '0.28'}
-                  strokeWidth={t.major ? '2' : '1.2'}
-                  transform={`rotate(${t.deg} 100 100)`}
+        {/* Nixi-style face: a black notch with two eyes that react to the voice state. */}
+        <div
+          className={`relative bg-[#0a0a0b] dark:ring-1 dark:ring-white/10 rounded-full flex items-center justify-center shadow-xl shadow-black/10 transition-transform group-hover:scale-105 motion-reduce:transform-none ${
+            compact ? 'w-[76px] h-[38px] gap-2.5' : 'w-[168px] h-[80px] gap-5'
+          }`}
+        >
+          {voiceState === 'speaking' ? (
+            <span className={`flex items-center ${compact ? 'gap-1' : 'gap-1.5'}`}>
+              {[0, 1, 2, 3, 4].map((i) => (
+                <span
+                  key={i}
+                  className={`rounded-full bg-white ray-bar ${compact ? 'w-[3px]' : 'w-[6px]'}`}
+                  style={{ height: compact ? 14 : 30, animationDelay: `${i * 0.12}s` }}
                 />
               ))}
-            </g>
-
-            {/* Inner crisp harmonic ring */}
-            <circle
-              cx="100"
-              cy="100"
-              r="54"
-              fill="none"
-              stroke="currentColor"
-              strokeOpacity={voiceState === 'speaking' || voiceState === 'listening' ? '0.9' : '0.4'}
-              strokeWidth={voiceState === 'speaking' ? '2.5' : '1.5'}
-              className={
-                voiceState === 'speaking' || voiceState === 'listening'
-                  ? 'animate-pulse motion-reduce:animate-none'
-                  : ''
-              }
-            />
-          </svg>
-
-          {/* Center Holographic RAY Core Wordmark */}
-          <div
-            className={`absolute rounded-full border flex flex-col items-center justify-center transition-all group-hover:scale-105 motion-reduce:transform-none ${
-              compact ? 'w-11 h-11' : 'w-24 h-24'
-            } ${meta.coreGlowClass}`}
-          >
-            <span
-              className={`font-display font-bold tracking-[0.18em] text-slate-900 dark:text-slate-100 select-none ${
-                compact ? 'text-[11px] pl-[0.18em]' : 'text-lg pl-[0.18em]'
-              }`}
-            >
-              RAY
             </span>
-            {!compact && (
-              <span className="mt-0.5 text-[10px] font-mono text-slate-600 dark:text-slate-300 flex items-center gap-1">
-                {activeMotion ? (
-                  <Radio className="w-2.5 h-2.5 animate-pulse" />
-                ) : (
-                  <Mic className="w-2.5 h-2.5" />
-                )}
-                <span>{voiceState === 'off' ? 'VOICE' : voiceState.toUpperCase()}</span>
-              </span>
-            )}
-          </div>
+          ) : (
+            [0, 1].map((i) => (
+              <span
+                key={i}
+                className={`rounded-full bg-white ${
+                  voiceState === 'thinking' || voiceState === 'connecting'
+                    ? 'ray-look'
+                    : voiceState === 'listening'
+                    ? 'ray-listen'
+                    : voiceState === 'interrupted'
+                    ? 'opacity-50'
+                    : 'ray-eye'
+                } ${voiceState === 'standby' ? 'shadow-[0_0_12px_rgba(255,255,255,0.7)]' : ''}`}
+                style={{ width: compact ? 8 : 16, height: compact ? 16 : voiceState === 'listening' ? 38 : 32 }}
+              />
+            ))
+          )}
         </div>
       </button>
 
@@ -232,7 +146,7 @@ export const RayCoreFace: React.FC<RayCoreFaceProps> = ({
               Bridge: {bridgeConnected ? 'Active' : 'Idle'}
             </span>
             <span className={ollamaRunning ? 'text-emerald-600 dark:text-emerald-400' : ''}>
-              Ollama: {ollamaRunning ? 'Ready' : 'Standby'}
+              Local brain: {ollamaRunning ? 'Ready' : 'Standby'}
             </span>
             {engineLabel && <span className="truncate max-w-[160px]">{engineLabel}</span>}
           </div>

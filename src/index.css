@@ -1,10 +1,39 @@
 @import "tailwindcss";
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* ---------------------------------------------------------------------------------------------
+   The Nixi look for all of RAY: cool light-grey page, white cards with soft big corners, black pill
+   buttons, blue accents and eyebrow labels, heavy tight headings. Dark mode mirrors it (near-black
+   page, dark cards, white pill buttons). Redefining the palette here restyles every screen.
+   --------------------------------------------------------------------------------------------- */
+@theme {
+  --color-slate-50: #f4f5f7;
+  --color-slate-100: #eceef1;
+  --color-slate-200: #e2e5ea;
+  --color-slate-300: #cdd2da;
+  --color-slate-400: #98a0ac;
+  --color-slate-500: #6b7280;
+  --color-slate-600: #4a505c;
+  --color-slate-700: #33373f;
+  --color-slate-800: #222429;
+  --color-slate-900: #151619;
+  --color-slate-950: #0b0b0d;
+  --color-blue-50: #eef4ff;
+  --color-blue-100: #dbe7ff;
+  --color-blue-400: #5b8ff9;
+  --color-blue-500: #3a76f0;
+  --color-blue-600: #2563eb;
+  --color-blue-700: #1d4fd8;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --radius-2xl: 1.375rem;
+  --radius-3xl: 1.75rem;
+}
+
 @layer base {
   :root {
-    --font-display: 'Plus Jakarta Sans', system-ui, sans-serif;
-    --font-sans: 'DM Sans', system-ui, sans-serif;
+    --font-display: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
     --font-mono: 'JetBrains Mono', ui-monospace, monospace;
   }
 
@@ -30,5 +59,117 @@
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+/* ---------------- Nixi look: global finishing ---------------- */
+html {
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: 'cv11', 'ss01';
+}
+h1,
+h2,
+.font-display {
+  font-weight: 800;
+  letter-spacing: -0.035em;
+}
+h3 {
+  letter-spacing: -0.02em;
+}
+/* Primary buttons: black pills (white pills in dark mode). */
+button.bg-blue-600,
+a.bg-blue-600,
+button.bg-blue-700,
+a.bg-blue-700 {
+  background-color: #0a0a0b;
+  color: #fff;
+  border-radius: 9999px;
+}
+button.bg-blue-600:hover,
+a.bg-blue-600:hover,
+button.bg-blue-700:hover,
+a.bg-blue-700:hover {
+  background-color: #2a2b30;
+}
+.dark button.bg-blue-600,
+.dark a.bg-blue-600,
+.dark button.bg-blue-700,
+.dark a.bg-blue-700 {
+  background-color: #f7f7f8;
+  color: #0a0a0b;
+}
+.dark button.bg-blue-600:hover,
+.dark a.bg-blue-600:hover,
+.dark button.bg-blue-700:hover,
+.dark a.bg-blue-700:hover {
+  background-color: #ffffff;
+}
+/* Text buttons become pills too (icon-only squares keep their shape). */
+button[class*='px-'][class*='py-']:not([role='tab']):not([role='switch']):not(.rounded-none):not([data-keep-shape]) {
+  border-radius: 9999px;
+}
+/* Cards: white, soft border, a whisper of shadow. */
+.bg-white.border,
+.bg-white.rounded-2xl,
+.bg-white.rounded-xl {
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 1px rgba(16, 24, 40, 0.02);
+}
+/* Eyebrow labels (small, uppercase, tracked): Nixi blue. */
+.uppercase[class*='tracking-'][class*='text-xs'],
+.uppercase[class*='tracking-'][class*='text-[10px]'],
+.uppercase[class*='tracking-'][class*='text-[11px]'] {
+  color: var(--color-blue-600);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+}
+.dark .uppercase[class*='tracking-'][class*='text-xs'],
+.dark .uppercase[class*='tracking-'][class*='text-[10px]'],
+.dark .uppercase[class*='tracking-'][class*='text-[11px]'] {
+  color: var(--color-blue-400);
+}
+/* The logo's eyes blink now and then. */
+.ray-eye {
+  animation: ray-blink 6s infinite;
+}
+@keyframes ray-blink {
+  0%,
+  96%,
+  100% {
+    transform: scaleY(1);
+  }
+  98% {
+    transform: scaleY(0.1);
+  }
+}
+.ray-look {
+  animation: ray-look 1.6s ease-in-out infinite;
+}
+@keyframes ray-look {
+  0%,
+  100% {
+    transform: translateX(-4px);
+  }
+  50% {
+    transform: translateX(4px);
+  }
+}
+.ray-listen {
+  animation: ray-listen 1s ease-in-out infinite;
+}
+@keyframes ray-listen {
+  50% {
+    transform: scaleY(0.8);
+  }
+}
+.ray-bar {
+  animation: ray-bar 0.9s ease-in-out infinite;
+}
+@keyframes ray-bar {
+  0%,
+  100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
   }
 }

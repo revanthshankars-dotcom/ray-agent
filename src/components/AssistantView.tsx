@@ -1032,7 +1032,7 @@ export const AssistantView: React.FC<AssistantViewProps> = ({
                 }`}
               >
                 <Server className="w-3 h-3" />
-                <span>Ollama</span>
+                <span>Local</span>
               </button>
             </div>
 

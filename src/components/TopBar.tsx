@@ -1,3 +1,4 @@
+import { RayMark } from './RayMark';
 import React from 'react';
 import { OctagonX, PictureInPicture2 } from 'lucide-react';
 import { PWAInstallButton } from './PWAInstallButton';
@@ -39,13 +40,14 @@ export const TopBar: React.FC<TopBarProps> = ({
   floating = false,
 }) => {
   return (
-    <header className="h-14 shrink-0 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 sm:px-6 flex items-center justify-between gap-6">
+    <header className="h-14 shrink-0 border-b border-slate-200/70 dark:border-slate-800 bg-white/80 dark:bg-slate-950/80 backdrop-blur-xl px-4 sm:px-6 flex items-center justify-between gap-6">
       <button
         type="button"
         onClick={() => onSelectTab('dashboard')}
-        className="font-display text-lg font-bold tracking-tight text-slate-900 dark:text-slate-100 whitespace-nowrap shrink-0 focus-visible:outline-2 focus-visible:outline-blue-600 rounded"
+        aria-label="RAY home"
+        className="whitespace-nowrap shrink-0 focus-visible:outline-2 focus-visible:outline-blue-600 rounded-full"
       >
-        RAY
+        <RayMark />
       </button>
 
       {/* Large screens use the sidebar for navigation; show where you are instead. */}
