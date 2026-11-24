@@ -181,6 +181,11 @@ export function JarvisView({
   const [haMsg, setHaMsg] = useState('');
   const [aware, setAware] = useState<boolean | null>(null);
   const [pinPopups, setPinPopups] = useState<boolean | null>(null);
+  const [wa, setWa] = useState<{ status: string; qr: string | null; pairingCode: string | null; me: { id: string; name?: string } | null; chats: number; error: string | null } | null>(null);
+  const [waQr, setWaQr] = useState('');
+  const [waPhone, setWaPhone] = useState('');
+  const [waBusy, setWaBusy] = useState(false);
+  const [igMsg, setIgMsg] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -201,6 +206,8 @@ export function JarvisView({
       if (ar.ok) setAware(((await ar.json()) as { on: boolean }).on);
       const up = await authFetch(`/api/ui-prefs?room=${encodeURIComponent(roomId)}`, roomId);
       if (up.ok) setPinPopups(((await up.json()) as { pinPopups: boolean }).pinPopups);
+      const wr = await authFetch(`/api/whatsapp?room=${encodeURIComponent(roomId)}`, roomId);
+      if (wr.ok) setWa(await wr.json());
     } catch {
       /* offline */
     } finally {
@@ -359,6 +366,38 @@ export function JarvisView({
   const disconnectHome = async () => {
     await authFetch('/api/home/disconnect', roomId, { method: 'POST', body: JSON.stringify({ roomId }) });
     await load();
+  };
+  // WhatsApp link: poll while the QR / code is showing; render the QR locally.
+  useEffect(() => {
+    if (!wa?.qr) return setWaQr('');
+    void import('qrcode').then((m) => m.default.toDataURL(wa.qr!, { width: 220, margin: 1 })).then(setWaQr).catch(() => setWaQr(''));
+  }, [wa?.qr]);
+  useEffect(() => {
+    if (wa?.status !== 'linking' && wa?.status !== 'reconnecting') return;
+    const t = window.setInterval(async () => {
+      const r = await authFetch(`/api/whatsapp?room=${encodeURIComponent(roomId)}`, roomId).catch(() => null);
+      if (r?.ok) setWa(await r.json());
+    }, 2500);
+    return () => window.clearInterval(t);
+  }, [wa?.status, roomId]);
+  const linkWa = async (withPhone: boolean) => {
+    setWaBusy(true);
+    try {
+      const r = await authFetch('/api/whatsapp/link', roomId, { method: 'POST', body: JSON.stringify({ roomId, phone: withPhone ? waPhone : undefined }) });
+      setWa(await r.json());
+    } finally {
+      setWaBusy(false);
+    }
+  };
+  const unlinkWa = async () => {
+    await authFetch('/api/whatsapp/unlink', roomId, { method: 'POST', body: JSON.stringify({ roomId }) });
+    await load();
+  };
+  const openInstagramLogin = async () => {
+    setIgMsg('Opening Instagram in RAY’s browser on your PC…');
+    const r = await authFetch('/api/jarvis/ray-browser', roomId, { method: 'POST', body: JSON.stringify({ roomId, url: 'https://www.instagram.com/' }) });
+    const j = (await r.json()) as { ok?: boolean; error?: string };
+    setIgMsg(j.ok ? 'Log in in the window that opened on your PC — RAY remembers it.' : `Couldn’t open it: ${j.error}`);
   };
   const togglePin = async () => {
     const r = await authFetch('/api/ui-prefs', roomId, { method: 'POST', body: JSON.stringify({ roomId, pinPopups: !pinPopups }) });
@@ -532,8 +571,78 @@ export function JarvisView({
                 </span>
               ))}
             </div>
-            <p className="mt-2 text-xs text-slate-500">
-              Personal Instagram/WhatsApp have no API: RAY uses them through the browser on your PC and the apps on your phone. Business/creator accounts get full API access with a token in Render.
+            <div className="mt-3 rounded-lg bg-slate-50 dark:bg-slate-800/60 p-3 space-y-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs font-semibold text-slate-900 dark:text-slate-100">WhatsApp (free)</span>
+                <span className="text-[11px] text-slate-500">read chats, send text & media, voice notes — works while your PC is off</span>
+              </div>
+              {wa?.status === 'connected' ? (
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400 inline-flex items-center gap-1">
+                    <CheckCircle2 className="w-3.5 h-3.5" /> Linked{wa.me?.name ? ` · ${wa.me.name}` : ''}{wa.chats ? ` · ${wa.chats} chats` : ''}
+                  </span>
+                  <button type="button" className={btnGhost} onClick={() => onAskRay('What are my unread WhatsApp messages?')}>
+                    Try it
+                  </button>
+                  <button type="button" className={`${btnGhost} text-rose-600 dark:text-rose-400`} onClick={() => void unlinkWa()}>
+                    Unlink
+                  </button>
+                </div>
+              ) : wa?.status === 'linking' && (wa.qr || wa.pairingCode) ? (
+                <div className="flex items-start gap-3 flex-wrap">
+                  {wa.pairingCode ? (
+                    <div>
+                      <p className="text-[11px] text-slate-500">On your phone: WhatsApp → Settings → Linked devices → Link a device → <b>Link with phone number</b>, then enter:</p>
+                      <p className="mt-1 font-mono text-2xl tracking-[0.3em] text-slate-900 dark:text-slate-100">{wa.pairingCode}</p>
+                    </div>
+                  ) : (
+                    <>
+                      {waQr && <img src={waQr} alt="WhatsApp link QR code" className="w-40 h-40 rounded-lg bg-white p-1" />}
+                      <p className="text-[11px] text-slate-600 dark:text-slate-300 max-w-[14rem]">On your phone: WhatsApp → Settings → <b>Linked devices</b> → Link a device → scan this. The code refreshes by itself.</p>
+                    </>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" className={btnPrimary} disabled={waBusy} onClick={() => void linkWa(false)}>
+                      {waBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null} Link WhatsApp (QR)
+                    </button>
+                    {wa?.status === 'reconnecting' && <span className="text-[11px] text-slate-500 self-center">Reconnecting…</span>}
+                  </div>
+                  <div className="flex gap-2 items-center flex-wrap">
+                    <input
+                      className="w-40 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent px-2 py-1 text-xs font-mono"
+                      placeholder="+91 98765 43210"
+                      value={waPhone}
+                      onChange={(e) => setWaPhone(e.target.value)}
+                      aria-label="Your WhatsApp number for a link code"
+                    />
+                    <button type="button" className={btnGhost} disabled={waBusy || waPhone.replace(/\D/g, '').length < 8} onClick={() => void linkWa(true)}>
+                      Get a code instead
+                    </button>
+                  </div>
+                  {wa?.error && <p className="text-[11px] text-amber-600">{wa.error}</p>}
+                </div>
+              )}
+            </div>
+            <div className="mt-2 rounded-lg bg-slate-50 dark:bg-slate-800/60 p-3 space-y-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs font-semibold text-slate-900 dark:text-slate-100">Instagram (free, personal)</span>
+                <span className="text-[11px] text-slate-500">DMs, feed, stories, post photos & reels — in RAY’s browser on your PC</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button type="button" className={btnGhost} onClick={() => void openInstagramLogin()}>
+                  Log in once on PC
+                </button>
+                <button type="button" className={btnGhost} onClick={() => onAskRay('Check my Instagram DMs')}>
+                  Try it
+                </button>
+                {igMsg && <span className="text-[11px] text-slate-500">{igMsg}</span>}
+              </div>
+            </div>
+            <p className="mt-2 text-[11px] text-slate-500">
+              WhatsApp and Instagram are used the way you would — RAY only sends or posts what you ask, after you approve. Business/creator accounts can also use the official API (token in Render).
             </p>
           </div>
         </div>

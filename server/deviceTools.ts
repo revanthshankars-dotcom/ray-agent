@@ -51,6 +51,8 @@ const ACTION_TOOLS: Record<string, RegExp> = {
   skill_remove: /\b(remove|delete|uninstall|drop|disable)\b/i,
   inbox_routine: /\b(check|handle|manage|routine|enable|start|turn|set|run|stop|disable|pause|twice|every|daily|inbox|email)\b/i,
   learn_me_from_email: /\b(learn|know|study|read|teach|understand|profile|onboard|who i am)\b/i,
+  whatsapp: /\b(send|text|message|reply|tell|forward|share|post|write|say|answer|wish|invite|remind)\b/i,
+  instagram: /\b(send|dm|message|reply|post|upload|share|publish|comment|like|write|say)\b/i,
   browser_page: /\b(click|press|type|fill|enter|write|reply|send|post|submit|sign in|log ?in|select|choose|check|tick|add|book|order|buy|scroll|go|open|do)\b/i,
   home_control: /\b(turn|switch|set|dim|brighten|open|close|lock|unlock|start|stop|play|pause|toggle|arm|disarm|make|put|goodnight|good night|on|off)\b/i,
   phone_call_me: /\b(call|ring|phone|dial|wake|alert|remind|buzz)\b/i,
@@ -62,6 +64,8 @@ const ACTION_TOOLS: Record<string, RegExp> = {
 function isReadOnlyVariant(name: string, args: Record<string, unknown>): boolean {
   if ((name === 'google_api_request' || name === 'meta_api_request') && String(args.method || 'GET').toUpperCase() === 'GET') return true;
   if (name === 'mcp_call') return isMcpReadOnlyCall(args);
+  if (name === 'whatsapp' && /^(status|chats|read|download)?$/i.test(String(args.action || 'status'))) return true;
+  if (name === 'instagram' && /^(dms|read_dm|feed|stories|profile)?$/i.test(String(args.action || 'dms'))) return true;
   if (name === 'browser_page' && /^(read|scroll)?$/i.test(String(args.action || 'read'))) return true;
   if (name === 'inbox_routine' && /^(status)?$/i.test(String(args.action || 'status'))) return true;
   return name === 'browser_tab_action' && String(args.action || '').toLowerCase() === 'read';

@@ -31,7 +31,8 @@ interface PageView {
 
 interface BrowseStep {
   thought?: string;
-  action: 'open' | 'search' | 'click' | 'type' | 'key' | 'scroll' | 'back' | 'note' | 'done' | 'ask_user';
+  action: 'open' | 'search' | 'click' | 'type' | 'key' | 'scroll' | 'back' | 'note' | 'done' | 'ask_user' | 'upload';
+  path?: string;
   url?: string;
   query?: string;
   i?: number;
@@ -55,6 +56,7 @@ Actions:
  {"action":"open","url":"https://..."}            {"action":"search","query":"..."} (Google search)
  {"action":"click","i":12}                        {"action":"type","i":5,"text":"...","submit":true}
  {"action":"key","key":"enter|tab|escape|pagedown"} {"action":"scroll","dy":800}   {"action":"back"}
+ {"action":"upload","path":"<file path on the PC, exactly as in the goal>"} (after opening the site's upload / "Select from computer" step)
  {"action":"note","note":"<facts worth keeping, with the page URL>"}
  {"action":"done","answer":"<final answer / what was done, cite URLs>"}   {"action":"ask_user","text":"<question>"}
 Rules: one action per reply. Prefer opening a precise URL when you know it. Use "note" to save facts as you research,
@@ -169,9 +171,10 @@ export async function serverResearch(goal: string, maxPages = 4): Promise<{ answ
   return { answer, sources: (pages.length ? pages : results).map((p) => p.url) };
 }
 
-async function runBrowse(roomId: string, taskId: string, goal: string, mode: 'do' | 'research', bridgeId: string, startUrl?: string, resume = false): Promise<string | HardStop> {
+async function runBrowse(roomId: string, taskId: string, goal: string, mode: 'do' | 'research', bridgeId: string, startUrl?: string, resume = false, useLogin = false): Promise<string | HardStop> {
   const emit = (data: Record<string, unknown>) => broadcastRoomEvent(roomId, 'agent:update', { taskId, task: goal, target: 'browser', mode, ...data });
-  const background = mode === 'research';
+  // Research runs in a hidden browser — unless it needs Ray's logins (Instagram inbox, web mail…).
+  const background = mode === 'research' && !useLogin;
   const history: string[] = [];
   const notes: string[] = [];
   const maxSteps = mode === 'research' ? 14 : 25;
@@ -240,6 +243,15 @@ async function runBrowse(roomId: string, taskId: string, goal: string, mode: 'do
     else if (plan.action === 'key') Object.assign(req, { op: 'key', key: plan.key });
     else if (plan.action === 'scroll') Object.assign(req, { op: 'scroll', dy: plan.dy || 800 });
     else if (plan.action === 'back') Object.assign(req, { op: 'back' });
+    else if (plan.action === 'upload') {
+      // Only files Ray named in the goal can be uploaded.
+      const p = String(plan.path || '').trim();
+      if (!p || !goal.includes(p)) {
+        history.push(`${step}. upload refused — use the exact file path from the goal`);
+        continue;
+      }
+      Object.assign(req, { op: 'upload', path: p, i: plan.i });
+    }
     else Object.assign(req, { op: 'read' });
     const out = await dispatchBridgeProxyCall(roomId, req, 45000, bridgeId);
     if (!out.ok && /PASSWORD_FIELD/.test(out.error || '') && plan.i != null) {
@@ -327,6 +339,7 @@ export async function executeBrowserTool(
   const startUrl = /^https?:\/\//i.test(String(args.startUrl || '')) ? String(args.startUrl) : undefined;
   const pc = browserBridge(roomId);
   if (!pc) {
+    if (args.useLogin) return { result: 'This needs RAY’s browser on Ray’s PC (his logins), and the PC bridge is offline.' };
     if (mode === 'do') return { result: 'The PC bridge (v3.1+) must be online to use the browser for tasks. Update the bridge from Connect → Install, or ask me to research instead.' };
     const r = await serverResearch(goal);
     return { result: `${r.answer}\n\n(Researched from the cloud — the PC browser is offline.)` };
@@ -362,13 +375,13 @@ export async function executeBrowserTool(
   const taskId = crypto.randomUUID().slice(0, 8);
   running.set(roomId, goal);
   try {
-    const answer = await runBrowse(roomId, taskId, goal, mode, pc.id, startUrl, resume);
+    const answer = await runBrowse(roomId, taskId, goal, mode, pc.id, startUrl, resume, Boolean(args.useLogin));
     if (typeof answer === 'string') return { result: answer };
     return await hardStopConfirmation(roomId, pc, goal, answer);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     broadcastRoomEvent(roomId, 'agent:update', { taskId, task: goal, target: 'browser', status: 'stopped', result: msg });
-    if (mode === 'research') {
+    if (mode === 'research' && !args.useLogin) {
       const r = await serverResearch(goal);
       return { result: `${r.answer}\n\n(PC browser failed: ${msg}; researched from the cloud instead.)` };
     }

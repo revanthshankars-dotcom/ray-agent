@@ -103,6 +103,7 @@ import { semanticStatus, startSemanticIndexer } from './server/semanticMemory.ts
 import { registerHomeRoutes } from './server/homeAssistant.ts';
 import { registerAskRoutes } from './server/askUser.ts';
 import { getUiPrefs, registerUiPrefRoutes } from './server/uiPrefs.ts';
+import { registerWhatsAppRoutes, startWhatsAppLinks } from './server/whatsappLink.ts';
 import { registerAwarenessRoutes, startAwareness } from './server/awareness.ts';
 import { registerInboxRoutes, startInboxScheduler } from './server/inboxRoutine.ts';
 import { phoneLineStatus, recentPhoneCalls, registerPhoneRoutes } from './server/phoneCall.ts';
@@ -203,6 +204,7 @@ async function startServer() {
   startInboxScheduler();
   startSemanticIndexer();
   startAwareness();
+  startWhatsAppLinks();
   if (getFishKey()) setInterval(() => void checkFishKey(), 6 * 3600_000).unref();
   if (getFishKey()) {
     const fish = await checkFishKey();
@@ -400,6 +402,7 @@ async function startServer() {
   registerHomeRoutes(app, requireRoomAuth as never);
   registerAskRoutes(app, requireRoomAuth as never);
   registerUiPrefRoutes(app, requireRoomAuth as never);
+  registerWhatsAppRoutes(app, requireRoomAuth as never);
   registerAwarenessRoutes(app, requireRoomAuth as never);
   registerPhoneRoutes(app);
   app.get('/api/phone', requireRoomAuth, (req, res) => {
@@ -455,6 +458,15 @@ async function startServer() {
     const out = await dispatchBridgeProxyCall(normalizeRoomId(roomId), { action: 'diagnose' }, 60000, deviceId);
     res.status(out.ok ? 200 : 502).json(out);
   });
+  // Open a site in RAY's own browser on the PC (visible), e.g. to log into Instagram once.
+  app.post('/api/jarvis/ray-browser', requireRoomAuth, async (req, res) => {
+    const { roomId, url } = req.body as { roomId?: string; url?: string };
+    const u = String(url || '');
+    if (!/^https:\/\/(www\.)?(instagram\.com|facebook\.com|web\.whatsapp\.com|x\.com|linkedin\.com)\//i.test(u)) return res.status(400).json({ error: 'Only social sites can be opened this way.' });
+    const out = await dispatchBridgeProxyCall(normalizeRoomId(String(roomId || '')), { action: 'browser', op: 'open', newTab: true, url: u, background: false }, 45000);
+    res.json(out.ok ? { ok: true } : { ok: false, error: out.error || 'PC bridge offline' });
+  });
+
   app.post('/api/jarvis/popup', requireRoomAuth, async (req, res) => {
     const { roomId, device } = req.body as { roomId: string; device: string };
     const out = await dispatchDeviceCommand({ roomId: normalizeRoomId(roomId), type: 'wake', targetQuery: device || 'pc', source: 'assistant', payload: { popup: true, pin: (await getUiPrefs(normalizeRoomId(roomId))).pinPopups }, waitForAckMs: 6000 });

@@ -137,6 +137,14 @@ Webhooks (`/api/phone/voice`, `/api/phone/status`) are verified with Twilio's si
 - **On top of every app (PC)** — **Float** in the top bar (or Alt+O, or JARVIS Core → *Float RAY now*) opens a small RAY window that stays above every app on Windows, Mac and Linux (Chrome/Edge 116+): mic, live captions, a quick ask box and RAY's questions. JARVIS Core → *Keep RAY's pop-ups pinned on top* keeps pop-ups from "Hey Ray", questions and other devices above other windows until you close them (Windows & Linux PC bridge; on Mac use Float).
 - **Free 24/7 server** — Oracle Cloud Always Free: [`deploy/oracle/README.md`](deploy/oracle/README.md), one command (`deploy/oracle/setup.sh`).
 
+## WhatsApp & Instagram (free)
+
+**WhatsApp** — JARVIS Core → Accounts → **Link WhatsApp**, then on your phone: WhatsApp → Settings → Linked devices → Link a device → scan the QR (or use *Get a code instead* with your number). RAY becomes a linked device on your own account (open-source [Baileys](https://github.com/WhiskeySockets/Baileys), no Business API, no fees) and runs on the RAY server, so it works while your PC is off. RAY can list chats (unread first), read conversations and groups, send text, photos, videos, voice notes and documents, and download what people send you; new messages land in RAY's inbox, alerts and Autopilot. The link stays after restarts (keys stored encrypted with `RELAY_MASTER_SECRET`). Unlink any time from JARVIS Core or WhatsApp → Linked devices.
+
+**Instagram (personal accounts)** — Meta has no API for personal accounts, so RAY uses instagram.com in its own browser on your PC: JARVIS Core → Accounts → Instagram → **Log in once on PC**. Then: "check my Instagram DMs", "reply to Priya on Instagram: …", "what's new on my feed / whose stories are up", "post Pictures/beach.jpg on Instagram with caption …" (the PC bridge drops the file into Instagram's upload dialog). Business/creator accounts can also use the official Graph API (`meta_api_request`, token in Render).
+
+Both are used the way you would use them: reading is free; sending, posting, commenting and liking happen only when you ask, after you approve, never in bulk. Automation that looks like spam can get accounts restricted by Meta.
+
 ## Connect your Android phone — step by step
 
 The QR code in **Connect → Android phone** pairs the RAY app in one tap. For full control (open apps and links, read WhatsApp/Instagram notifications, dial, ask you questions over any app, ring you, listen — even while the RAY app is closed), do this once (~10 min):
