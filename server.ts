@@ -101,6 +101,7 @@ import { registerSkillRoutes } from './server/skillLibrary.ts';
 import { sttAvailable, transcribeSpeech } from './server/speechToText.ts';
 import { semanticStatus, startSemanticIndexer } from './server/semanticMemory.ts';
 import { registerHomeRoutes } from './server/homeAssistant.ts';
+import { registerAskRoutes } from './server/askUser.ts';
 import { registerAwarenessRoutes, startAwareness } from './server/awareness.ts';
 import { registerInboxRoutes, startInboxScheduler } from './server/inboxRoutine.ts';
 import { phoneLineStatus, recentPhoneCalls, registerPhoneRoutes } from './server/phoneCall.ts';
@@ -396,6 +397,7 @@ async function startServer() {
   registerSkillRoutes(app, requireRoomAuth as never);
   registerInboxRoutes(app, requireRoomAuth as never);
   registerHomeRoutes(app, requireRoomAuth as never);
+  registerAskRoutes(app, requireRoomAuth as never);
   registerAwarenessRoutes(app, requireRoomAuth as never);
   registerPhoneRoutes(app);
   app.get('/api/phone', requireRoomAuth, (req, res) => {

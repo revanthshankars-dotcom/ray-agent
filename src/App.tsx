@@ -19,6 +19,7 @@ import { useDeviceCall } from './hooks/useDeviceCall';
 import { CallScreen } from './components/CallScreen';
 import { AgentRunPanel } from './components/AgentRunPanel';
 import { VoiceRouting } from './components/VoiceRouting';
+import { AskCard } from './components/AskCard';
 import { JarvisView } from './components/JarvisView';
 import { PairDeviceModal } from './components/PairDeviceModal';
 import { CameraModal } from './components/CameraModal';
@@ -1007,7 +1008,7 @@ export default function App() {
         <Sidebar
           activeTab={activeTab}
           onSelectTab={setActiveTab}
-          onCallDevice={(id, name) => void deviceCall.callDevice(id, name)}
+          onCallDevice={(id, name, video) => void deviceCall.callDevice(id, name, video)}
           roomId={roomId}
           socketStatus={status}
           devices={snapshot.devices}
@@ -1250,7 +1251,7 @@ export default function App() {
               localDeviceId={identity.id}
               onRenameDevice={renameDevice}
               onRemoveDevice={removeDevice}
-              onCallDevice={(id, name) => void deviceCall.callDevice(id, name)}
+              onCallDevice={(id, name, video) => void deviceCall.callDevice(id, name, video)}
               onShareLocation={shareLocationTelemetry}
               onOpenPairModal={() => setPairModalOpen(true)}
             />
@@ -1327,12 +1328,17 @@ export default function App() {
 
       <AgentRunPanel roomId={roomId} />
 
+      <AskCard roomId={roomId} />
       <CallScreen
         state={deviceCall.state}
-        onAccept={() => void deviceCall.accept()}
+        localStream={deviceCall.localStream}
+        remoteStream={deviceCall.remoteStream}
+        onAccept={(withVideo) => void deviceCall.accept(withVideo)}
         onDecline={deviceCall.decline}
         onHangup={deviceCall.hangup}
         onToggleMute={deviceCall.toggleMute}
+        onToggleCamera={() => void deviceCall.toggleCamera()}
+        onFlipCamera={() => void deviceCall.flipCamera()}
       />
 
       {!popupMode && (<>

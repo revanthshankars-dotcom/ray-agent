@@ -311,6 +311,14 @@ export function useRelaySocket(
           break;
         }
 
+        case 'ask': {
+          // Usually already shown via the live ask:question event; this also covers a queued ask.
+          const q = p as { askId?: string; question?: string; options?: string[]; why?: string; urgent?: boolean };
+          window.dispatchEvent(new CustomEvent('ray:ask', { detail: { id: q.askId, question: q.question, options: q.options || [], why: q.why, urgent: q.urgent } }));
+          ack('completed', 'Showing RAY’s question');
+          break;
+        }
+
         case 'wake': {
           playHudSound('wake');
           if ((p as { listen?: boolean }).listen) {
@@ -453,6 +461,14 @@ export function useRelaySocket(
                   );
                 }
               });
+              break;
+            }
+            case 'ask:question': {
+              window.dispatchEvent(new CustomEvent('ray:ask', { detail: msg.data }));
+              break;
+            }
+            case 'ask:answered': {
+              window.dispatchEvent(new CustomEvent('ray:ask-answered', { detail: msg.data }));
               break;
             }
             case 'agent:update': {

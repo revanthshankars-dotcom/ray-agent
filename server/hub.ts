@@ -870,7 +870,10 @@ export async function dispatchDeviceCommand(params: {
           params.type === 'call'
             ? `/?answer=${encodeURIComponent(String(params.payload.callId || ''))}&kind=${encodeURIComponent(String(params.payload.kind || 'ray'))}` +
               (params.payload.fromDeviceId ? `&from=${encodeURIComponent(String(params.payload.fromDeviceId))}` : '') +
-              (params.payload.message ? `&m=${encodeURIComponent(String(params.payload.message).slice(0, 300))}` : '')
+              (params.payload.message ? `&m=${encodeURIComponent(String(params.payload.message).slice(0, 300))}` : '') +
+              (params.payload.video ? '&video=1' : '')
+            : params.type === 'ask'
+            ? `/?ask=${encodeURIComponent(String(params.payload.askId || ''))}`
             : undefined,
         sendToDevice: (deviceId, packet) => {
           const ws = room.sockets.get(deviceId);
@@ -981,6 +984,8 @@ function describeCommand(type: CommandType, payload: Record<string, unknown>): s
       return payload.kind === 'peer'
         ? `Incoming call from ${String(payload.fromName || 'your other device')}`
         : `RAY is calling: ${String(payload.message || 'pick up').slice(0, 100)}`;
+    case 'ask':
+      return `RAY needs your answer: ${String(payload.question || '').slice(0, 110)}`;
     default:
       return `RAY ${type.replace(/_/g, ' ')}`;
   }

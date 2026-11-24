@@ -184,10 +184,13 @@ export const callToolDeclarations: FunctionDeclaration[] = [
   {
     name: 'call_device',
     description:
-      'Start a LIVE voice call between two of Ray’s devices, e.g. from his work PC to his phone. The target rings; when answered, both are connected (two-way audio). The caller is the device Ray is speaking on.',
+      'Start a LIVE voice or VIDEO call between two of Ray’s devices, e.g. from his work PC to his phone. The target rings; when answered, both are connected (two-way audio, plus cameras when video=true). The caller is the device Ray is speaking on.',
     parameters: {
       type: Type.OBJECT,
-      properties: { targetDevice: { type: Type.STRING, description: 'Device to call: "phone", "pc", or a device name.' } },
+      properties: {
+        targetDevice: { type: Type.STRING, description: 'Device to call: "phone", "pc", or a device name.' },
+        video: { type: Type.BOOLEAN, description: 'true for a video call ("video call my phone").' },
+      },
       required: ['targetDevice'],
     },
   },
@@ -246,8 +249,9 @@ export async function executeCallTool(
       const devices = getRoomDevices(roomId);
       const caller = devices.find((d) => d.online && d.name === sourceDeviceName) || devices.find((d) => d.online && d.type !== 'bridge');
       if (!caller) return { result: 'I could not tell which device you are calling from. Open RAY on that device first.' };
-      const { summary } = await ringDevice(roomId, target, { kind: 'peer', fromName: caller.name, fromDeviceId: caller.id });
-      return { result: `Ringing ${target} from ${caller.name}. When it is answered you'll be connected. ${summary}` };
+      const video = args.video === true || /^(true|yes|1)$/i.test(String(args.video || ''));
+      const { summary } = await ringDevice(roomId, target, { kind: 'peer', fromName: caller.name, fromDeviceId: caller.id, video });
+      return { result: `Ringing ${target} from ${caller.name}${video ? ' (video call)' : ''}. When it is answered you'll be connected. ${summary}` };
     }
 
     case 'place_phone_call': {

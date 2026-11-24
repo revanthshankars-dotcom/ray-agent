@@ -19,6 +19,7 @@ import {
   Volume2,
   Wifi,
   Phone,
+  Video,
 } from 'lucide-react';
 import type { DeviceCommand, DeviceInfo, ProtocolName, ProtocolResult } from '../types/relay';
 import { playHudSound } from '../utils/hudAudio';
@@ -31,7 +32,7 @@ interface DevicesViewProps {
   localDeviceId: string;
   onRenameDevice: (id: string, name: string) => void;
   onRemoveDevice: (id: string) => void;
-  onCallDevice?: (id: string, name: string) => void;
+  onCallDevice?: (id: string, name: string, video?: boolean) => void;
   onShareLocation: () => Promise<unknown>;
   onOpenPairModal: () => void;
 }
@@ -295,14 +296,24 @@ export const DevicesView: React.FC<DevicesViewProps> = ({
                 </div>
 
                 {!isSelf && device.online && device.type !== 'bridge' && !device.capabilities?.includes('browser-tabs') && onCallDevice && (
-                  <button
-                    type="button"
-                    onClick={() => onCallDevice(device.id, device.name)}
-                    aria-label={`Call ${device.name}`}
-                    className="p-1.5 text-emerald-600 hover:bg-emerald-500/10 rounded-lg"
-                  >
-                    <Phone className="w-4 h-4" />
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => onCallDevice(device.id, device.name)}
+                      aria-label={`Call ${device.name}`}
+                      className="p-1.5 text-emerald-600 hover:bg-emerald-500/10 rounded-lg"
+                    >
+                      <Phone className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onCallDevice(device.id, device.name, true)}
+                      aria-label={`Video call ${device.name}`}
+                      className="p-1.5 text-blue-600 hover:bg-blue-500/10 rounded-lg"
+                    >
+                      <Video className="w-4 h-4" />
+                    </button>
+                  </>
                 )}
                 {!isSelf && (
                   <button

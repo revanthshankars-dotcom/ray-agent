@@ -33,7 +33,7 @@ import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import WebSocket, { WebSocketServer } from 'ws';
 
-const BRIDGE_VERSION = '3.4';
+const BRIDGE_VERSION = '3.5';
 const IS_TERMUX = Boolean(process.env.PREFIX && process.env.PREFIX.includes('com.termux')) || fs.existsSync('/data/data/com.termux');
 const PLATFORM = IS_TERMUX ? 'android' : os.platform();
 const WS_URL = process.env.RELAY_WS_URL || "__RAY_WS_URL__";
@@ -1227,9 +1227,9 @@ async function startCodingJob(agentId, prompt, cwdRaw) {
 const RAY_WEB_ORIGIN = WS_URL.replace(/^ws(s?):/, 'http$1:').replace(/\/ws\/?$/, '');
 
 function ringThisDevice(call, cb) {
-  const answerUrl = RAY_WEB_ORIGIN + '/?answer=' + encodeURIComponent(call.callId || '') + '&kind=' + encodeURIComponent(call.kind || 'ray') + (call.fromDeviceId ? '&from=' + encodeURIComponent(call.fromDeviceId) : '') + (call.message ? '&m=' + encodeURIComponent(String(call.message).slice(0, 300)) : '');
+  const answerUrl = RAY_WEB_ORIGIN + '/?answer=' + encodeURIComponent(call.callId || '') + '&kind=' + encodeURIComponent(call.kind || 'ray') + (call.fromDeviceId ? '&from=' + encodeURIComponent(call.fromDeviceId) : '') + (call.message ? '&m=' + encodeURIComponent(String(call.message).slice(0, 300)) : '') + (call.video ? '&video=1' : '') + (call.askId ? '&ask=' + encodeURIComponent(String(call.askId)) : '');
   const who = call.kind === 'peer' ? (call.fromName || 'your other device') : 'RAY';
-  const line = call.kind === 'peer' ? 'Incoming call from ' + who : 'RAY is calling. ' + (call.message || '');
+  const line = call.kind === 'peer' ? 'Incoming ' + (call.video ? 'video ' : '') + 'call from ' + who : 'RAY is calling. ' + (call.message || '');
   if (PLATFORM === 'android') {
     runSafeCommand('termux-vibrate', ['-d', '1200', '-f'], () => {});
     runSafeCommand('termux-notification', [
@@ -1579,6 +1579,53 @@ function findChromeBinary() {
     c.push('/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/microsoft-edge', '/snap/bin/chromium');
   }
   return c.find((p) => { try { return fs.existsSync(p); } catch { return false; } }) || null;
+}
+
+// --- Ask Ray: RAY needs a decision -------------------------------------------
+// Android: speak the question and show a dialog over any app (choices or a spoken answer) — works
+// while the RAY app is closed. PC: pop RAY up on the question.
+async function postAskAnswer(askId, answer, via) {
+  try {
+    await fetch(RAY_WEB_ORIGIN + '/api/ask/answer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Relay-Room-Token': ROOM_TOKEN },
+      body: JSON.stringify({ roomId: ROOM_ID, askId, answer, via }),
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch {}
+}
+function termuxDialog(args) {
+  return new Promise((resolve) => {
+    execFile('termux-dialog', args, { timeout: 5 * 60_000 }, (err, stdout) => {
+      try { resolve(JSON.parse(String(stdout || '{}'))); } catch { resolve({}); }
+    });
+  });
+}
+async function askOnThisDevice(p) {
+  const askId = String(p.askId || '');
+  const question = String(p.question || '').slice(0, 400);
+  if (!askId || !question) return;
+  const options = (Array.isArray(p.options) ? p.options : []).map((o) => String(o).replace(/,/g, ' ').slice(0, 60)).filter(Boolean).slice(0, 6);
+  if (IS_TERMUX) {
+    runSafeCommand('termux-vibrate', ['-d', '500'], () => {});
+    execFile('termux-notification', ['--id', 'ray-ask', '--title', 'RAY needs your answer', '--content', question, '--priority', 'max', '--sound'], { timeout: 8000 }, () => {});
+    speakNative('Ray, ' + question + (options.length ? ' Your options: ' + options.join(', or ') + '.' : ''), () => {});
+    // Choices → radio list; free answer → speak it (keyboard if speech gives nothing).
+    let out = options.length
+      ? await termuxDialog(['radio', '-t', ('RAY: ' + question).slice(0, 180), '-v', [...options, 'Other…'].join(',')])
+      : await termuxDialog(['speech', '-t', ('RAY: ' + question).slice(0, 180)]);
+    let answer = String(out.text || '').trim();
+    if (answer === 'Other…' || (!options.length && !answer && out.code !== -2)) {
+      out = await termuxDialog(['text', '-t', ('RAY: ' + question).slice(0, 180), '-i', 'Your answer']);
+      answer = String(out.text || '').trim();
+    }
+    execFile('termux-notification-remove', ['ray-ask'], { timeout: 5000 }, () => {});
+    if (answer) await postAskAnswer(askId, answer, DEVICE_NAME + ' (dialog)');
+    return;
+  }
+  showNativeNotification('RAY needs your answer', question, () => {});
+  const url = rayAppUrl({ popup: 1, ask: askId });
+  if (url) openRayWindow(url, 'RAY Assistant', 6, () => {});
 }
 
 // --- RAY pop-up ------------------------------------------------------------
@@ -2836,6 +2883,9 @@ function executeDeviceCommand(cmd, ack, ws) {
     speakNative(cmd.payload.text, () => {});
   } else if (cmd.type === 'call') {
     ringThisDevice(cmd.payload || {}, (out, ok) => ack(ok ? 'completed' : 'failed', out));
+  } else if (cmd.type === 'ask') {
+    ack('completed', 'Asking Ray on ' + DEVICE_NAME);
+    void askOnThisDevice(cmd.payload || {});
   } else if (cmd.type === 'wake') {
     if (cmd.payload && cmd.payload.listen && IS_TERMUX) {
       // Shared mic: this phone listens and what it hears is carried out on the device that asked.
@@ -2948,7 +2998,7 @@ function connect() {
           'os-bridge', 'open_application', 'close_application', 'kill_process',
           'adjust_volume', 'obsidian-vault', 'ollama-proxy', 'fs-sandbox', 'wake-on-lan', 'chat-compose', 'calls', 'coding-agents',
         ];
-        caps.push('diagnose', 'repair', 'popup', 'file-versions');
+        caps.push('diagnose', 'repair', 'popup', 'file-versions', 'ask');
         if (!IS_TERMUX) caps.push('home-assistant');
         if (IS_TERMUX) caps.push('notifications-relay');
         else caps.push('screen-control', 'clean_slate', 'optimize_system', 'computer-use', 'browser-agent');

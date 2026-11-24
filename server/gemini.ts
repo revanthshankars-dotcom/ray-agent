@@ -41,6 +41,7 @@ import { executeVideoTool, videoToolDeclarations } from './videoWatch.ts';
 import { executeHomeTool, homeToolDeclarations } from './homeAssistant.ts';
 import { awarenessExcerpt, awarenessToolDeclarations, executeAwarenessTool } from './awareness.ts';
 import { browserTabsToolDeclarations, executeBrowserTabsTool } from './browserTabsAgent.ts';
+import { askToolDeclarations, executeAskTool } from './askUser.ts';
 import { lessonsExcerpt, withRecallAsync } from './learning.ts';
 import { checkActionPolicy, executeExtendedTool, extendedToolDeclarations } from './deviceTools.ts';
 import type {
@@ -482,7 +483,7 @@ export const baseToolDeclarations: FunctionDeclaration[] = [
 ];
 
 // Extended tools (search & open, apps, tabs, messages, wake) — replace older duplicates by name.
-for (const decl of [...extendedToolDeclarations, ...callToolDeclarations, ...fileIndexToolDeclarations, ...computerUseToolDeclarations, ...codingAgentToolDeclarations, ...jarvisToolDeclarations, ...accountToolDeclarations, ...connectorToolDeclarations, ...phoneToolDeclarations, ...skillToolDeclarations, ...inboxToolDeclarations, ...videoToolDeclarations, ...homeToolDeclarations, ...awarenessToolDeclarations, ...browserTabsToolDeclarations]) {
+for (const decl of [...extendedToolDeclarations, ...callToolDeclarations, ...fileIndexToolDeclarations, ...computerUseToolDeclarations, ...codingAgentToolDeclarations, ...jarvisToolDeclarations, ...accountToolDeclarations, ...connectorToolDeclarations, ...phoneToolDeclarations, ...skillToolDeclarations, ...inboxToolDeclarations, ...videoToolDeclarations, ...homeToolDeclarations, ...awarenessToolDeclarations, ...browserTabsToolDeclarations, ...askToolDeclarations]) {
   const idx = baseToolDeclarations.findIndex((d) => d.name === decl.name);
   if (idx >= 0) baseToolDeclarations[idx] = decl;
   else baseToolDeclarations.push(decl);
@@ -638,6 +639,7 @@ Behavioral Guidelines:
 29. VIDEOS: "watch / summarise this video" or a course video link → watch_video (timestamps); save what matters with learn_about or a Knowledge note when Ray wants to keep it.
 30. HOME: lights, fans, AC, plugs, TV, blinds, locks, scenes → home_control (check names with home_devices). "Goodnight" style requests = several home_control calls. Locks/garage/alarm wait for Ray's approval.
 31. HARD STOPS: passwords, OTP codes, payments and CAPTCHAs are never skipped silently and never guessed. Ask Ray's approval first; after he approves, RAY can type a password/OTP he enters in the secure prompt, press Pay, or bring the CAPTCHA page in front for him to solve, then continue the task.
+33. ASK, DON'T GUESS: mid-task, when something is ambiguous, risky, costs money, contacts a person, or needs Ray's choice (which one, send or not, how much), call ask_user with a short question and options — it reaches him on any device (a pop-up on his Android even when the RAY app is closed, push, a ring, a phone call) and returns his answer; then carry on. Don't ask about things you can safely decide or look up yourself. Video calls between his devices → call_device with video=true.
 32. RAY'S OWN BROWSER vs RAY'S BROWSER: "this page / this tab / what I'm reading / reply here / fill this" → browser_page in Ray's own browser (his logins; read first, then click/type by element number). Old visits or saved links → browser_history. Research or tasks on sites he isn't on → browse_web.
 
 ${awarenessExcerpt(roomId)}
@@ -936,6 +938,8 @@ export async function executeDeviceTool(
   if (awareOut) return awareOut;
   const tabsOut = await executeBrowserTabsTool(roomId, name, args, { confirmed });
   if (tabsOut) return tabsOut;
+  const askOut = await executeAskTool(roomId, name, args);
+  if (askOut) return askOut;
 
   switch (name) {
     case 'list_connected_devices': {

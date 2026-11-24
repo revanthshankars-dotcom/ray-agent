@@ -65,7 +65,8 @@ export type CommandType =
   | 'refresh_telemetry'
   | 'bridge_command'
   | 'wake'
-  | 'call';
+  | 'call'
+  | 'ask';
 
 export interface CommandExecutionResult {
   deviceId: string;
@@ -239,6 +240,10 @@ export interface CallPayload {
   fromDeviceId?: string;
   /** For kind 'ray': what RAY says when you answer. */
   message?: string;
+  /** Video call (camera on both sides). */
+  video?: boolean;
+  /** Ring that carries one of RAY's questions (answering opens it). */
+  askId?: string;
   createdAt: number;
 }
 

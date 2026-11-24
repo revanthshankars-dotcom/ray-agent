@@ -25,6 +25,7 @@ import {
   Cable,
   Orbit,
   Phone,
+  Video,
 } from 'lucide-react';
 import type { User } from 'firebase/auth';
 import type { ActiveTab } from './TopBar';
@@ -44,7 +45,7 @@ interface SidebarProps {
   onOpenPairModal: () => void;
   onSelectDeviceTarget: (deviceName: string) => void;
   /** Start a live voice call to another of Ray's devices. */
-  onCallDevice?: (deviceId: string, deviceName: string) => void;
+  onCallDevice?: (deviceId: string, deviceName: string, video?: boolean) => void;
   onCancelTimer: (timerId: string) => void;
   user: User | null;
   authReady: boolean;
@@ -283,15 +284,26 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       </span>
                     </button>
                     {callable && onCallDevice && (
-                      <button
-                        type="button"
-                        onClick={() => onCallDevice(device.id, device.name)}
-                        aria-label={`Call ${device.name}`}
-                        title={`Call ${device.name}`}
-                        className="shrink-0 p-1.5 rounded-lg text-emerald-600 hover:bg-emerald-500/10"
-                      >
-                        <Phone className="w-3.5 h-3.5" />
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => onCallDevice(device.id, device.name)}
+                          aria-label={`Call ${device.name}`}
+                          title={`Call ${device.name}`}
+                          className="shrink-0 p-1.5 rounded-lg text-emerald-600 hover:bg-emerald-500/10"
+                        >
+                          <Phone className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onCallDevice(device.id, device.name, true)}
+                          aria-label={`Video call ${device.name}`}
+                          title={`Video call ${device.name}`}
+                          className="shrink-0 p-1.5 rounded-lg text-blue-600 hover:bg-blue-500/10"
+                        >
+                          <Video className="w-3.5 h-3.5" />
+                        </button>
+                      </>
                     )}
                   </li>
                 );
