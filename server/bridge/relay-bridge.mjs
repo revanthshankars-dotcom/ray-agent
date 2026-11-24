@@ -1794,7 +1794,9 @@ function pageReadScript() {
     const st = getComputedStyle(el);
     if (st.visibility === 'hidden' || st.display === 'none' || Number(st.opacity) === 0) continue;
     if (r.bottom < -50 || r.top > innerHeight * 2) continue;
-    const label = String(el.getAttribute('aria-label') || el.innerText || el.value || el.placeholder || el.title || el.name || el.alt || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+    // Never read back what's in secret fields (passwords, one-time codes, card numbers).
+    const secret = el.type === 'password' || /one-time-code|cc-|password/i.test(String(el.getAttribute('autocomplete') || ''));
+    const label = String(el.getAttribute('aria-label') || el.innerText || (secret ? '' : el.value) || el.placeholder || el.title || el.name || el.alt || '').trim().replace(/\s+/g, ' ').slice(0, 80);
     n++;
     el.setAttribute('data-ray-id', String(n));
     out.push({ i: n, tag: el.tagName.toLowerCase(), type: el.type ? String(el.type) : undefined, label, href: el.href ? String(el.href).slice(0, 120) : undefined, inView: r.top >= 0 && r.bottom <= innerHeight });

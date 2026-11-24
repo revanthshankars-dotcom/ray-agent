@@ -8,6 +8,7 @@ import type { Express } from 'express';
 import { Type } from '@google/genai';
 import type { FunctionDeclaration } from '@google/genai';
 import { getRoomDevices, listRoomIds, normalizeRoomId } from './hub.ts';
+import { activeBrowserPages } from './browserTabsAgent.ts';
 import { loadJson, scheduleSave } from './persistence.ts';
 
 const enabled = new Map<string, boolean>();
@@ -30,6 +31,18 @@ function sample(roomId: string) {
     if (!d.online || !title || /^desktop \/ unknown$/i.test(title)) continue;
     const last = [...list].reverse().find((x) => x.device === d.name);
     if (!last || last.title !== title) list.push({ at: Date.now(), device: d.name, title: title.slice(0, 140) });
+  }
+  for (const pg of activeBrowserPages(roomId)) {
+    const title = `${pg.title || 'page'} — ${(() => {
+      try {
+        return new URL(pg.url).hostname.replace(/^www\./, '');
+      } catch {
+        return pg.url.slice(0, 40);
+      }
+    })()}`.slice(0, 140);
+    const dev = `${pg.device} (browser)`;
+    const last = [...list].reverse().find((x) => x.device === dev);
+    if (!last || last.title !== title) list.push({ at: Date.now(), device: dev, title });
   }
   const cutoff = Date.now() - 2 * 3600_000;
   history.set(roomId, list.filter((x) => x.at >= cutoff).slice(-80));
@@ -58,6 +71,7 @@ export function awarenessExcerpt(roomId: string): string {
     .slice(-8)
     .reverse()
     .map((x) => `- ${Math.max(0, Math.round((Date.now() - x.at) / 60000))} min ago · ${x.device}: ${x.title}`);
+  for (const pg of activeBrowserPages(roomId)) now.push(`- ${pg.device} (browser tab): ${pg.title} — ${pg.url.slice(0, 120)}`);
   if (!now.length && !recent.length) return '';
   return `AWARENESS (Ray turned this on): what Ray is doing right now — use it for "this", "here", "what I'm working on"; never read titles out unless asked.\nNow:\n${now.join('\n') || '- (no PC online)'}\nRecent windows:\n${recent.join('\n') || '- (none yet)'}`;
 }

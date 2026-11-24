@@ -1,6 +1,7 @@
 // RAY Tabs — background service worker.
 // Connects this browser to the RAY hub as a device with "browser-tabs" capability and
-// executes tab commands (open / navigate / focus / close / reload / mute / read) on Ray's command.
+// executes tab commands (open / navigate / focus / close / reload / mute / read), page actions
+// (read / click / type / scroll in Ray's real browser) and history/bookmark search on Ray's command.
 
 const KEEPALIVE_MS = 20000;
 let ws = null;
@@ -57,7 +58,7 @@ async function connect() {
         type: 'desktop',
         os: osName,
         browser: name + ' extension',
-        capabilities: ['browser-tabs', 'open_url', 'notify'],
+        capabilities: ['browser-tabs', 'open_url', 'notify', 'page-hands', 'browser-history'],
         telemetry: { openTabCount: (await snapshotTabs()).length },
       },
     }));
@@ -88,6 +89,98 @@ async function readTabText(tabId) {
     func: () => (document.body ? document.body.innerText : '').replace(/\n{3,}/g, '\n\n').slice(0, 20000),
   });
   return String(res?.result || '');
+}
+
+// ---------------------------------------------------------------------------
+// Page hands in Ray's REAL browser (his logins): read the page as text + numbered elements,
+// click, type, scroll. Passwords and pay/order buttons need RAY's approval flag from the hub.
+// ---------------------------------------------------------------------------
+function pageReadInPage() {
+  const vis = (el) => {
+    const r = el.getBoundingClientRect();
+    const st = getComputedStyle(el);
+    return r.width > 2 && r.height > 2 && st.visibility !== 'hidden' && st.display !== 'none';
+  };
+  // Never read back what's in secret fields (passwords, one-time codes, card numbers).
+  const secret = (el) => el.type === 'password' || /one-time-code|cc-|password/i.test(String(el.getAttribute('autocomplete') || ''));
+  const label = (el) =>
+    (el.getAttribute('aria-label') || el.innerText || (secret(el) ? '' : el.value) || el.placeholder || el.title || el.alt || el.name || '').replace(/\s+/g, ' ').trim().slice(0, 90);
+  const els = [];
+  let n = 0;
+  document.querySelectorAll('a[href],button,input,textarea,select,[role=button],[role=link],[role=tab],[role=menuitem],[contenteditable=true]').forEach((el) => {
+    if (n >= 150 || !vis(el)) return;
+    n++;
+    el.setAttribute('data-ray-id', String(n));
+    const r = el.getBoundingClientRect();
+    els.push({ i: n, tag: el.tagName.toLowerCase(), type: el.type || el.getAttribute('role') || '', label: label(el), href: el.href || undefined, inView: r.top < innerHeight && r.bottom > 0 });
+  });
+  const main = document.querySelector('main,[role=main],article') || document.body;
+  return {
+    title: document.title,
+    url: location.href,
+    selection: String(getSelection() || '').slice(0, 2000),
+    text: (main ? main.innerText : '').replace(/\n{3,}/g, '\n\n').slice(0, 9000),
+    elements: els,
+    scrollY: Math.round(scrollY),
+    scrollMax: Math.max(0, document.documentElement.scrollHeight - innerHeight),
+  };
+}
+
+function pageActInPage(op, q) {
+  const PAY = /\b(pay( now)?|place (your )?order|buy now|confirm (purchase|payment|order|booking)|complete (purchase|payment|order|booking)|submit payment|proceed to pay|make payment|book now|subscribe)\b/i;
+  const find = () => {
+    let el = q.i ? document.querySelector('[data-ray-id="' + q.i + '"]') : null;
+    if (!el && q.text) {
+      const want = String(q.text).toLowerCase();
+      el = [...document.querySelectorAll('a,button,input,textarea,select,[role=button],[role=link],[contenteditable=true]')].find((e) =>
+        ((e.getAttribute('aria-label') || e.innerText || e.value || e.placeholder || '') + '').toLowerCase().includes(want));
+    }
+    return el;
+  };
+  if (op === 'scroll') { scrollBy(0, Number(q.dy || 700)); return { ok: true, msg: 'Scrolled' }; }
+  const el = find();
+  if (!el) return { ok: false, msg: 'Element not found: ' + (q.i || q.text) };
+  const name = (el.getAttribute('aria-label') || el.innerText || (el.type === 'password' ? '' : el.value) || el.placeholder || el.name || el.tagName).replace(/\s+/g, ' ').trim().slice(0, 80);
+  el.scrollIntoView({ block: 'center' });
+  if (op === 'click') {
+    if (PAY.test(name) && !q.allowPay) return { ok: false, msg: 'NEEDS_APPROVAL_PAY: ' + name };
+    el.click();
+    return { ok: true, msg: 'Clicked "' + name + '"' };
+  }
+  if (op === 'type') {
+    if (el.type === 'password' && !q.allowSecret) return { ok: false, msg: 'PASSWORD_FIELD: ' + name };
+    el.focus();
+    if (el.isContentEditable) { el.textContent = ''; document.execCommand('insertText', false, String(q.value || '')); }
+    else {
+      const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : el.tagName === 'SELECT' ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+      setter.call(el, String(q.value || ''));
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    if (q.submit) {
+      const form = el.form;
+      if (form && form.requestSubmit) form.requestSubmit();
+      else el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+    }
+    return { ok: true, msg: el.type === 'password' ? 'Entered the password' : 'Typed into "' + name + '"' };
+  }
+  return { ok: false, msg: 'Unknown page action ' + op };
+}
+
+async function runInTab(tabId, func, args) {
+  const [res] = await chrome.scripting.executeScript({ target: { tabId }, func, args: args || [] });
+  return res ? res.result : null;
+}
+
+async function waitForLoad(tabId, ms) {
+  const end = Date.now() + (ms || 8000);
+  await new Promise((r) => setTimeout(r, 400));
+  while (Date.now() < end) {
+    const t = await chrome.tabs.get(tabId).catch(() => null);
+    if (!t || t.status === 'complete') return;
+    await new Promise((r) => setTimeout(r, 250));
+  }
 }
 
 // Reuse tabs like a person: switch to the page if it's open, load it in the open tab of the same
@@ -148,7 +241,31 @@ async function handleCommand(cmd, deviceId) {
     if (cmd.type !== 'bridge_command') return ack(cmd, deviceId, 'acknowledged', 'Ignored ' + cmd.type);
 
     const action = String(p.action || '');
-    const tabId = Number(p.tabId || 0);
+    let tabId = Number(p.tabId || 0);
+    if (action === 'history_search') {
+      const items = await chrome.history.search({ text: String(p.query || ''), startTime: Date.now() - Number(p.days || 30) * 86400000, maxResults: Math.min(50, Number(p.max || 20)) });
+      return ack(cmd, deviceId, 'completed', 'Found ' + items.length + ' history items', { items: items.map((h) => ({ title: h.title, url: h.url, lastVisit: h.lastVisitTime, visits: h.visitCount })) });
+    }
+    if (action === 'bookmarks_search') {
+      const items = await chrome.bookmarks.search(String(p.query || ''));
+      return ack(cmd, deviceId, 'completed', 'Found ' + items.length + ' bookmarks', { items: items.filter((b) => b.url).slice(0, 30).map((b) => ({ title: b.title, url: b.url })) });
+    }
+    if (action.startsWith('page_') && !tabId) {
+      const [act] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      tabId = act ? act.id : 0;
+    }
+    if (action === 'page_read' && tabId) {
+      const data = await runInTab(tabId, pageReadInPage);
+      return ack(cmd, deviceId, 'completed', 'Read "' + (data && data.title) + '"', data);
+    }
+    if ((action === 'page_click' || action === 'page_type' || action === 'page_scroll') && tabId) {
+      const op = action.slice(5);
+      const out = await runInTab(tabId, pageActInPage, [op, { i: p.i, text: p.text, value: p.value, submit: p.submit, dy: p.dy, allowSecret: p.allowSecret === true, allowPay: p.allowPay === true }]);
+      if (!out || !out.ok) return ack(cmd, deviceId, 'failed', (out && out.msg) || 'Page action failed');
+      if (op !== 'scroll') await waitForLoad(tabId, 8000);
+      const data = await runInTab(tabId, pageReadInPage).catch(() => null);
+      return ack(cmd, deviceId, 'completed', out.msg, data);
+    }
     if (action === 'tab_open') {
       const tab = await chrome.tabs.create({ url: String(p.url || 'about:blank'), active: true });
       await chrome.windows.update(tab.windowId, { focused: true });
