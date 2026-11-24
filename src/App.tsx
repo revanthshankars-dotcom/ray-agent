@@ -18,6 +18,7 @@ import { usePWAInstall } from './hooks/usePWAInstall';
 import { useDeviceCall } from './hooks/useDeviceCall';
 import { CallScreen } from './components/CallScreen';
 import { AgentRunPanel } from './components/AgentRunPanel';
+import { VoiceRouting } from './components/VoiceRouting';
 import { JarvisView } from './components/JarvisView';
 import { PairDeviceModal } from './components/PairDeviceModal';
 import { CameraModal } from './components/CameraModal';
@@ -348,6 +349,27 @@ export default function App() {
     playHudSound('alert');
   }, []);
 
+  // Shared mic: where spoken commands run (saved), and a one-session override from a pop-up link
+  // (?runon=) or from another device asking this one to listen.
+  const [voiceRunOn, setVoiceRunOn] = useState<string>(() => {
+    try {
+      return localStorage.getItem('ray.voiceRunOn') || '';
+    } catch {
+      return '';
+    }
+  });
+  const [sessionRunOn, setSessionRunOn] = useState<string>(() =>
+    typeof window === 'undefined' ? '' : new URLSearchParams(window.location.search).get('runon') || ''
+  );
+  const changeVoiceRunOn = useCallback((v: string) => {
+    setVoiceRunOn(v);
+    try {
+      localStorage.setItem('ray.voiceRunOn', v);
+    } catch {
+      // private mode
+    }
+  }, []);
+
   const {
     voiceState,
     userCaption,
@@ -368,7 +390,25 @@ export default function App() {
     notionToken,
     onConfirmationRequired: handleAddConfirmation,
     engineSettings,
+    runOn: sessionRunOn || voiceRunOn,
   });
+
+  useEffect(() => {
+    const onRemote = (e: Event) => {
+      const runOn = String((e as CustomEvent<{ runOn?: string }>).detail?.runOn || '');
+      setSessionRunOn(runOn);
+      if (voiceState === 'off' || voiceState === 'standby') void startLiveSession();
+    };
+    window.addEventListener('ray:remote-listen', onRemote);
+    return () => window.removeEventListener('ray:remote-listen', onRemote);
+  }, [voiceState, startLiveSession]);
+
+  // A remote-mic session ends when the conversation does.
+  const prevVoiceState = useRef(voiceState);
+  useEffect(() => {
+    if (prevVoiceState.current !== 'off' && prevVoiceState.current !== 'standby' && (voiceState === 'off' || voiceState === 'standby')) setSessionRunOn('');
+    prevVoiceState.current = voiceState;
+  }, [voiceState]);
 
   // Pop-up window opened with listen=1 (Ctrl+Alt+R, wake from another device): start listening at once.
   useEffect(() => {
@@ -1055,6 +1095,19 @@ export default function App() {
 
           {activeTab === 'assistant' && (
             <AssistantView
+              voiceRouting={
+                <VoiceRouting
+                  roomId={roomId}
+                  devices={snapshot.devices}
+                  myDeviceId={identity.id}
+                  myName={identity.name}
+                  runOn={sessionRunOn || voiceRunOn}
+                  onRunOnChange={(v) => {
+                    setSessionRunOn('');
+                    changeVoiceRunOn(v);
+                  }}
+                />
+              }
               compact={popupMode}
               roomId={roomId}
               userName={displayName}

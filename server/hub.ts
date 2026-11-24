@@ -757,7 +757,7 @@ export function pickExecutorDevice(
   const room = getOrCreateRoom(roomId);
   const online = Array.from(room.devices.values()).filter((d) => d.online);
   const q = (targetQuery || 'all').trim().toLowerCase();
-  const named = q && q !== 'all' ? matchDevices(online, q) : online;
+  const named = q && !/^(all|auto|any|best)$/.test(q) ? matchDevices(online, q) : online;
   const canExec = (d: DeviceInfo) =>
     d.type === 'bridge' || d.capabilities?.includes('os-bridge') || (need === 'url' && d.capabilities?.includes('browser-tabs'));
   const rank = (d: DeviceInfo) => {

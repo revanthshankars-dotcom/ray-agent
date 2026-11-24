@@ -578,7 +578,7 @@ export function buildJarvisSystemInstruction(
 Current user: Ray
 Current room: ${snapshot.roomId}
 Current speaking device: ${sourceDeviceName}
-Target device filter: ${targetDeviceHint || 'Auto (infer from command)'}
+Target device filter: ${targetDeviceHint && !/^(auto|any|all)$/i.test(targetDeviceHint) ? `RUN ON "${targetDeviceHint}" — Ray gave this command on ${sourceDeviceName} but wants it carried out on ${targetDeviceHint} (shared mic). Use targetDevice "${targetDeviceHint}" for every device action unless he names another device; reply normally (the answer is spoken where he is).` : 'Auto (infer from command; "on my PC/phone/laptop" names the device)'}
 Veronica Priority Mode: ${snapshot.veronicaMode ? 'ENGAGED (Deep reasoning active)' : 'Standard'}
 Screen Control Armed: ${snapshot.screenControlArmed ? 'ARMED (Guarded input enabled with confirmation)' : 'DISARMED (Read-only vision only)'}
 Google Workspace OAuth: ${extras?.hasGoogleToken ? 'AUTHORIZED (Gmail, Calendar, Drive, Docs, Sheets, Tasks, Contacts available)' : 'Not authorized yet in this session'}

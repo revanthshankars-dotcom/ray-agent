@@ -98,6 +98,7 @@ import { getLatestBridgeVersion } from './server/repair.ts';
 import { registerAccountRoutes } from './server/accounts.ts';
 import { registerConnectorRoutes } from './server/mcpConnectors.ts';
 import { registerSkillRoutes } from './server/skillLibrary.ts';
+import { sttAvailable, transcribeSpeech } from './server/speechToText.ts';
 import { semanticStatus, startSemanticIndexer } from './server/semanticMemory.ts';
 import { registerHomeRoutes } from './server/homeAssistant.ts';
 import { registerAwarenessRoutes, startAwareness } from './server/awareness.ts';
@@ -486,8 +487,24 @@ async function startServer() {
     res.json({ cancelled: await cancelScheduledCall(normalizeRoomId(roomId), String(id || '')) });
   });
 
+  // Shared mic: ask another device to listen (its RAY window or the phone's Talk loop) and carry
+  // what it hears out on the device that asked.
+  app.post('/api/voice/remote-mic', requireRoomAuth, async (req, res) => {
+    const { roomId, micDevice, runOn } = req.body as { roomId?: string; micDevice?: string; runOn?: string };
+    if (!micDevice) return res.status(400).json({ error: 'Pick the device whose mic to use.' });
+    const { summary } = await dispatchDeviceCommand({
+      roomId: normalizeRoomId(String(roomId || '')),
+      type: 'wake',
+      targetQuery: String(micDevice),
+      source: 'user',
+      payload: { popup: true, listen: true, runOn: String(runOn || '').slice(0, 80), reason: `listening for ${runOn || 'you'}` },
+      waitForAckMs: 6000,
+    });
+    res.json({ summary });
+  });
+
   app.get('/api/voice/capabilities', (_req, res) => {
-    res.json({ live: Boolean(process.env.GEMINI_API_KEY), serverTts: Boolean(process.env.GEMINI_API_KEY || fishUsable()), fishAudio: getFishStatus() });
+    res.json({ live: Boolean(process.env.GEMINI_API_KEY), serverTts: Boolean(process.env.GEMINI_API_KEY || fishUsable()), stt: sttAvailable(), fishAudio: getFishStatus() });
   });
 
   app.get('/api/push/vapid', (_req, res) => {
@@ -1141,7 +1158,19 @@ async function startServer() {
       }
       history = (history || []).map((h) => ({ ...h, text: redactSecrets(h.text || '').text }));
 
-      const toolExecutor = (toolName: string, toolArgs: Record<string, unknown>) =>
+      // Shared mic: a command spoken on one device can be set to run on another ("commands run on: PC").
+      // When the AI didn't name a device, device actions go to that run-on device.
+      const RUN_ON_TOOLS = /^(open_url_on_device|search_and_open|open_application|close_application|browser_tab_action|operate_computer|list_installed_apps|adjust_volume|media_control|play_media|request_device_snapshot|show_ray|send_chat_message|place_phone_call)$/;
+      const toolExecutor = (toolName: string, rawArgs: Record<string, unknown>) => {
+        const toolArgs = { ...rawArgs };
+        const runOn = String(targetDeviceHint || '').trim();
+        if (runOn && !/^(auto|any|all)$/i.test(runOn) && RUN_ON_TOOLS.test(toolName)) {
+          const key = toolName === 'show_ray' ? 'device' : 'targetDevice';
+          if (!toolArgs[key] || /^(auto|any|this|current)$/i.test(String(toolArgs[key]))) toolArgs[key] = runOn;
+        }
+        return executeDeviceToolWithArgs(toolName, toolArgs);
+      };
+      const executeDeviceToolWithArgs = (toolName: string, toolArgs: Record<string, unknown>) =>
         executeDeviceTool(normalizedRoom, sourceDeviceName || 'Web Client', toolName, toolArgs, preferredVoice || 'Fenrir', {
           googleAccessToken,
           notionToken,
@@ -1403,13 +1432,17 @@ async function startServer() {
 
   app.post('/api/ai/transcribe', aiLimiter, requireRoomAuth, async (req, res) => {
     try {
-      const { audioBase64, mimeType } = req.body as { audioBase64: string; mimeType: string };
+      const { audioBase64, mimeType, roomId } = req.body as { audioBase64: string; mimeType: string; roomId?: string };
       if (!audioBase64) {
         res.status(400).json({ error: 'Missing audioBase64 payload' });
         return;
       }
-      const transcript = await transcribeAudioClip(audioBase64, mimeType || 'audio/webm');
-      res.json({ transcript });
+      if (audioBase64.length > 8_000_000) {
+        res.status(413).json({ error: 'Recording too long' });
+        return;
+      }
+      const out = await transcribeSpeech(normalizeRoomId(String(roomId || req.query.room || 'RLY-HOME')), audioBase64, mimeType || 'audio/webm');
+      res.json(out);
     } catch (err) {
       res.status(500).json({ error: sanitizeErrorMessage(err, 'Audio transcription failed') });
     }

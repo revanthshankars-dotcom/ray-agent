@@ -395,7 +395,7 @@ export async function openUrlOnBestDevice(
     roomId,
     type: 'open_url',
     // Executor (bridge / tabs extension) opens a real tab; otherwise RAY browser clients try window.open.
-    targetQuery: exec ? exec.id : targetQuery || 'all',
+    targetQuery: exec ? exec.id : targetQuery && !/^(auto|any|best)$/i.test(targetQuery) ? targetQuery : 'all',
     source: 'assistant',
     payload: { url, title, tabMode },
     waitForAckMs: 6000,

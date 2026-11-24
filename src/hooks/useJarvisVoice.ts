@@ -1,3 +1,4 @@
+import { blobToBase64, recordUtterance } from '../utils/voiceCapture';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ConfirmationRequest, EngineSettings, LiveVoiceState, VoicePersona } from '../types/relay';
 import { playHudSound } from '../utils/hudAudio';
@@ -101,6 +102,8 @@ function matchesWakePhrase(transcript: string, sensitivity: number): boolean {
 }
 
 export function useJarvisVoice(params: {
+  /** Shared mic: device name the spoken commands should be carried out on ('' = auto). */
+  runOn?: string;
   roomId: string;
   deviceName: string;
   voiceName: VoicePersona;
@@ -129,7 +132,9 @@ export function useJarvisVoice(params: {
   const classicHistoryRef = useRef<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
   const classicAbortRef = useRef<AbortController | null>(null);
   const liveFailedUntilRef = useRef(0);
-  const voiceCapsRef = useRef<{ live: boolean; serverTts?: boolean } | null>(null);
+  const runOnRef = useRef(params.runOn || '');
+  runOnRef.current = params.runOn || '';
+  const voiceCapsRef = useRef<{ live: boolean; serverTts?: boolean; stt?: string | null } | null>(null);
 
   const liveActiveRef = useRef(false);
   const wakeEnabledRef = useRef(params.wakeEnabled);
@@ -337,6 +342,7 @@ export function useJarvisVoice(params: {
                 roomId: params.roomId,
                 sourceDeviceName: deviceNameRef.current,
                 message: `${text}\n\n(Voice conversation: reply in 1-3 short spoken sentences.)`,
+                targetDeviceHint: runOnRef.current || undefined,
                 history: classicHistoryRef.current.slice(-8),
                 preferredVoice: params.voiceName,
                 engine: engineRef.current || { provider: 'auto' },
@@ -380,8 +386,110 @@ export function useJarvisVoice(params: {
         if (classicActiveRef.current) listen();
       };
 
+      let whisperOk = true;
+      // Accurate path: record the whole utterance and transcribe it with free Whisper + Ray's
+      // vocabulary; the browser recogniser only shows live captions (and is the fallback).
+      const listenWhisper = async () => {
+        if (!classicActiveRef.current) return;
+        setVoiceState('listening');
+        setUserCaption('');
+        try {
+          if (!micStreamRef.current) {
+            micStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+          }
+        } catch {
+          setLiveError('Microphone permission denied. Allow the mic for RAY in your browser settings.');
+          stopLiveSession(true);
+          return;
+        }
+        let srFinal = '';
+        let capRec: SpeechRecognitionInstance | null = null;
+        if (Ctor && !/Android/i.test(navigator.userAgent)) {
+          try {
+            capRec = new Ctor();
+            capRec.continuous = true;
+            capRec.interimResults = true;
+            capRec.lang = navigator.language || 'en-US';
+            capRec.onresult = (event) => {
+              let interim = '';
+              for (let i = event.resultIndex; i < event.results.length; i++) {
+                const r = event.results[i];
+                if (r.isFinal) srFinal += r[0].transcript;
+                else interim += r[0].transcript;
+              }
+              setUserCaption(`${srFinal} ${interim}`.trim().slice(-240));
+            };
+            capRec.onerror = () => undefined;
+            capRec.start();
+            classicRecRef.current = capRec;
+          } catch {
+            capRec = null;
+          }
+        }
+        let utt: Awaited<ReturnType<typeof recordUtterance>>;
+        try {
+          utt = await recordUtterance(micStreamRef.current!, { isActive: () => classicActiveRef.current });
+        } catch {
+          // Audio is paused (no tap yet) — use the browser recogniser for this session.
+          if (capRec) {
+            try {
+              capRec.onresult = null;
+              capRec.abort();
+            } catch {
+              // ignore
+            }
+            if (classicRecRef.current === capRec) classicRecRef.current = null;
+          }
+          whisperOk = false;
+          listen();
+          return;
+        }
+        if (capRec) {
+          try {
+            capRec.onresult = null;
+            capRec.stop();
+          } catch {
+            // ignore
+          }
+          if (classicRecRef.current === capRec) classicRecRef.current = null;
+        }
+        if (!classicActiveRef.current) return;
+        if (!utt.spoke || !utt.blob) {
+          if (++silentTurns <= 1) listen();
+          else {
+            playHudSound('blip');
+            stopLiveSession(true);
+          }
+          return;
+        }
+        silentTurns = 0;
+        setVoiceState('thinking');
+        let text = '';
+        try {
+          const r = await authFetch('/api/ai/transcribe', params.roomId, {
+            method: 'POST',
+            body: JSON.stringify({ roomId: params.roomId, audioBase64: await blobToBase64(utt.blob), mimeType: utt.mimeType }),
+          });
+          if (r.ok) text = String(((await r.json()) as { transcript?: string }).transcript || '').trim();
+        } catch {
+          // fall back to the browser recogniser's text
+        }
+        if (!text) text = srFinal.trim();
+        if (!classicActiveRef.current) return;
+        if (!text) {
+          listen();
+          return;
+        }
+        setUserCaption(text.slice(-240));
+        void ask(text);
+      };
+
       const listen = () => {
         if (!classicActiveRef.current) return;
+        if (whisperOk && voiceCapsRef.current?.stt && typeof MediaRecorder !== 'undefined' && 'mediaDevices' in navigator) {
+          void listenWhisper();
+          return;
+        }
         if (!Ctor) {
           setLiveError('This browser has no speech recognition. Use Chrome/Edge, or type to RAY.');
           stopLiveSession(true);
@@ -444,7 +552,7 @@ export function useJarvisVoice(params: {
       // Decide pipeline: Gemini Live (best) when available, else the free classic pipeline.
       if (!voiceCapsRef.current) {
         try {
-          voiceCapsRef.current = (await fetch('/api/voice/capabilities').then((r) => r.json())) as { live: boolean; serverTts?: boolean };
+          voiceCapsRef.current = (await fetch('/api/voice/capabilities').then((r) => r.json())) as { live: boolean; serverTts?: boolean; stt?: string | null };
         } catch {
           voiceCapsRef.current = { live: false };
         }

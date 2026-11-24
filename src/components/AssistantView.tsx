@@ -86,6 +86,8 @@ interface AssistantViewProps {
   jarvisCaption: string;
   liveError: string | null;
   onStartLiveVoice: () => void;
+  /** Shared-mic control shown next to the voice buttons. */
+  voiceRouting?: React.ReactNode;
   onStopLiveVoice: () => void;
   onEmergencyStop: () => void;
   pendingConfirmations: ConfirmationRequest[];
@@ -253,6 +255,7 @@ export const AssistantView: React.FC<AssistantViewProps> = ({
   jarvisCaption,
   liveError,
   onStartLiveVoice,
+  voiceRouting,
   onStopLiveVoice,
   onEmergencyStop,
   pendingConfirmations,
@@ -1193,6 +1196,7 @@ export const AssistantView: React.FC<AssistantViewProps> = ({
               <span>Auto-Speak</span>
             </button>
 
+            {voiceRouting}
             {wakeSupported && (
               <button
                 type="button"

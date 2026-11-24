@@ -33,7 +33,7 @@ import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import WebSocket, { WebSocketServer } from 'ws';
 
-const BRIDGE_VERSION = '3.3';
+const BRIDGE_VERSION = '3.4';
 const IS_TERMUX = Boolean(process.env.PREFIX && process.env.PREFIX.includes('com.termux')) || fs.existsSync('/data/data/com.termux');
 const PLATFORM = IS_TERMUX ? 'android' : os.platform();
 const WS_URL = process.env.RELAY_WS_URL || "__RAY_WS_URL__";
@@ -159,7 +159,7 @@ function writePhoneShortcuts(nodeBin, scriptPath) {
       '  TEXT=$(termux-speech-to-text)\n' +
       '  [ -z "$TEXT" ] && break\n' +
       '  case "$(echo "$TEXT" | tr A-Z a-z)" in *stop*|*"that\'s all"*|*goodbye*|*"bye ray"*|*"thank you"*) termux-tts-speak "Okay."; break;; esac\n' +
-      '  ANS=$("' + process.execPath + '" "' + loc.scriptTarget + '" --ask "$TEXT" --quiet)\n' +
+      '  ANS=$("' + process.execPath + '" "' + loc.scriptTarget + '" --ask "$TEXT" --quiet --target "${RAY_RUN_ON:-}")\n' +
       '  termux-notification --id ray-talk --title "RAY" --content "$ANS" --priority max --ongoing\n' +
       '  termux-tts-speak "$ANS"\n' +
       'done\n' +
@@ -173,13 +173,15 @@ async function handleCliFlags() {
   const askIdx = args.indexOf('--ask');
   if (askIdx >= 0) {
     // Used by the "Ask RAY" home-screen button: hand the question to the running bridge.
-    const question = args.slice(askIdx + 1).filter((a) => a !== '--quiet').join(' ').trim();
+    const tIdx = args.indexOf('--target');
+    const target = tIdx >= 0 ? String(args[tIdx + 1] || '') : '';
+    const question = args.slice(askIdx + 1).filter((a, i, arr) => a !== '--quiet' && a !== '--target' && arr[i - 1] !== '--target').join(' ').trim();
     if (!question) process.exit(0);
     try {
       const r = await fetch('http://127.0.0.1:' + LOCAL_PORT + '/ask', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Relay-Room-Token': String(process.env.RELAY_ROOM_TOKEN || loadSavedBridgeConfig().roomToken || DEFAULT_ROOM_TOKEN) },
-        body: JSON.stringify({ text: question.replace(/\s*--quiet\b/, ''), speak: !args.includes('--quiet') }),
+        body: JSON.stringify({ text: question.replace(/\s*--quiet\b/, ''), speak: !args.includes('--quiet'), target }),
         signal: AbortSignal.timeout(120000),
       });
       const j = await r.json();
@@ -1664,11 +1666,11 @@ function playRingtone(seconds) {
 }
 
 let lastPopupAt = 0;
-function openRayPopup(reason, cb) {
+function openRayPopup(reason, cb, runOn) {
   const done = cb || (() => {});
   if (Date.now() - lastPopupAt < 4000) return done('Already opening', true);
   lastPopupAt = Date.now();
-  const url = rayAppUrl({ popup: 1, listen: 1 });
+  const url = rayAppUrl(runOn ? { popup: 1, listen: 1, runon: runOn } : { popup: 1, listen: 1 });
   if (!url) return done('RAY URL unknown', false);
   openRayWindow(url, 'RAY Assistant', 4, (m, ok) => done(m + (reason ? ' (' + reason + ')' : ''), ok));
 }
@@ -2425,7 +2427,7 @@ function startLocalDirectBridge() {
       try { parsed = JSON.parse(body || '{}'); } catch {}
       let out;
       try {
-        out = await askRay(String(parsed.text || ''));
+        out = await askRay(String(parsed.text || ''), String(parsed.target || ''));
         speakIfAsked(out.answer, parsed.speak);
       } catch (e) {
         out = { answer: 'RAY hit an error: ' + (e && e.message ? e.message : e), via: 'error' };
@@ -2704,13 +2706,13 @@ async function answerLocally(text, fromPeer = false) {
 }
 
 /** Ask path: cloud RAY when online → offline local handling (both devices) otherwise. */
-async function askRay(text) {
+async function askRay(text, target) {
   if (activeWs && activeWs.readyState === WebSocket.OPEN) {
     try {
       const r = await fetch(RAY_WEB_ORIGIN + '/api/ai/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Relay-Room-Token': ROOM_TOKEN },
-        body: JSON.stringify({ roomId: ROOM_ID, sourceDeviceName: DEVICE_NAME, message: text + '\n\n(Voice: answer in 1-3 short spoken sentences.)', engine: { provider: 'auto' } }),
+        body: JSON.stringify({ roomId: ROOM_ID, sourceDeviceName: DEVICE_NAME, message: text + '\n\n(Voice: answer in 1-3 short spoken sentences.)', engine: { provider: 'auto' }, targetDeviceHint: target || undefined }),
         signal: AbortSignal.timeout(60000),
       });
       const raw = await r.text();
@@ -2835,7 +2837,15 @@ function executeDeviceCommand(cmd, ack, ws) {
   } else if (cmd.type === 'call') {
     ringThisDevice(cmd.payload || {}, (out, ok) => ack(ok ? 'completed' : 'failed', out));
   } else if (cmd.type === 'wake') {
-    if (cmd.payload && cmd.payload.popup) openRayPopup(String(cmd.payload.reason || ''), (m) => ack('completed', DEVICE_NAME + ': ' + m));
+    if (cmd.payload && cmd.payload.listen && IS_TERMUX) {
+      // Shared mic: this phone listens and what it hears is carried out on the device that asked.
+      const talk = path.join(os.homedir(), '.shortcuts', 'Talk to RAY');
+      const runOn = String(cmd.payload.runOn || '').replace(/[^\w .()-]/g, '').slice(0, 80);
+      if (fs.existsSync(talk)) {
+        spawn('sh', [talk], { detached: true, stdio: 'ignore', env: { ...process.env, RAY_RUN_ON: runOn } }).unref();
+        ack('completed', DEVICE_NAME + ' is listening' + (runOn ? ' for ' + runOn : ''));
+      } else ack('failed', 'Talk shortcut missing on ' + DEVICE_NAME);
+    } else if (cmd.payload && cmd.payload.popup) openRayPopup(String(cmd.payload.reason || ''), (m) => ack('completed', DEVICE_NAME + ': ' + m), cmd.payload.listen ? String(cmd.payload.runOn || '') : '');
     else ack('completed', DEVICE_NAME + ' is awake');
   } else if (cmd.type === 'refresh_telemetry') {
     sampleTopProcesses((procs) => {

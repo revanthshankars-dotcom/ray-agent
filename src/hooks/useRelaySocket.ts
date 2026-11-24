@@ -313,6 +313,12 @@ export function useRelaySocket(
 
         case 'wake': {
           playHudSound('wake');
+          if ((p as { listen?: boolean }).listen) {
+            // Shared mic: another device asked this one to listen and act there.
+            window.dispatchEvent(new CustomEvent('ray:remote-listen', { detail: { runOn: String((p as { runOn?: string }).runOn || '') } }));
+            ack('completed', `Listening here${(p as { runOn?: string }).runOn ? ` for ${(p as { runOn?: string }).runOn}` : ''}`);
+            break;
+          }
           ack('completed', 'Device is awake and connected');
           break;
         }
