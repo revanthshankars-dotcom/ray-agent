@@ -138,6 +138,19 @@ Webhooks (`/api/phone/voice`, `/api/phone/status`) are verified with Twilio's si
 - **On top of every app (PC)** — **Float** in the top bar (or Alt+O, or JARVIS Core → *Float RAY now*) opens a small RAY window that stays above every app on Windows, Mac and Linux (Chrome/Edge 116+): mic, live captions, a quick ask box and RAY's questions. JARVIS Core → *Keep RAY's pop-ups pinned on top* keeps pop-ups from "Hey Ray", questions and other devices above other windows until you close them (Windows & Linux PC bridge; on Mac use Float).
 - **Free 24/7 server** — Oracle Cloud Always Free: [`deploy/oracle/README.md`](deploy/oracle/README.md), one command (`deploy/oracle/setup.sh`).
 
+## RAY phone app (Android, replaces Termux)
+
+A native Android app (`apps/ray-android`, Kotlin) that keeps your phone connected to RAY in the background — no Termux.
+
+- **Install** — RAY → Connections → Android phone → download `ray-phone.apk` (12 MB, sideloaded; Android 8+), then pair with **Open in RAY app** or the QR code (`ray://pair?hub=…&room=…&token=…`).
+- **What RAY can do on the phone** — open apps (by name) and links (one Chrome tab per site), call (by name or number) and look up contacts, read new chat notifications (WhatsApp, Instagram, Messenger, Telegram, SMS) for briefings, speak, copy to the clipboard, set timers, ring the phone, and ask you questions **over any app**. Starts after reboot; a small "RAY" notification keeps it alive.
+- **Offline photos** — SmolVLM2 500M (363 MB, Google LiteRT-LM, CPU) answers questions about photos and screenshots on the phone with no internet: "Download SmolVLM2" once, then *Ask about a photo* or share a picture to RAY. Needs Android 12+.
+- Signed with one fixed sideload key that is kept out of the repository (set `RAY_ANDROID_KEYSTORE` when building), so new versions install over old ones.
+
+## Local brain on the PC (no Ollama)
+
+RAY → Connections → **Local brain → Install** (PC bridge 3.12+): the bridge downloads llama.cpp, **Qwen3 1.7B** (answers & commands, tool calling) and **SmolVLM2 500M** (photos & screenshots) — about 1.7 GB, free — into `~/.ray-local-ai`, starts each model on demand and frees the memory after 15 idle minutes. RAY uses it when the cloud engines are unavailable or you pick *Local*; Ollama is optional.
+
 ## RAY Notch — RAY at the top of your PC screen
 
 A small black notch that stays above every app (Windows 10/11, macOS, Linux), inspired by how Nixi lives in a notch — built from scratch for RAY (Nixi itself is closed-source).
