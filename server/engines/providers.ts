@@ -6,7 +6,8 @@
  * Limits are the published free-tier numbers; RAY tracks real usage per day and treats
  * HTTP 429 / Retry-After as the source of truth.
  */
-import { blockedReason } from './balance.ts';
+import { blockedReason, providerFractionLeft } from './balance.ts';
+import { engineLimitReason, getLimits, modelLimitReason } from './limits.ts';
 import { loadJson, scheduleSave } from '../persistence.ts';
 
 export type TaskKind = 'quick' | 'chat' | 'code' | 'reasoning' | 'vision' | 'tools';
@@ -718,7 +719,12 @@ export function recordFailure(providerId: string, status: number, retryAfterSec?
 
 export function isModelAvailable(p: ProviderDef, model: string): boolean {
   // Skip models the provider itself said are used up (daily tokens, no credit…) until they reset.
-  return isAvailable(p) && (cooldownUntil.get(`${p.id}|${model}`) || 0) <= Date.now() && !blockedReason(p.id, model);
+  return (
+    isAvailable(p) &&
+    (cooldownUntil.get(`${p.id}|${model}`) || 0) <= Date.now() &&
+    !blockedReason(p.id, model) &&
+    !modelLimitReason(p.id, model, providerFractionLeft(p.id, model)) // Ray's paid-credit guard and reserve
+  );
 }
 
 /** Output-token cap for a model (never the 65K some providers default to). */
@@ -738,7 +744,8 @@ export function quotaUsed(p: ProviderDef): number {
 export function dailyBudget(): { usedTokens: number; capTokens: number; exceeded: boolean } {
   rollDay();
   const usedTokens = Object.values(usage.tokens).reduce((a, b) => a + b, 0);
-  const capTokens = Number(process.env.RAY_DAILY_TOKEN_CAP || 0) || 0;
+  // Ray's cap from the app wins; RAY_DAILY_TOKEN_CAP on the server is the fallback.
+  const capTokens = getLimits().dailyTokenCap || Number(process.env.RAY_DAILY_TOKEN_CAP || 0) || 0;
   return { usedTokens, capTokens, exceeded: capTokens > 0 && usedTokens >= capTokens };
 }
 
@@ -747,6 +754,7 @@ export function isAvailable(p: ProviderDef): boolean {
   if (p.id !== 'custom' && dailyBudget().exceeded) return false;
   if ((cooldownUntil.get(p.id) || 0) > Date.now()) return false;
   if (blockedReason(p.id)) return false; // whole account used up (credit, daily cap)
+  if (engineLimitReason(p.id, { requests: usage.requests[p.id] || 0, tokens: usage.tokens[p.id] || 0 })) return false; // Ray's own limits
   if (quotaUsed(p) >= 0.98) return false;
   const win = (minuteWindow.get(p.id) || []).filter((t) => Date.now() - t < 60_000);
   return win.length < p.rpm;
@@ -767,6 +775,7 @@ export function getEngineStatus() {
     coolingDownSec: Math.max(0, Math.round(((cooldownUntil.get(p.id) || 0) - Date.now()) / 1000)),
     supportsTools: p.supportsTools,
     lastError: lastErrors.get(p.id) || null,
+    limitReason: engineLimitReason(p.id, { requests: usage.requests[p.id] || 0, tokens: usage.tokens[p.id] || 0 }),
     signupUrl: p.signupUrl,
     notes: p.notes,
   }));

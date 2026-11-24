@@ -24,6 +24,7 @@ import type { PushWakeStatus } from '../hooks/usePushWake';
 import { ConnectThisDevice } from './ConnectThisDevice';
 import { AutopilotCard } from './AutopilotCard';
 import { EngineBalance } from './EngineBalance';
+import { EngineLimits } from './EngineLimits';
 
 interface EngineStatus {
   id: string;
@@ -534,7 +535,10 @@ export function ConnectionsView({
           )}
 
           {configured.length > 0 ? (
-            <EngineBalance roomId={roomId} engines={configured} />
+            <>
+              <EngineLimits roomId={roomId} />
+              <EngineBalance roomId={roomId} engines={configured} />
+            </>
           ) : (
             <p className="text-xs text-slate-500 mt-4">No engine keys yet — add any one below (Groq or Cerebras recommended).</p>
           )}

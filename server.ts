@@ -85,6 +85,7 @@ import {
   validateScreenControlAction,
 } from './server/security.ts';
 import { executeAppConnectorAction, executeGoogleWorkspaceAction } from './server/workspace.ts';
+import { loadLimits, updateLimits } from './server/engines/limits.ts';
 import { getEngineAssignments, getEngineBalances, runAutoChatTurn, selectRelevantTools } from './server/engines/router.ts';
 import { dailyBudget, getEngineStatus, getKeySources, loadUsage, normalizeProviderEnv } from './server/engines/providers.ts';
 import { installShutdownFlush, persistenceBackend } from './server/persistence.ts';
@@ -329,6 +330,21 @@ async function startServer() {
       res.json({ checkedAt: Date.now(), providers: await getEngineBalances(req.query.refresh === '1') });
     } catch (err) {
       res.status(500).json({ error: sanitizeErrorMessage(err) });
+    }
+  });
+
+  // Ray's usage limits (per-engine on/off and daily caps, total cap, reserve, no paid credit).
+  app.get('/api/engines/limits', requireRoomAuth, async (_req, res) => {
+    await loadUsage();
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ limits: await loadLimits(), budget: dailyBudget(), usage: getEngineStatus().filter((e) => e.configured).map((e) => ({ id: e.id, label: e.label, requestsToday: e.requestsToday, tokensToday: e.tokensToday, limitReason: e.limitReason })) });
+  });
+  app.post('/api/engines/limits', requireRoomAuth, async (req, res) => {
+    try {
+      const limits = await updateLimits((req.body || {}) as Record<string, never>);
+      res.json({ limits, budget: dailyBudget() });
+    } catch (err) {
+      res.status(400).json({ error: sanitizeErrorMessage(err) });
     }
   });
 

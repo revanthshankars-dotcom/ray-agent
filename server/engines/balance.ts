@@ -236,6 +236,17 @@ export function blockedReason(id: string, model?: string): string | null {
   return b ? b.reason : null;
 }
 
+/** Smallest share left that the PROVIDER reported (daily/monthly/balance), for this model or the account; null = unknown. */
+export function providerFractionLeft(id: string, model?: string): number | null {
+  const p = state.providers[id];
+  if (!p) return null;
+  const now = Date.now();
+  const fr = Object.values(p.meters)
+    .filter((m) => m.source === 'provider' && m.limit && m.window !== 'minute' && (!m.resetsAt || m.resetsAt > now) && (m.scope === '' || m.scope === 'credits' || m.scope === model))
+    .map((m) => m.remaining / (m.limit as number));
+  return fr.length ? Math.min(...fr) : null;
+}
+
 /** Worth re-testing now: nothing blocked, or only "no credit" marks (they have no known reset). */
 export function canRecheck(id: string): boolean {
   const p = state.providers[id];
