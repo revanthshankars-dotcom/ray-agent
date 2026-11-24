@@ -93,6 +93,7 @@ import { getFileMap, refreshDeviceIndex, startFileIndexScheduler } from './serve
 import { getAutopilot, learnFromTurn, runAutopilot, setAutopilot, startAutonomy } from './server/autopilot.ts';
 import { getLearning, getTopics, observeTurn, runLearningCycle, saveTopics, setLearning, startLearningScheduler, withRecall } from './server/learning.ts';
 import { getLatestBridgeVersion } from './server/repair.ts';
+import { registerAccountRoutes } from './server/accounts.ts';
 import { getIceServers, listScheduledCalls, cancelScheduledCall, startCallScheduler } from './server/calls.ts';
 import { checkFishKey, fishUsable, getFishKey, getFishStatus } from './server/fishAudio.ts';
 import { checkMetaSignature, handleMetaWebhook, metaStatus, verifyMetaWebhook } from './server/meta.ts';
@@ -375,6 +376,9 @@ async function startServer() {
     const { roomId } = req.body as { roomId: string };
     res.json({ summary: await runAutopilot(normalizeRoomId(roomId), { force: true }) });
   });
+
+  // Google / Meta accounts (server-side OAuth so RAY works from any device).
+  registerAccountRoutes(app, requireRoomAuth as never);
 
   // JARVIS status: learning, knowledge, lessons, repairs, bridge versions.
   app.get('/api/jarvis', requireRoomAuth, async (req, res) => {

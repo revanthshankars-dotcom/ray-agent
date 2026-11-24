@@ -32,6 +32,7 @@ import { computerUseToolDeclarations, executeComputerUseTool } from './computerU
 import { codingAgentToolDeclarations, executeCodingAgentTool } from './codingAgents.ts';
 import { memoryExcerpt } from './autopilot.ts';
 import { executeJarvisTool, jarvisToolDeclarations } from './jarvisTools.ts';
+import { accountToolDeclarations, executeAccountTool, getServerGoogleToken } from './accounts.ts';
 import { lessonsExcerpt, withRecall } from './learning.ts';
 import { checkActionPolicy, executeExtendedTool, extendedToolDeclarations } from './deviceTools.ts';
 import type {
@@ -473,7 +474,7 @@ export const baseToolDeclarations: FunctionDeclaration[] = [
 ];
 
 // Extended tools (search & open, apps, tabs, messages, wake) — replace older duplicates by name.
-for (const decl of [...extendedToolDeclarations, ...callToolDeclarations, ...fileIndexToolDeclarations, ...computerUseToolDeclarations, ...codingAgentToolDeclarations, ...jarvisToolDeclarations]) {
+for (const decl of [...extendedToolDeclarations, ...callToolDeclarations, ...fileIndexToolDeclarations, ...computerUseToolDeclarations, ...codingAgentToolDeclarations, ...jarvisToolDeclarations, ...accountToolDeclarations]) {
   const idx = baseToolDeclarations.findIndex((d) => d.name === decl.name);
   if (idx >= 0) baseToolDeclarations[idx] = decl;
   else baseToolDeclarations.push(decl);
@@ -618,6 +619,7 @@ Behavioral Guidelines:
 20. SELF-LEARNING: "learn about / keep up with X" → learn_about (follow=true to track it daily). RAY researches its Learning Topics every morning into Knowledge notes and turns its mistakes into Lessons — follow the Lessons below. "What did you learn today?" → read the Knowledge → Daily Briefing note.
 21. SELF-HEALING: "my PC is slow / internet broken / app frozen / fix my phone / free up space" → repair_device (diagnoses, proposes safe fixes, asks once, re-checks). Health questions → diagnose_device. Undo a file change → restore_file. If a fix needs clicking in an app use operate_computer; broken code → run_coding_agents.
 22. "Open RAY on my PC/phone", or a task needs Ray's eyes on another device → show_ray.
+23. ACCOUNTS: for anything in Gmail, Calendar, Drive, Docs, Sheets, Slides, Tasks, Contacts or YouTube use google_api_request with the official REST endpoints — chain as many calls as the job needs (search → read → act) so one command finishes everything. For Instagram/Facebook use meta_api_request (professional accounts). If an account is not connected (check connected_accounts), say how to connect it, and for personal Instagram/WhatsApp fall back to browse_web mode "do" or operate_computer on the phone.
 
 Lessons RAY learned from its own mistakes (follow them):
 ${lessonsExcerpt(roomId, 20) || 'None yet.'}
@@ -892,6 +894,8 @@ export async function executeDeviceTool(
   if (codeOut) return codeOut;
   const jarvisOut = await executeJarvisTool(roomId, name, args, { confirmed });
   if (jarvisOut) return jarvisOut;
+  const accountOut = await executeAccountTool(roomId, name, args, { confirmed, clientGoogleToken: options?.googleAccessToken });
+  if (accountOut) return accountOut;
 
   switch (name) {
     case 'list_connected_devices': {
@@ -1286,7 +1290,7 @@ export async function executeDeviceTool(
         roomId,
         action,
         args: parsedArgs,
-        googleAccessToken: options?.googleAccessToken,
+        googleAccessToken: (await getServerGoogleToken(roomId).catch(() => null)) || options?.googleAccessToken,
         confirmed,
       });
     }

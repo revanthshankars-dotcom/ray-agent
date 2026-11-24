@@ -1219,6 +1219,7 @@ export default function App() {
             <JarvisView
               roomId={roomId}
               devices={snapshot.devices}
+              onOpenConnect={() => setActiveTab('connect')}
               onAskRay={(prompt) => {
                 setDraftPrompt(prompt);
                 setActiveTab('assistant');

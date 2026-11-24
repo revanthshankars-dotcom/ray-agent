@@ -73,7 +73,7 @@ export interface RouterChatInput {
 // ---------------------------------------------------------------------------
 
 const TOOL_HINTS =
-  /\b(research|learn about|learn|keep up with|study|browse|website|repair|fix my|fix the|diagnose|frozen|not responding|free up|disk space|internet|restore|undo|health|codex|claude code|aider|coding agents?|teach|show me|how do i|how to|navigate|fill|settings?|call|ring|dial|wake|alarm|open|launch|start|close|kill|play|search|find|show|list|read|send|message|whatsapp|instagram|text|call|notify|remind|timer|alarm|tab|tabs|app|apps|file|files|folder|screen|screenshot|click|type|press|volume|clipboard|copy|phone|pc|laptop|desktop|device|note|brain|save|calendar|email|gmail|drive|task|todo|protocol|wake)\b/i;
+  /\b(gmail|email|inbox|calendar|drive|docs|sheets|slides|youtube|instagram|facebook|reel|research|learn about|learn|keep up with|study|browse|website|repair|fix my|fix the|diagnose|frozen|not responding|free up|disk space|internet|restore|undo|health|codex|claude code|aider|coding agents?|teach|show me|how do i|how to|navigate|fill|settings?|call|ring|dial|wake|alarm|open|launch|start|close|kill|play|search|find|show|list|read|send|message|whatsapp|instagram|text|call|notify|remind|timer|alarm|tab|tabs|app|apps|file|files|folder|screen|screenshot|click|type|press|volume|clipboard|copy|phone|pc|laptop|desktop|device|note|brain|save|calendar|email|gmail|drive|task|todo|protocol|wake)\b/i;
 const CODE_HINTS = /\b(code|function|bug|error|stack ?trace|typescript|javascript|python|java|rust|golang|sql|regex|compile|refactor|api|script|class|component|debug)\b|```/i;
 const REASONING_HINTS =
   /\b(why|analy[sz]e|compare|plan|strategy|design|architecture|prove|derive|step[- ]by[- ]step|pros and cons|trade-?offs?|research|explain in depth|deep dive|evaluate)\b/i;
@@ -305,6 +305,8 @@ const TOOL_TOPICS: Array<[RegExp, string[]]> = [
   [/\b(learn|study|keep up|follow|knowledge|what did you learn|briefing|topics?)\b/i, ['learn_about', 'manage_learning', 'search_second_brain']],
   [/\b(fix|repair|broken|slow|frozen|hang|hanging|crash|crashing|not responding|not working|space|disk|storage|internet|wifi|wi-fi|dns|health|diagnos\w*|check ?up|update ray|restore|undo|previous version)\b/i, ['diagnose_device', 'repair_device', 'restore_file', 'operate_computer']],
   [/\b(open ray|show ray|show yourself|pop ?up|bring up ray)\b/i, ['show_ray']],
+  [/\b(gmail|email|emails|mail|inbox|calendar|meeting|event|drive|doc|docs|document|sheet|sheets|spreadsheet|slides?|presentation|tasks?|contacts?|youtube|playlist|google)\b/i, ['google_api_request', 'connected_accounts']],
+  [/\b(instagram|insta|ig|facebook|fb|reel|reels|post|posts|story|comments?|followers|meta|whatsapp)\b/i, ['meta_api_request', 'connected_accounts', 'browse_web']],
 ];
 
 export function selectRelevantTools(message: string, tools: RouterChatInput['tools']): RouterChatInput['tools'] {

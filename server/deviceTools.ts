@@ -45,10 +45,13 @@ const ACTION_TOOLS: Record<string, RegExp> = {
   call_me: /\b(call|ring|wake|remind|alarm|phone me|buzz)\b/i,
   call_device: /\b(call|ring|connect|talk|link|join)\b/i,
   place_phone_call: /\b(call|dial|ring|phone)\b/i,
+  google_api_request: /\b(send|reply|forward|draft|write|create|add|make|schedule|book|set|update|edit|change|move|rename|share|upload|post|label|archive|mark|star|delete|remove|cancel|clear|invite|accept|decline|complete|append|fill|organi[sz]e|clean|sort|subscribe|like|comment|publish)\b/i,
+  meta_api_request: /\b(post|publish|upload|share|reply|comment|send|message|dm|delete|remove|hide|like|schedule|caption)\b/i,
 };
 
 /** Read-type actions inside an action tool that are always allowed. */
 function isReadOnlyVariant(name: string, args: Record<string, unknown>): boolean {
+  if ((name === 'google_api_request' || name === 'meta_api_request') && String(args.method || 'GET').toUpperCase() === 'GET') return true;
   return name === 'browser_tab_action' && String(args.action || '').toLowerCase() === 'read';
 }
 

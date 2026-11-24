@@ -16,13 +16,15 @@ import {
   Plus,
   RefreshCw,
   ShieldCheck,
+  Link2,
+  Download,
   Sparkles,
   Stethoscope,
   Wrench,
   X,
 } from 'lucide-react';
 import type { DeviceInfo } from '../types/relay';
-import { authFetch } from '../utils/roomAuth';
+import { authFetch, getStoredRoomToken } from '../utils/roomAuth';
 import { AutopilotCard } from './AutopilotCard';
 
 interface BridgeRow {
@@ -87,15 +89,23 @@ function SectionTitle({ icon: Icon, title, hint, tone = 'text-blue-500' }: { ico
   );
 }
 
+interface Accounts {
+  google: { configured: boolean; connected: boolean; email: string | null };
+  meta: { instagram: boolean; facebookPage: boolean; whatsapp: boolean };
+}
+
 export function JarvisView({
   roomId,
   devices,
   onAskRay,
+  onOpenConnect,
 }: {
   roomId: string;
   devices: DeviceInfo[];
   onAskRay: (prompt: string) => void;
+  onOpenConnect?: () => void;
 }) {
+  const [accounts, setAccounts] = useState<Accounts | null>(null);
   const [st, setSt] = useState<JarvisStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [newTopic, setNewTopic] = useState('');
@@ -108,6 +118,8 @@ export function JarvisView({
     try {
       const r = await authFetch(`/api/jarvis?room=${encodeURIComponent(roomId)}`, roomId);
       if (r.ok) setSt((await r.json()) as JarvisStatus);
+      const a = await authFetch(`/api/accounts?room=${encodeURIComponent(roomId)}`, roomId);
+      if (a.ok) setAccounts((await a.json()) as Accounts);
     } catch {
       /* offline */
     } finally {
@@ -159,14 +171,27 @@ export function JarvisView({
   const pcBridge = bridges.find((b) => b.online && !/android/i.test(b.os));
   const phoneBridge = bridges.find((b) => b.online && /android/i.test(b.os));
   const caps = useMemo(() => new Set(bridges.filter((b) => b.online).flatMap((b) => b.capabilities)), [bridges]);
+  const pcAny = bridges.find((b) => !/android/i.test(b.os));
+  const outdated = bridges.filter((b) => b.online && !b.capabilities.includes('repair'));
+  // Why an ability is unavailable, in words Ray can act on.
+  const why = (cap: string): string => {
+    if (caps.has(cap)) return '';
+    const needsPc = cap !== 'repair' && cap !== 'popup' && cap !== 'calls';
+    if (!bridges.some((b) => b.online)) return needsPc ? (pcAny ? 'PC is offline' : 'Connect your PC') : 'Connect a device';
+    if (needsPc && !pcAny) return 'Connect your PC';
+    if (needsPc && pcAny && !pcAny.online) return 'PC is offline';
+    return 'Reinstall bridge (v3.1)';
+  };
+  const token = getStoredRoomToken(roomId);
+  const installer = (os: string) => `/api/bridge-installer?room=${encodeURIComponent(roomId)}&token=${encodeURIComponent(token)}&os=${os}`;
 
-  const abilities: Array<{ icon: typeof Globe; label: string; on: boolean; detail: string; prompt: string }> = [
-    { icon: Globe, label: 'Browser hands', on: caps.has('browser-agent'), detail: 'Reads, clicks and types in a real Chrome', prompt: 'Research the best budget phones this month and compare the top 3' },
-    { icon: MousePointer2, label: 'Mouse & keyboard', on: caps.has('computer-use'), detail: 'Uses any app on the PC (and phone via ADB)', prompt: 'Show me how to turn on night light in Windows' },
-    { icon: Code2, label: 'Coding agents', on: caps.has('coding-agents'), detail: 'Claude Code, Codex, Gemini CLI, Aider in parallel', prompt: 'Which coding agents are installed on my PC?' },
-    { icon: Wrench, label: 'Self-repair', on: caps.has('repair'), detail: 'Diagnoses and fixes devices, apps and files', prompt: 'Check my PC and fix anything that is wrong' },
-    { icon: Phone, label: 'Calls', on: caps.has('calls'), detail: 'Rings devices, PC↔phone calls, schedules', prompt: 'Call my phone in 10 minutes' },
-    { icon: MonitorUp, label: 'Pop-up anywhere', on: caps.has('popup'), detail: 'Ctrl+Alt+R on PC · notification on phone', prompt: 'Open RAY on my phone' },
+  const abilities: Array<{ icon: typeof Globe; label: string; on: boolean; detail: string; prompt: string; cap: string }> = [
+    { icon: Globe, label: 'Browser hands', on: caps.has('browser-agent'), cap: 'browser-agent', detail: 'Reads, clicks and types in a real Chrome', prompt: 'Research the best budget phones this month and compare the top 3' },
+    { icon: MousePointer2, label: 'Mouse & keyboard', on: caps.has('computer-use'), cap: 'computer-use', detail: 'Uses any app on the PC (and phone via ADB)', prompt: 'Show me how to turn on night light in Windows' },
+    { icon: Code2, label: 'Coding agents', on: caps.has('coding-agents'), cap: 'coding-agents', detail: 'Claude Code, Codex, Gemini CLI, Aider in parallel', prompt: 'Which coding agents are installed on my PC?' },
+    { icon: Wrench, label: 'Self-repair', on: caps.has('repair'), cap: 'repair', detail: 'Diagnoses and fixes devices, apps and files', prompt: 'Check my PC and fix anything that is wrong' },
+    { icon: Phone, label: 'Calls', on: caps.has('calls'), cap: 'calls', detail: 'Rings devices, PC↔phone calls, schedules', prompt: 'Call my phone in 10 minutes' },
+    { icon: MonitorUp, label: 'Pop-up anywhere', on: caps.has('popup'), cap: 'popup', detail: 'Ctrl+Alt+R on PC · notification on phone', prompt: 'Open RAY on my phone' },
   ];
 
   return (
@@ -208,6 +233,96 @@ export function JarvisView({
         {popupMsg && <p className="relative mt-3 text-xs text-slate-500">{popupMsg}</p>}
       </section>
 
+      {(outdated.length > 0 || !pcAny?.online) && (
+        <section className="rounded-2xl border border-amber-300/60 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/5 p-4 sm:p-5">
+          <div className="flex flex-col md:flex-row md:items-center gap-3">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-amber-900 dark:text-amber-200">
+                {!pcAny ? 'Connect your PC to unlock the browser, mouse, coding agents and self-repair' : !pcAny.online ? `${pcAny.name} is offline` : 'One-time update needed'}
+              </p>
+              <p className="text-xs text-amber-800/80 dark:text-amber-200/70 mt-1">
+                {outdated.length > 0
+                  ? `${outdated.map((b) => b.name).join(', ')} run${outdated.length === 1 ? 's' : ''} an older RAY bridge that can't update itself. Run the installer once on that device — from v3.1 on, RAY keeps itself up to date.`
+                  : !pcAny
+                    ? 'Download the installer on your PC and double-click it. It installs RAY in the background and starts on every boot.'
+                    : 'Turn the PC on (RAY starts with it). If it stays offline, run the installer again.'}
+                {bridges.some((b) => /android/i.test(b.os) && !b.capabilities.includes('repair')) && ' Phone: in Termux run the command from Connect → Phone again.'}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2 md:ml-auto shrink-0">
+              <a className={btnPrimary} href={installer('win')}>
+                <Download className="w-3.5 h-3.5" /> Windows installer
+              </a>
+              <a className={btnGhost} href={installer('mac')}>macOS</a>
+              <a className={btnGhost} href={installer('linux')}>Linux</a>
+              {onOpenConnect && (
+                <button type="button" className={btnGhost} onClick={onOpenConnect}>
+                  Phone setup
+                </button>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Accounts */}
+      <section className={`${card} p-4 sm:p-5`}>
+        <SectionTitle icon={Link2} title="Accounts" hint="RAY uses these from any device, by voice or text" tone="text-sky-500" />
+        <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-3.5">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-slate-900 dark:text-slate-100">Google</span>
+              <span className="text-xs text-slate-500 truncate">Gmail · Calendar · Drive · Docs · Sheets · Slides · Tasks · Contacts · YouTube</span>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              {accounts?.google.connected ? (
+                <>
+                  <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400 inline-flex items-center gap-1">
+                    <CheckCircle2 className="w-3.5 h-3.5" /> Connected{accounts.google.email ? ` · ${accounts.google.email}` : ''}
+                  </span>
+                  <button type="button" className={btnGhost} onClick={() => onAskRay('Summarise my unread emails and today’s calendar')}>
+                    Try it
+                  </button>
+                </>
+              ) : accounts?.google.configured ? (
+                <a className={btnPrimary} href={`/api/accounts/google/start?room=${encodeURIComponent(roomId)}&token=${encodeURIComponent(token)}`} target="_blank" rel="noreferrer">
+                  Connect Google
+                </a>
+              ) : (
+                <p className="text-xs text-slate-500">
+                  Server setup needed once: add <code className="font-mono">GOOGLE_OAUTH_CLIENT_ID</code> and <code className="font-mono">GOOGLE_OAUTH_CLIENT_SECRET</code> in Render (README → Accounts).
+                </p>
+              )}
+            </div>
+          </div>
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-3.5">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-slate-900 dark:text-slate-100">Meta</span>
+              <span className="text-xs text-slate-500 truncate">Instagram · Facebook Page · WhatsApp</span>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {(
+                [
+                  ['Instagram API', accounts?.meta.instagram],
+                  ['Facebook Page', accounts?.meta.facebookPage],
+                  ['WhatsApp Cloud', accounts?.meta.whatsapp],
+                ] as const
+              ).map(([label, on]) => (
+                <span
+                  key={label}
+                  className={`text-[11px] px-2 py-0.5 rounded-full ${on ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}
+                >
+                  {label}: {on ? 'on' : 'off'}
+                </span>
+              ))}
+            </div>
+            <p className="mt-2 text-xs text-slate-500">
+              Personal Instagram/WhatsApp have no API: RAY uses them through the browser on your PC and the apps on your phone. Business/creator accounts get full API access with a token in Render.
+            </p>
+          </div>
+        </div>
+      </section>
+
       {/* Abilities */}
       <section className="grid grid-cols-2 lg:grid-cols-3 gap-2.5 sm:gap-3">
         {abilities.map((a) => (
@@ -223,14 +338,15 @@ export function JarvisView({
               </span>
               <span className="text-[13px] sm:text-sm font-semibold text-slate-900 dark:text-slate-100 leading-tight">{a.label}</span>
               <span
-                title={a.on ? 'Ready' : 'Needs the PC bridge online'}
+                title={a.on ? 'Ready' : why(a.cap)}
                 className={`ml-auto shrink-0 text-[10px] font-semibold uppercase tracking-wide sm:px-2 sm:py-0.5 rounded-full ${a.on ? 'sm:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'sm:bg-slate-100 sm:dark:bg-slate-800 text-slate-500'}`}
               >
                 <span className={`sm:hidden inline-block w-2 h-2 rounded-full ${a.on ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'}`} />
-                <span className="hidden sm:inline">{a.on ? 'Ready' : 'Offline'}</span>
+                <span className="hidden sm:inline">{a.on ? 'Ready' : why(a.cap)}</span>
               </span>
             </div>
             <p className="mt-2 text-xs text-slate-500 dark:text-slate-400 line-clamp-2">{a.detail}</p>
+            {!a.on && <p className="sm:hidden mt-1 text-[11px] font-medium text-amber-600 dark:text-amber-400">{why(a.cap)}</p>}
             <p className="hidden sm:block mt-2 text-xs text-blue-600 dark:text-blue-400 opacity-0 group-hover:opacity-100 transition-opacity truncate">Try: “{a.prompt}”</p>
           </button>
         ))}

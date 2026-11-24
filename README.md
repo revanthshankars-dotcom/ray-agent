@@ -78,6 +78,24 @@ RAY runs the coding agents installed on your PC — **Claude Code, Codex CLI, Ge
 - **Self-healing**: a watchdog re-wakes offline bridges and devices with stuck commands, notices failing engines (RAY already routes around them) and writes *System → System Health*, alerting you only on new problems.
 - **Self-building**: ask RAY to improve itself and it runs a coding agent in your local `ray-agent` folder; you review and push.
 
+## Accounts (Google, Instagram/Meta) — one command, the whole app
+
+RAY talks to your accounts **from the server**, so it works from any device, by voice, and in Autopilot — no browser tab needed.
+
+**Google (Gmail, Calendar, Drive, Docs, Sheets, Slides, Tasks, Contacts, YouTube)** — one-time setup:
+1. console.cloud.google.com → create/pick a project → *APIs & Services → Library*: enable Gmail, Calendar, Drive, Docs, Sheets, Slides, Tasks, People and YouTube Data APIs.
+2. *OAuth consent screen*: External, add your Gmail as a **test user** (no Google review needed for your own use).
+3. *Credentials → Create credentials → OAuth client ID → Web application*, authorised redirect URI `https://ray-hub.onrender.com/api/accounts/google/callback`.
+4. Render → ray-hub → Environment: `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` (and set `RELAY_MASTER_SECRET` if not set — it encrypts the stored token).
+5. RAY → JARVIS Core → Accounts → **Connect Google**.
+
+RAY then uses `google_api_request` (any Google REST endpoint, chained until the job is done): "clean my inbox — archive newsletters and label bills", "find the PDF Arun sent and put the totals into my Budget sheet", "move tomorrow's 3 pm to Friday and email everyone". Reads are free, writes need your command, deleting and sending email need one Approve.
+
+**Instagram / Facebook / WhatsApp (Meta)** — Meta only offers APIs for professional accounts:
+- Instagram **Business/Creator** account linked to a Facebook Page → developers.facebook.com app with *Instagram Graph API* → long-lived token → Render `INSTAGRAM_ACCESS_TOKEN` (and `META_PAGE_TOKEN` for the Page). RAY can then publish posts/reels/carousels, read and reply to comments, read insights and answer DMs within Meta's 24-hour rule (`meta_api_request`). Switching a personal Instagram to *Creator* is free in the app's settings.
+- WhatsApp Business: `WHATSAPP_TOKEN` + `WHATSAPP_PHONE_NUMBER_ID`.
+- **Personal** Instagram/WhatsApp: no API exists. RAY reads incoming messages from the phone's notifications and does things through the logged-in browser on your PC (`browse_web` "do", with your approval) or the app on your phone (`operate_computer`, via ADB). Heavy automation of personal accounts can get them rate-limited by Meta, so RAY works at a human pace and asks before posting or sending.
+
 ## JARVIS layer (bridge 3.1)
 
 - **Browser hands** — RAY drives a real Chrome/Edge on your PC (its own "RAY" profile — sign in there once). `browse_web` reads pages as text + numbered buttons/fields and a free model picks one step at a time (open, click, type, scroll, note, done). *Research* mode runs hidden and returns an answer with sources; *Do* mode (forms, bookings, settings) needs one Approve. It never types into password fields and never pays or posts on its own. With the PC offline, research falls back to the cloud.
