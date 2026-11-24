@@ -46,6 +46,7 @@ interface ProviderState {
   countSince?: number;
   lastOkAt?: number;
   lastOkModel?: string;
+  lastFail?: { at: number; msg: string };
 }
 interface Saved {
   day: string;
@@ -221,6 +222,7 @@ export function noteError(id: string, model: string, status: number, message: st
   } else if (/does not support chat|not a chat model|model.*not.*(exist|found)/.test(low)) {
     block(id, model, 'This model cannot chat (skipped)', Date.now() + 24 * 3600_000, true);
   }
+  prov(id).lastFail = { at: Date.now(), msg: msg.replace(/^[^:]*\([^)]*\):\s*/, '').slice(0, 160) || `HTTP ${status}` };
   save();
   return until ? Math.max(60, Math.round((until - Date.now()) / 1000)) : undefined;
 }
@@ -353,7 +355,9 @@ export async function balanceView(id: string): Promise<BalanceView> {
   if (status === 'unknown' && recentOk) status = 'ok';
   let headline = recentOk
     ? `Answering normally (last reply ${new Date(p.lastOkAt!).toISOString().slice(11, 16)} UTC). This provider publishes no remaining-balance numbers.`
-    : 'No numbers from this provider yet — they appear after its next reply (or press Check now).';
+    : p.lastFail && (!p.lastOkAt || p.lastFail.at > p.lastOkAt) && Date.now() - p.lastFail.at < 3 * 3600_000
+      ? `Not answering right now: ${p.lastFail.msg}`
+      : 'No numbers from this provider yet — they appear after its next reply (or press Check now).';
   const wholeBlock = blocks.find((b) => b.scope === '*');
   if (wholeBlock) headline = wholeBlock.reason;
   else if (worst) headline = `${worst.source === 'estimate' ? '≈ ' : ''}${worst.unit === 'credit' ? `${worst.currency || ''} ${worst.remaining.toFixed(2)}`.trim() : fmt(worst.remaining)}${worst.limit ? ` of ${fmt(worst.limit)}` : ''} ${unitLabel(worst)} left${worst.scope && worst.scope !== 'credits' ? ` · ${worst.scope}` : ''}`;

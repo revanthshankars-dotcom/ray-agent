@@ -212,6 +212,7 @@ async function callCompletion(
     });
   } catch (err) {
     const timedOut = err instanceof Error && /timeout|aborted/i.test(`${err.name} ${err.message}`);
+    noteError(p.id, model, timedOut ? 408 : 0, timedOut ? 'did not answer within the time limit' : `network error: ${sanitizeErrorMessage(err)}`);
     throw new ProviderError(`${p.label} ${timedOut ? 'timed out after 30s' : `network error: ${sanitizeErrorMessage(err)}`}`, timedOut ? 408 : 0);
   }
   const json = (await resp.json().catch(() => ({}))) as {
