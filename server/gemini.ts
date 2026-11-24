@@ -488,8 +488,10 @@ for (const decl of [...extendedToolDeclarations, ...callToolDeclarations, ...fil
 }
 for (const d of baseToolDeclarations) {
   if (d.name === 'open_url_on_device') {
+    const props = (d.parameters as { properties?: Record<string, unknown> } | undefined)?.properties;
+    if (props) props.tab = { type: Type.STRING, description: 'auto (default: switch to an already open tab / reuse the tab of the same site) | new (Ray said "new tab") | current (Ray said "here" / "in this tab")' };
     d.description =
-      'OPEN a URL for real in a browser tab / app on Ray’s device (PC bridge, phone bridge or RAY Tabs extension). Never just reply with a link when Ray asks to open something — call this or search_and_open.';
+      'OPEN a URL for real in a browser tab / app on Ray’s device (PC bridge, phone bridge or RAY Tabs extension). RAY reuses tabs like a person: switches to the page if it is already open, loads it in the open tab of the same site, or uses an empty tab — only opens a new tab when needed or when Ray asks. Never just reply with a link when Ray asks to open something — call this or search_and_open.';
   }
   if (d.name === 'open_application') {
     d.description =

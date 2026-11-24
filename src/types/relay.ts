@@ -258,6 +258,7 @@ export interface BrowserTabInfo {
   url: string;
   active: boolean;
   audible?: boolean;
+  lastAccessed?: number;
 }
 
 export interface ToolCallEvent {

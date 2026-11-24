@@ -33,7 +33,7 @@ import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import WebSocket, { WebSocketServer } from 'ws';
 
-const BRIDGE_VERSION = '3.2';
+const BRIDGE_VERSION = '3.3';
 const IS_TERMUX = Boolean(process.env.PREFIX && process.env.PREFIX.includes('com.termux')) || fs.existsSync('/data/data/com.termux');
 const PLATFORM = IS_TERMUX ? 'android' : os.platform();
 const WS_URL = process.env.RELAY_WS_URL || "__RAY_WS_URL__";
@@ -765,7 +765,14 @@ function runSafeCommand(cmd, args, cb) {
 function launchUrlSafely(urlStr, cb) {
   const plat = PLATFORM;
   if (plat === 'android') {
-    runSafeCommand('am', ['start', '-a', 'android.intent.action.VIEW', '-d', urlStr], (out, ok) => {
+    // Chrome on Android reuses the tab it opened earlier for the same "application id", so tagging
+    // each link with its site makes RAY reopen youtube.com in the YouTube tab instead of piling up tabs.
+    let reuse = [];
+    try {
+      const h = new URL(urlStr);
+      if (/^https?:$/.test(h.protocol)) reuse = ['--es', 'com.android.browser.application_id', 'ray.' + h.hostname.replace(/^(www|m)\./, '')];
+    } catch {}
+    runSafeCommand('am', ['start', '-a', 'android.intent.action.VIEW', '-d', urlStr, ...reuse], (out, ok) => {
       if (ok) return cb(out, ok);
       runSafeCommand('termux-open-url', [urlStr], cb);
     });

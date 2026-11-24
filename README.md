@@ -128,6 +128,7 @@ Webhooks (`/api/phone/voice`, `/api/phone/status`) are verified with Twilio's si
 - **Smart home** — JARVIS Core → *Home & always on*: connect Home Assistant (free) with a long-lived token; on your home Wi-Fi it is reached through the PC bridge. Locks, garage doors and alarms ask first.
 - **Hard stops, with your OK** — in browser tasks RAY pauses at password/OTP fields (you type it into a secure box on the approval card: used once, never saved, never shown to the AI; OTPs from your phone's notifications are pre-filled), at Pay / Place-order buttons (shows the amount), and at CAPTCHAs (brings the browser in front of you and continues once you solve it).
 - **Awareness (opt-in)** — RAY knows the app/window you're in and your recent windows (memory only).
+- **Tabs like a person** — before opening anything RAY checks your open tabs (RAY Tabs extension 1.1): if the page is already open it switches to it, if the site is open it loads the page in that tab, an empty new tab is reused, and only otherwise a new tab opens. Calls, documents and playing media are never navigated away; say "in a new tab" or "here" to choose. On Android, links to the same site reuse one Chrome tab.
 - **Free 24/7 server** — Oracle Cloud Always Free: [`deploy/oracle/README.md`](deploy/oracle/README.md), one command (`deploy/oracle/setup.sh`).
 
 ## Skills from Orbit

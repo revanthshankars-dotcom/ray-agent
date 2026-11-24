@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "RAY Tabs",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Lets your RAY assistant open, find, switch, read and close browser tabs on command. Pairs automatically when you open RAY.",
   "permissions": ["tabs", "storage", "scripting", "alarms", "notifications"],
   "host_permissions": ["<all_urls>"],

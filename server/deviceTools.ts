@@ -108,6 +108,7 @@ export const extendedToolDeclarations: FunctionDeclaration[] = [
           description: 'google | youtube | youtube_music | spotify | maps | amazon | flipkart | wikipedia | github | reddit | x | instagram | linkedin | news | images | web',
         },
         openTopResult: { type: Type.BOOLEAN, description: 'Open the first result directly instead of the results page.' },
+        tab: { type: Type.STRING, description: 'auto (default: switch to the tab if that page is open, load it in the open tab of the same site, use an empty tab) | new (Ray said "new tab") | current (Ray said "here" / "in this tab")' },
         targetDevice: { type: Type.STRING, description: 'Device name/type (pc, phone, laptop, chrome) or "auto".' },
       },
       required: ['query'],
@@ -144,14 +145,16 @@ export const extendedToolDeclarations: FunctionDeclaration[] = [
   {
     name: 'browser_tab_action',
     description:
-      'Control browser tabs through the RAY Tabs extension: open (new tab with url), focus (switch to a tab), close, reload, mute, read (get the visible text of a tab).',
+      'Control browser tabs through the RAY Tabs extension: open (reuses an open tab of that site unless tab="new"), navigate (load a url in a given tab), focus (switch to a tab), close, reload, mute, read (get the visible text of a tab).',
     parameters: {
       type: Type.OBJECT,
       properties: {
-        action: { type: Type.STRING, description: 'open | focus | close | reload | mute | read' },
+        action: { type: Type.STRING, description: 'open | navigate (load url in tabId) | focus | close | reload | mute | read' },
         tabId: { type: Type.NUMBER, description: 'Tab id from list_browser_tabs.' },
         match: { type: Type.STRING, description: 'Text to match against tab title/url if tabId is unknown.' },
-        url: { type: Type.STRING, description: 'URL for action=open.' },
+        url: { type: Type.STRING, description: 'URL for action=open / navigate.' },
+        tab: { type: Type.STRING, description: 'auto (default: switch to the tab if that page is open, load it in the open tab of the same site, use an empty tab) | new (Ray said "new tab") | current (Ray said "here" / "in this tab")' },
+
         targetDevice: { type: Type.STRING, description: 'Which browser/computer.' },
       },
       required: ['action'],
@@ -286,28 +289,122 @@ function siteSearchUrl(site: string, q: string, android: boolean): string {
   }
 }
 
+function tabModeOf(args: Record<string, unknown>): TabMode {
+  const t = String(args.tab || '').toLowerCase();
+  return t === 'new' ? 'new' : t === 'current' || t === 'here' || t === 'this' ? 'current' : 'auto';
+}
+
 function isAndroid(d: DeviceInfo | null): boolean {
   return Boolean(d && /android/i.test(d.os));
 }
 
-/** Open a URL for real on the best device that can execute it. */
+// ---------------------------------------------------------------------------
+// Smart tab reuse — like a person would: switch to the tab that is already open, load the page in
+// the tab of the same site, use an empty new-tab page, and only otherwise open a new tab.
+// ---------------------------------------------------------------------------
+
+export type TabMode = 'auto' | 'new' | 'current';
+type TabLike = { id: number; title: string; url: string; active: boolean; audible?: boolean; lastAccessed?: number };
+export type TabPlan = { kind: 'focus' | 'navigate'; tabId: number; reason: string } | { kind: 'new'; reason: string };
+
+const BLANK_TAB = /^(chrome|edge|brave|opera|vivaldi):\/\/(newtab|new-tab-page|startpageshared)|^about:(blank|newtab|home)|^chrome-search:\/\/local-ntp|^edge:\/\/newtab/i;
+// Never load something else over these: live calls, editors, chats in progress.
+const KEEP_SEPARATE = /^(meet\.google\.com|zoom\.us|.*\.zoom\.us|teams\.microsoft\.com|teams\.live\.com|docs\.google\.com|sheets\.google\.com|slides\.google\.com|colab\.research\.google\.com|notion\.so|.*\.notion\.site|figma\.com|canva\.com|web\.whatsapp\.com|discord\.com|app\.slack\.com|replit\.com|codepen\.io|stackblitz\.com|vscode\.dev|github\.dev|chat\.openai\.com|chatgpt\.com|claude\.ai|gemini\.google\.com)$/i;
+
+function siteOf(u: string): string {
+  try {
+    return new URL(u).hostname.toLowerCase().replace(/^(www|m|mobile)\./, '');
+  } catch {
+    return '';
+  }
+}
+function normUrl(u: string): string {
+  try {
+    const x = new URL(u);
+    x.hash = '';
+    for (const k of [...x.searchParams.keys()]) if (/^(utm_|fbclid$|gclid$|si$|feature$|ref$|ref_src$)/i.test(k)) x.searchParams.delete(k);
+    return `${siteOf(u)}${x.pathname.replace(/\/+$/, '')}${x.searchParams.toString() ? `?${x.searchParams.toString()}` : ''}`.toLowerCase();
+  } catch {
+    return u.trim().toLowerCase();
+  }
+}
+const isSiteRoot = (u: string) => {
+  try {
+    const x = new URL(u);
+    return (x.pathname === '/' || x.pathname === '') && !x.search;
+  } catch {
+    return false;
+  }
+};
+const recency = (t: TabLike) => (t.active ? 2e13 : 0) + (t.lastAccessed || 0);
+
+export function planTabOpen(tabs: TabLike[], url: string, mode: TabMode = 'auto'): TabPlan {
+  if (mode === 'new' || !tabs.length) return { kind: 'new', reason: mode === 'new' ? 'asked for a new tab' : 'no tabs known' };
+  const byRecent = [...tabs].sort((a, b) => recency(b) - recency(a));
+  if (mode === 'current') {
+    const cur = byRecent[0];
+    return cur ? { kind: 'navigate', tabId: cur.id, reason: 'opened in the current tab' } : { kind: 'new', reason: 'no current tab' };
+  }
+  const want = normUrl(url);
+  const exact = byRecent.find((t) => normUrl(t.url) === want);
+  if (exact) return { kind: 'focus', tabId: exact.id, reason: 'that page is already open' };
+  const site = siteOf(url);
+  if (site) {
+    const same = byRecent.filter((t) => siteOf(t.url) === site);
+    if (same.length && isSiteRoot(url)) return { kind: 'focus', tabId: same[0].id, reason: `${site} is already open` };
+    const reusable = same.find((t) => !t.audible && !KEEP_SEPARATE.test(site));
+    if (reusable) return { kind: 'navigate', tabId: reusable.id, reason: `reused your ${site} tab` };
+  }
+  const blank = byRecent.find((t) => BLANK_TAB.test(t.url) || !t.url);
+  if (blank) return { kind: 'navigate', tabId: blank.id, reason: 'used the empty new tab' };
+  const busy = site && byRecent.some((t) => siteOf(t.url) === site);
+  return { kind: 'new', reason: busy ? `kept your ${site} tab as it is (call, document or playing media)` : site ? `${site} was not open` : 'new page' };
+}
+
+/** Open a URL for real on the best device, reusing an open tab when that makes sense. */
 export async function openUrlOnBestDevice(
   roomId: string,
   url: string,
   title: string,
-  targetQuery: string
+  targetQuery: string,
+  tabMode: TabMode = 'auto'
 ): Promise<{ summary: string; device?: string }> {
   const exec = pickExecutorDevice(roomId, targetQuery, 'url');
+  let outdatedTabs = false;
+  if (exec?.capabilities?.includes('browser-tabs')) {
+    const tabs = getBrowserTabs(roomId).find((b) => b.deviceId === exec.id)?.tabs || [];
+    const plan = planTabOpen(tabs, url, tabMode);
+    if (plan.kind !== 'new') {
+      const { command, summary } = await dispatchDeviceCommand({
+        roomId,
+        type: 'bridge_command',
+        targetQuery: exec.id,
+        source: 'assistant',
+        payload: plan.kind === 'focus' ? { action: 'tab_focus', tabId: plan.tabId } : { action: 'tab_navigate', tabId: plan.tabId, url },
+        waitForAckMs: 8000,
+      });
+      const r = command.results[0];
+      if (r?.status === 'completed') return { summary: `${summary} (${plan.reason})`, device: exec.name };
+      // Older RAY Tabs extensions don't know tab_navigate — fall back to a new tab and say how to update.
+      if (plan.kind === 'navigate' && /unknown tab action/i.test(String(r?.message || ''))) outdatedTabs = true;
+    }
+  }
   const { summary } = await dispatchDeviceCommand({
     roomId,
     type: 'open_url',
     // Executor (bridge / tabs extension) opens a real tab; otherwise RAY browser clients try window.open.
     targetQuery: exec ? exec.id : targetQuery || 'all',
     source: 'assistant',
-    payload: { url, title },
+    payload: { url, title, tabMode },
     waitForAckMs: 6000,
   });
-  return { summary, device: exec?.name };
+  const noTabs = exec && !exec.capabilities?.includes('browser-tabs') && !isAndroid(exec) && !getBrowserTabs(roomId).length;
+  const hint = outdatedTabs
+    ? ' (new tab — update the RAY Tabs extension once: Connections → Browser extension → download, unzip over the old folder, then Reload it in chrome://extensions)'
+    : noTabs
+      ? ' (new tab — install the RAY Tabs extension so RAY can reuse tabs you already have open)'
+      : '';
+  return { summary: summary + hint, device: exec?.name };
 }
 
 // ---------------------------------------------------------------------------
@@ -324,7 +421,7 @@ export async function executeExtendedTool(
     case 'open_url_on_device': {
       const url = String(args.url || '');
       if (!/^(https?|whatsapp|spotify|tg|mailto|tel|sms|instagram):/i.test(url)) return { result: `Refused to open unsupported URL: ${url}` };
-      const out = await openUrlOnBestDevice(roomId, url, String(args.title || url), String(args.targetDevice || 'auto'));
+      const out = await openUrlOnBestDevice(roomId, url, String(args.title || url), String(args.targetDevice || 'auto'), tabModeOf(args));
       return { result: `${out.summary}${out.device ? ` (executed by ${out.device})` : ''}` };
     }
 
@@ -352,7 +449,7 @@ export async function executeExtendedTool(
           }
         }
       }
-      const out = await openUrlOnBestDevice(roomId, url, label, target);
+      const out = await openUrlOnBestDevice(roomId, url, label, target, tabModeOf(args));
       return { result: `Opened ${label} → ${url}. ${out.summary}` };
     }
 
@@ -419,9 +516,13 @@ export async function executeExtendedTool(
           }
         }
       }
-      if (action === 'open' && !browser) {
-        const out = await openUrlOnBestDevice(roomId, String(args.url || ''), String(args.url || ''), String(args.targetDevice || 'auto'));
+      if (action === 'open') {
+        const out = await openUrlOnBestDevice(roomId, String(args.url || ''), String(args.url || ''), browser?.deviceId || String(args.targetDevice || 'auto'), tabModeOf(args));
         return { result: out.summary };
+      }
+      if (action === 'navigate' && tabId && args.url) {
+        const { summary } = await dispatchDeviceCommand({ roomId, type: 'bridge_command', targetQuery: browser!.deviceId, source: 'assistant', payload: { action: 'tab_navigate', tabId, url: args.url }, waitForAckMs: 8000 });
+        return { result: summary };
       }
       if (!browser) return { result: 'RAY Tabs extension is not connected on any browser.' };
       if (action !== 'open' && !tabId) return { result: `No tab matched "${match}".` };

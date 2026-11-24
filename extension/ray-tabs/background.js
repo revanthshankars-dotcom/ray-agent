@@ -1,6 +1,6 @@
 // RAY Tabs — background service worker.
 // Connects this browser to the RAY hub as a device with "browser-tabs" capability and
-// executes tab commands (open / focus / close / reload / mute / read) on Ray's command.
+// executes tab commands (open / navigate / focus / close / reload / mute / read) on Ray's command.
 
 const KEEPALIVE_MS = 20000;
 let ws = null;
@@ -25,7 +25,7 @@ function browserLabel() {
 
 async function snapshotTabs() {
   const tabs = await chrome.tabs.query({});
-  return tabs.slice(0, 80).map((t) => ({ id: t.id, windowId: t.windowId, title: t.title || '', url: t.url || '', active: Boolean(t.active), audible: Boolean(t.audible) }));
+  return tabs.slice(0, 80).map((t) => ({ id: t.id, windowId: t.windowId, title: t.title || '', url: t.url || '', active: Boolean(t.active), audible: Boolean(t.audible), lastAccessed: t.lastAccessed || 0 }));
 }
 
 let tabsTimer = null;
@@ -90,13 +90,55 @@ async function readTabText(tabId) {
   return String(res?.result || '');
 }
 
+// Reuse tabs like a person: switch to the page if it's open, load it in the open tab of the same
+// site, use an empty new tab, and only otherwise open a new one. Calls, editors and playing media
+// are never navigated away.
+const BLANK_TAB = /^(chrome|edge|brave|opera|vivaldi):\/\/(newtab|new-tab-page|startpageshared)|^about:(blank|newtab|home)|^chrome-search:\/\/local-ntp/i;
+const KEEP_SEPARATE = /^(meet\.google\.com|zoom\.us|.*\.zoom\.us|teams\.microsoft\.com|teams\.live\.com|docs\.google\.com|sheets\.google\.com|slides\.google\.com|colab\.research\.google\.com|notion\.so|.*\.notion\.site|figma\.com|canva\.com|web\.whatsapp\.com|discord\.com|app\.slack\.com|replit\.com|codepen\.io|stackblitz\.com|vscode\.dev|github\.dev|chat\.openai\.com|chatgpt\.com|claude\.ai|gemini\.google\.com)$/i;
+function siteOf(u) {
+  try { return new URL(u).hostname.toLowerCase().replace(/^(www|m|mobile)\./, ''); } catch { return ''; }
+}
+function normUrl(u) {
+  try {
+    const x = new URL(u);
+    x.hash = '';
+    for (const k of [...x.searchParams.keys()]) if (/^(utm_|fbclid$|gclid$|si$|feature$|ref$|ref_src$)/i.test(k)) x.searchParams.delete(k);
+    return (siteOf(u) + x.pathname.replace(/\/+$/, '') + (x.searchParams.toString() ? '?' + x.searchParams.toString() : '')).toLowerCase();
+  } catch { return String(u).trim().toLowerCase(); }
+}
+function isSiteRoot(u) {
+  try { const x = new URL(u); return (x.pathname === '/' || x.pathname === '') && !x.search; } catch { return false; }
+}
+async function smartOpen(url, mode) {
+  const [focusedWin] = await chrome.windows.getAll({ windowTypes: ['normal'] }).then((w) => w.filter((x) => x.focused));
+  const tabs = (await chrome.tabs.query({})).sort((a, b) =>
+    (b.active && focusedWin && b.windowId === focusedWin.id ? 1 : 0) - (a.active && focusedWin && a.windowId === focusedWin.id ? 1 : 0) || (b.lastAccessed || 0) - (a.lastAccessed || 0));
+  const show = async (t) => { await chrome.tabs.update(t.id, { active: true }); await chrome.windows.update(t.windowId, { focused: true }); };
+  const go = async (t) => { await chrome.tabs.update(t.id, { url, active: true }); await chrome.windows.update(t.windowId, { focused: true }); };
+  if (mode !== 'new' && tabs.length) {
+    if (mode === 'current') { await go(tabs[0]); return 'Opened in the current tab'; }
+    const want = normUrl(url);
+    const exact = tabs.find((t) => normUrl(t.url || '') === want);
+    if (exact) { await show(exact); return 'Switched to the tab that already has it'; }
+    const site = siteOf(url);
+    const same = site ? tabs.filter((t) => siteOf(t.url || '') === site) : [];
+    if (same.length && isSiteRoot(url)) { await show(same[0]); return 'Switched to your ' + site + ' tab'; }
+    const reusable = same.find((t) => !t.audible && !KEEP_SEPARATE.test(site));
+    if (reusable) { await go(reusable); return 'Opened in your ' + site + ' tab'; }
+    const blank = tabs.find((t) => !t.url || BLANK_TAB.test(t.url));
+    if (blank) { await go(blank); return 'Opened in the empty tab'; }
+  }
+  const tab = await chrome.tabs.create({ url, active: true });
+  await chrome.windows.update(tab.windowId, { focused: true });
+  return 'Opened in a new tab';
+}
+
 async function handleCommand(cmd, deviceId) {
   const p = cmd.payload || {};
   try {
     if (cmd.type === 'open_url' && p.url) {
-      const tab = await chrome.tabs.create({ url: String(p.url), active: true });
-      await chrome.windows.update(tab.windowId, { focused: true });
-      return ack(cmd, deviceId, 'completed', 'Opened ' + (p.title || p.url) + ' in a new tab');
+      const r = await smartOpen(String(p.url), String(p.tabMode || 'auto'));
+      return ack(cmd, deviceId, 'completed', r + ': ' + (p.title || p.url));
     }
     if (cmd.type === 'notify') {
       chrome.notifications.create({ type: 'basic', iconUrl: 'icon.png', title: String(p.title || 'RAY'), message: String(p.message || '') });
@@ -114,6 +156,11 @@ async function handleCommand(cmd, deviceId) {
     }
     if (!tabId) return ack(cmd, deviceId, 'failed', 'No tab id given');
     const tab = await chrome.tabs.get(tabId);
+    if (action === 'tab_navigate' && p.url) {
+      await chrome.tabs.update(tabId, { url: String(p.url), active: true });
+      await chrome.windows.update(tab.windowId, { focused: true });
+      return ack(cmd, deviceId, 'completed', 'Opened ' + p.url + ' in your "' + (tab.title || 'current') + '" tab');
+    }
     if (action === 'tab_focus') {
       await chrome.tabs.update(tabId, { active: true });
       await chrome.windows.update(tab.windowId, { focused: true });
