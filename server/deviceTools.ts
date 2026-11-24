@@ -51,6 +51,7 @@ const ACTION_TOOLS: Record<string, RegExp> = {
   skill_remove: /\b(remove|delete|uninstall|drop|disable)\b/i,
   inbox_routine: /\b(check|handle|manage|routine|enable|start|turn|set|run|stop|disable|pause|twice|every|daily|inbox|email)\b/i,
   learn_me_from_email: /\b(learn|know|study|read|teach|understand|profile|onboard|who i am)\b/i,
+  social_call: /\b(call|ring|dial|phone|video|facetime)\b/i,
   whatsapp: /\b(send|text|message|reply|tell|forward|share|post|write|say|answer|wish|invite|remind)\b/i,
   instagram: /\b(send|dm|message|reply|post|upload|share|publish|comment|like|write|say)\b/i,
   browser_page: /\b(click|press|type|fill|enter|write|reply|send|post|submit|sign in|log ?in|select|choose|check|tick|add|book|order|buy|scroll|go|open|do)\b/i,

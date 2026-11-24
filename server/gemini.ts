@@ -44,6 +44,7 @@ import { browserTabsToolDeclarations, executeBrowserTabsTool } from './browserTa
 import { askToolDeclarations, executeAskTool } from './askUser.ts';
 import { executeWhatsAppTool, whatsappToolDeclarations } from './whatsappLink.ts';
 import { executeInstagramTool, instagramToolDeclarations } from './instagramWeb.ts';
+import { executeSocialCallTool, socialCallToolDeclarations } from './socialCall.ts';
 import { lessonsExcerpt, withRecallAsync } from './learning.ts';
 import { checkActionPolicy, executeExtendedTool, extendedToolDeclarations } from './deviceTools.ts';
 import type {
@@ -485,7 +486,7 @@ export const baseToolDeclarations: FunctionDeclaration[] = [
 ];
 
 // Extended tools (search & open, apps, tabs, messages, wake) — replace older duplicates by name.
-for (const decl of [...extendedToolDeclarations, ...callToolDeclarations, ...fileIndexToolDeclarations, ...computerUseToolDeclarations, ...codingAgentToolDeclarations, ...jarvisToolDeclarations, ...accountToolDeclarations, ...connectorToolDeclarations, ...phoneToolDeclarations, ...skillToolDeclarations, ...inboxToolDeclarations, ...videoToolDeclarations, ...homeToolDeclarations, ...awarenessToolDeclarations, ...browserTabsToolDeclarations, ...askToolDeclarations, ...whatsappToolDeclarations, ...instagramToolDeclarations]) {
+for (const decl of [...extendedToolDeclarations, ...callToolDeclarations, ...fileIndexToolDeclarations, ...computerUseToolDeclarations, ...codingAgentToolDeclarations, ...jarvisToolDeclarations, ...accountToolDeclarations, ...connectorToolDeclarations, ...phoneToolDeclarations, ...skillToolDeclarations, ...inboxToolDeclarations, ...videoToolDeclarations, ...homeToolDeclarations, ...awarenessToolDeclarations, ...browserTabsToolDeclarations, ...askToolDeclarations, ...whatsappToolDeclarations, ...instagramToolDeclarations, ...socialCallToolDeclarations]) {
   const idx = baseToolDeclarations.findIndex((d) => d.name === decl.name);
   if (idx >= 0) baseToolDeclarations[idx] = decl;
   else baseToolDeclarations.push(decl);
@@ -641,7 +642,7 @@ Behavioral Guidelines:
 29. VIDEOS: "watch / summarise this video" or a course video link → watch_video (timestamps); save what matters with learn_about or a Knowledge note when Ray wants to keep it.
 30. HOME: lights, fans, AC, plugs, TV, blinds, locks, scenes → home_control (check names with home_devices). "Goodnight" style requests = several home_control calls. Locks/garage/alarm wait for Ray's approval.
 31. HARD STOPS: passwords, OTP codes, payments and CAPTCHAs are never skipped silently and never guessed. Ask Ray's approval first; after he approves, RAY can type a password/OTP he enters in the secure prompt, press Pay, or bring the CAPTCHA page in front for him to solve, then continue the task.
-34. WHATSAPP & INSTAGRAM (free): WhatsApp → the whatsapp tool (Ray's own account linked to RAY: chats, read, send, send_media, download); if it is not linked, fall back to read_incoming_messages / send_chat_message on the phone. Instagram (personal) → the instagram tool (instagram.com in RAY's browser on the PC: dms, read_dm, send_dm, feed, stories, profile, post/reel from a PC file, comment, like); professional accounts can also use meta_api_request. Only send or post what Ray asked for — never mass-message.
+34. WHATSAPP & INSTAGRAM (free): WhatsApp → the whatsapp tool (Ray's own account linked to RAY: chats, read, send, send_media, download); if it is not linked, fall back to read_incoming_messages / send_chat_message on the phone. Instagram (personal) → the instagram tool (instagram.com in RAY's browser on the PC: dms, read_dm, send_dm, feed, stories, profile, post/reel from a PC file, comment, like); professional accounts can also use meta_api_request. Only send or post what Ray asked for — never mass-message. "Call / video call X on WhatsApp or Instagram" → social_call (app, to, video). A call between Ray's own devices → call_device; his real phone number → phone_call_me.
 33. ASK, DON'T GUESS: mid-task, when something is ambiguous, risky, costs money, contacts a person, or needs Ray's choice (which one, send or not, how much), call ask_user with a short question and options — it reaches him on any device (a pop-up on his Android even when the RAY app is closed, push, a ring, a phone call) and returns his answer; then carry on. Don't ask about things you can safely decide or look up yourself. Video calls between his devices → call_device with video=true.
 32. RAY'S OWN BROWSER vs RAY'S BROWSER: "this page / this tab / what I'm reading / reply here / fill this" → browser_page in Ray's own browser (his logins; read first, then click/type by element number). Old visits or saved links → browser_history. Research or tasks on sites he isn't on → browse_web.
 
@@ -947,6 +948,8 @@ export async function executeDeviceTool(
   if (waOut) return waOut;
   const igOut = await executeInstagramTool(roomId, name, args, { confirmed });
   if (igOut) return igOut;
+  const scOut = await executeSocialCallTool(roomId, name, args, { confirmed });
+  if (scOut) return scOut;
 
   switch (name) {
     case 'list_connected_devices': {

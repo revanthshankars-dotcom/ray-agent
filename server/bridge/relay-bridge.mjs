@@ -33,7 +33,7 @@ import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import WebSocket, { WebSocketServer } from 'ws';
 
-const BRIDGE_VERSION = '3.7';
+const BRIDGE_VERSION = '3.8';
 const IS_TERMUX = Boolean(process.env.PREFIX && process.env.PREFIX.includes('com.termux')) || fs.existsSync('/data/data/com.termux');
 const PLATFORM = IS_TERMUX ? 'android' : os.platform();
 const WS_URL = process.env.RELAY_WS_URL || "__RAY_WS_URL__";
@@ -2217,6 +2217,7 @@ async function homeAssistantAction(req) {
 
 async function jarvisAction(action, req) {
   if (action === 'home_assistant') return await homeAssistantAction(req);
+  if (action === 'lookup_contact') return await new Promise((res) => lookupContactNumber(String(req.name || ''), (number, label) => res(number ? { ok: true, data: { number, name: label } } : { ok: false, error: label })));
   if (action === 'browser') return await browserAction(req);
   if (action === 'diagnose') return { ok: true, data: await diagnoseDevice() };
   if (action === 'repair') return await repairAction(req);

@@ -467,3 +467,15 @@ export async function executeWhatsAppTool(
 
 /** Internals for tests (message parsing, chat lookup, session state). */
 export const __whatsappInternals = { session, storeMessage, textOf, findChat };
+
+/** Phone number (digits) for a contact name/number via the linked WhatsApp, or null. */
+export function whatsappNumberFor(roomId: string, who: string): { digits: string; name: string } | null {
+  const s = sessions.get(roomId);
+  const t = who.trim();
+  const direct = t.replace(/[^\d]/g, '');
+  if (direct.length >= 8 && /^[+\d\s()-]+$/.test(t)) return { digits: direct, name: t };
+  if (!s) return null;
+  const jid = findChat(s, t);
+  if (!jid || !jid.endsWith('@s.whatsapp.net')) return null;
+  return { digits: jid.replace(/@.*/, '').replace(/:.*/, ''), name: nameFor(s, jid) };
+}

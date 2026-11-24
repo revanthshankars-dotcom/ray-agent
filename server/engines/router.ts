@@ -315,7 +315,8 @@ const TOOL_TOPICS: Array<[RegExp, string[]]> = [
   [/\b(open ray|show ray|show yourself|pop ?up|bring up ray)\b/i, ['show_ray']],
   [/\b(gmail|email|emails|mail|inbox|calendar|meeting|event|drive|doc|docs|document|sheet|sheets|spreadsheet|slides?|presentation|tasks?|contacts?|youtube|playlist|google)\b/i, ['google_api_request', 'connected_accounts']],
   [/\b(instagram|insta|ig|reel|reels|story|stories|followers|dm|dms)\b/i, ['instagram', 'meta_api_request', 'connected_accounts', 'read_incoming_messages']],
-  [/\b(whatsapp|whats app|wa|group chat|voice note)\b/i, ['whatsapp', 'read_incoming_messages', 'send_chat_message']],
+  [/\b(whatsapp|whats app|wa|group chat|voice note)\b/i, ['whatsapp', 'read_incoming_messages', 'send_chat_message', 'social_call']],
+  [/\b(call|video call|ring|facetime)\b[\s\S]*\b(whatsapp|instagram|insta|ig)\b|\b(whatsapp|instagram|insta|ig)\b[\s\S]*\b(call|video call)\b/i, ['social_call']],
   [/\b(facebook|fb|post|posts|comments?|meta)\b/i, ['meta_api_request', 'connected_accounts', 'browse_web', 'instagram']],
 ];
 
