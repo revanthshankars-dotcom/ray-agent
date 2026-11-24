@@ -181,6 +181,7 @@ export function JarvisView({
   const [haMsg, setHaMsg] = useState('');
   const [aware, setAware] = useState<boolean | null>(null);
   const [pinPopups, setPinPopups] = useState<boolean | null>(null);
+  const [defaultBrowser, setDefaultBrowser] = useState('');
   const [wa, setWa] = useState<{ status: string; qr: string | null; pairingCode: string | null; me: { id: string; name?: string } | null; chats: number; error: string | null } | null>(null);
   const [waQr, setWaQr] = useState('');
   const [waPhone, setWaPhone] = useState('');
@@ -205,7 +206,11 @@ export function JarvisView({
       const ar = await authFetch(`/api/awareness?room=${encodeURIComponent(roomId)}`, roomId);
       if (ar.ok) setAware(((await ar.json()) as { on: boolean }).on);
       const up = await authFetch(`/api/ui-prefs?room=${encodeURIComponent(roomId)}`, roomId);
-      if (up.ok) setPinPopups(((await up.json()) as { pinPopups: boolean }).pinPopups);
+      if (up.ok) {
+        const p = (await up.json()) as { pinPopups: boolean; defaultBrowser?: string };
+        setPinPopups(p.pinPopups);
+        setDefaultBrowser(p.defaultBrowser || '');
+      }
       const wr = await authFetch(`/api/whatsapp?room=${encodeURIComponent(roomId)}`, roomId);
       if (wr.ok) setWa(await wr.json());
     } catch {
@@ -402,6 +407,11 @@ export function JarvisView({
   const togglePin = async () => {
     const r = await authFetch('/api/ui-prefs', roomId, { method: 'POST', body: JSON.stringify({ roomId, pinPopups: !pinPopups }) });
     if (r.ok) setPinPopups(((await r.json()) as { pinPopups: boolean }).pinPopups);
+  };
+  const saveDefaultBrowser = async (b: string) => {
+    setDefaultBrowser(b);
+    const r = await authFetch('/api/ui-prefs', roomId, { method: 'POST', body: JSON.stringify({ roomId, defaultBrowser: b }) });
+    if (r.ok) setDefaultBrowser(((await r.json()) as { defaultBrowser?: string }).defaultBrowser || '');
   };
   const floatOk = typeof window !== 'undefined' && 'documentPictureInPicture' in window;
   const toggleAware = async () => {
@@ -829,6 +839,24 @@ export function JarvisView({
                   <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${pinPopups ? 'translate-x-4' : ''}`} />
                 </button>
                 Keep RAY’s pop-ups (Hey Ray, questions, other devices) pinned on top until you close them — Windows &amp; Linux PC bridge
+              </label>
+              <label className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-600 dark:text-slate-300">
+                <span className="font-medium text-slate-700 dark:text-slate-200">Open links in</span>
+                <select
+                  aria-label="Default browser for RAY"
+                  value={defaultBrowser}
+                  onChange={(e) => void saveDefaultBrowser(e.target.value)}
+                  className="rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-[11px]"
+                >
+                  <option value="">PC’s default browser</option>
+                  <option value="chrome">Chrome</option>
+                  <option value="brave">Brave</option>
+                  <option value="edge">Edge</option>
+                  <option value="firefox">Firefox</option>
+                  <option value="opera">Opera</option>
+                  <option value="vivaldi">Vivaldi</option>
+                </select>
+                <span>Saying “in Chrome” / “in Brave” still picks that one. RAY reuses open tabs in browsers that have the RAY Tabs extension.</span>
               </label>
             </div>
             <div>

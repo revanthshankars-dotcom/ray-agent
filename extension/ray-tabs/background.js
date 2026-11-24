@@ -19,7 +19,10 @@ async function getConfig() {
 
 function browserLabel() {
   const ua = navigator.userAgent;
-  const name = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Brave/.test(ua) ? 'Brave' : 'Chrome';
+  // Brave's user agent is identical to Chrome's — its brand list and navigator.brave give it away.
+  const brands = ((navigator.userAgentData && navigator.userAgentData.brands) || []).map((b) => b.brand).join(' ');
+  const brave = Boolean(navigator.brave) || /Brave/.test(brands) || /Brave/.test(ua);
+  const name = /Edg\//.test(ua) || /Edge/.test(brands) ? 'Edge' : /OPR\//.test(ua) || /Opera/.test(brands) ? 'Opera' : /Vivaldi/.test(ua) ? 'Vivaldi' : brave ? 'Brave' : 'Chrome';
   const osName = /Windows/.test(ua) ? 'Windows' : /Mac OS/.test(ua) ? 'Mac' : /CrOS/.test(ua) ? 'ChromeOS' : /Android/.test(ua) ? 'Android' : 'Linux';
   return { name, osName };
 }
@@ -54,7 +57,7 @@ async function connect() {
       event: 'device:register',
       data: {
         id: cfg.deviceId,
-        name: cfg.deviceName || `${name} on ${osName} (RAY Tabs)`,
+        name: cfg.deviceName && !/^(Chrome|Brave|Edge|Opera|Vivaldi) on \w+ \(RAY Tabs\)$/.test(cfg.deviceName) ? cfg.deviceName : `${name} on ${osName} (RAY Tabs)`,
         type: 'desktop',
         os: osName,
         browser: name + ' extension',

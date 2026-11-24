@@ -19,8 +19,15 @@ import {
   getIncomingMessages,
   getRoomDevices,
   markMessagesRead,
+  browserOfDevice,
+  normalizeBrowserName,
   pickExecutorDevice,
 } from './hub.ts';
+import { getUiPrefs } from './uiPrefs.ts';
+import { findContacts, resolveContact } from './contactFinder.ts';
+import { executeWhatsAppTool, whatsappStatus } from './whatsappLink.ts';
+import { executeInstagramTool } from './instagramWeb.ts';
+import { browserBridge } from './browserAgent.ts';
 import { buildComposeLink, metaStatus, sendInstagramDm, sendWhatsAppCloud } from './meta.ts';
 import { isMcpReadOnlyCall } from './mcpConnectors.ts';
 import type { ConfirmationRequest, DeviceInfo } from '../src/types/relay.ts';
@@ -105,7 +112,7 @@ export const extendedToolDeclarations: FunctionDeclaration[] = [
   {
     name: 'search_and_open',
     description:
-      'Search the web / a site and OPEN the result in a real browser tab or app on Ray’s device (PC, phone). Use whenever Ray says "open/play/search/show/pull up X". Prefer this over returning links. Set openTopResult=true to open the best result directly (e.g. play the top YouTube video).',
+      'Search the web / a site and OPEN the result in a real browser tab or app on Ray’s device (PC, phone). Use whenever Ray says "open/play/search/show/pull up X". Prefer this over returning links. Set openTopResult=true to open the best result directly (e.g. play the top YouTube video). Not for people: to message, call or open a chat with someone use whatsapp / instagram / social_call with their name.',
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -116,6 +123,7 @@ export const extendedToolDeclarations: FunctionDeclaration[] = [
         },
         openTopResult: { type: Type.BOOLEAN, description: 'Open the first result directly instead of the results page.' },
         tab: { type: Type.STRING, description: 'auto (default: switch to the tab if that page is open, load it in the open tab of the same site, use an empty tab) | new (Ray said "new tab") | current (Ray said "here" / "in this tab")' },
+        browser: { type: Type.STRING, description: 'Only when Ray names a browser ("in chrome", "on brave"): chrome | brave | edge | firefox | opera. Otherwise leave empty — his default browser setting applies.' },
         targetDevice: { type: Type.STRING, description: 'Device name/type (pc, phone, laptop, chrome) or "auto".' },
       },
       required: ['query'],
@@ -161,7 +169,7 @@ export const extendedToolDeclarations: FunctionDeclaration[] = [
         match: { type: Type.STRING, description: 'Text to match against tab title/url if tabId is unknown.' },
         url: { type: Type.STRING, description: 'URL for action=open / navigate.' },
         tab: { type: Type.STRING, description: 'auto (default: switch to the tab if that page is open, load it in the open tab of the same site, use an empty tab) | new (Ray said "new tab") | current (Ray said "here" / "in this tab")' },
-
+        browser: { type: Type.STRING, description: 'Only when Ray names a browser ("in chrome", "on brave"): chrome | brave | edge | firefox | opera. Otherwise leave empty — his default browser setting applies.' },
         targetDevice: { type: Type.STRING, description: 'Which browser/computer.' },
       },
       required: ['action'],
@@ -374,10 +382,17 @@ export async function openUrlOnBestDevice(
   url: string,
   title: string,
   targetQuery: string,
-  tabMode: TabMode = 'auto'
+  tabMode: TabMode = 'auto',
+  browserArg = ''
 ): Promise<{ summary: string; device?: string }> {
-  const exec = pickExecutorDevice(roomId, targetQuery, 'url');
+  // The browser Ray named ("in chrome"), else his default browser for RAY (JARVIS Core), else the system's.
+  const named = normalizeBrowserName(browserArg);
+  const browser = named || (/^(https?):/i.test(url) ? normalizeBrowserName((await getUiPrefs(roomId)).defaultBrowser) : '');
+  const exec = pickExecutorDevice(roomId, targetQuery, 'url', browser);
   let outdatedTabs = false;
+  const execBrowser = exec?.capabilities?.includes('browser-tabs') ? browserOfDevice(exec) : '';
+  // An extension in another browser only stands in when there's no bridge to launch the right one.
+  const wrongBrowser = Boolean(browser && execBrowser && execBrowser !== browser);
   if (exec?.capabilities?.includes('browser-tabs')) {
     const tabs = getBrowserTabs(roomId).find((b) => b.deviceId === exec.id)?.tabs || [];
     const plan = planTabOpen(tabs, url, tabMode);
@@ -391,7 +406,7 @@ export async function openUrlOnBestDevice(
         waitForAckMs: 8000,
       });
       const r = command.results[0];
-      if (r?.status === 'completed') return { summary: `${summary} (${plan.reason})`, device: exec.name };
+      if (r?.status === 'completed') return { summary: `${summary} (${plan.reason})${wrongBrowser ? browserNote(browser, execBrowser) : ''}`, device: exec.name };
       // Older RAY Tabs extensions don't know tab_navigate — fall back to a new tab and say how to update.
       if (plan.kind === 'navigate' && /unknown tab action/i.test(String(r?.message || ''))) outdatedTabs = true;
     }
@@ -402,7 +417,8 @@ export async function openUrlOnBestDevice(
     // Executor (bridge / tabs extension) opens a real tab; otherwise RAY browser clients try window.open.
     targetQuery: exec ? exec.id : targetQuery && !/^(auto|any|best)$/i.test(targetQuery) ? targetQuery : 'all',
     source: 'assistant',
-    payload: { url, title, tabMode },
+    // Bridges launch this browser instead of the system default (the extension ignores it: it is the browser).
+    payload: { url, title, tabMode, ...(browser && !execBrowser ? { browser } : {}) },
     waitForAckMs: 6000,
   });
   const noTabs = exec && !exec.capabilities?.includes('browser-tabs') && !isAndroid(exec) && !getBrowserTabs(roomId).length;
@@ -411,7 +427,12 @@ export async function openUrlOnBestDevice(
     : noTabs
       ? ' (new tab — install the RAY Tabs extension so RAY can reuse tabs you already have open)'
       : '';
-  return { summary: summary + hint, device: exec?.name };
+  return { summary: summary + hint + (wrongBrowser ? browserNote(browser, execBrowser) : ''), device: exec?.name };
+}
+
+const cap = (b: string) => b.charAt(0).toUpperCase() + b.slice(1);
+function browserNote(want: string, got: string) {
+  return ` — note: opened in ${cap(got)}, because ${cap(want)} has no RAY Tabs extension and the PC bridge is offline. Add the RAY Tabs extension to ${cap(want)} (Connections → Browser extension) or start the bridge.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -428,7 +449,7 @@ export async function executeExtendedTool(
     case 'open_url_on_device': {
       const url = String(args.url || '');
       if (!/^(https?|whatsapp|spotify|tg|mailto|tel|sms|instagram):/i.test(url)) return { result: `Refused to open unsupported URL: ${url}` };
-      const out = await openUrlOnBestDevice(roomId, url, String(args.title || url), String(args.targetDevice || 'auto'), tabModeOf(args));
+      const out = await openUrlOnBestDevice(roomId, url, String(args.title || url), String(args.targetDevice || 'auto'), tabModeOf(args), String(args.browser || ''));
       return { result: `${out.summary}${out.device ? ` (executed by ${out.device})` : ''}` };
     }
 
@@ -437,7 +458,7 @@ export async function executeExtendedTool(
       if (!query) return { result: 'No search query given.' };
       const site = String(args.site || 'google').toLowerCase();
       const target = String(args.targetDevice || 'auto');
-      const exec = pickExecutorDevice(roomId, target, 'url');
+      const exec = pickExecutorDevice(roomId, target, 'url', String(args.browser || ''));
       const android = isAndroid(exec);
       let url = siteSearchUrl(site, query, android);
       let label = `${site} search: ${query}`;
@@ -456,7 +477,7 @@ export async function executeExtendedTool(
           }
         }
       }
-      const out = await openUrlOnBestDevice(roomId, url, label, target, tabModeOf(args));
+      const out = await openUrlOnBestDevice(roomId, url, label, target, tabModeOf(args), String(args.browser || ''));
       return { result: `Opened ${label} → ${url}. ${out.summary}` };
     }
 
@@ -524,7 +545,9 @@ export async function executeExtendedTool(
         }
       }
       if (action === 'open') {
-        const out = await openUrlOnBestDevice(roomId, String(args.url || ''), String(args.url || ''), browser?.deviceId || String(args.targetDevice || 'auto'), tabModeOf(args));
+        // Let the picker choose by browser (named or default) unless Ray named a device.
+        const openOn = targetQ ? browsers.find((b) => b.deviceName.toLowerCase().includes(targetQ))?.deviceId || targetQ : 'auto';
+        const out = await openUrlOnBestDevice(roomId, String(args.url || ''), String(args.url || ''), openOn, tabModeOf(args), String(args.browser || ''));
         return { result: out.summary };
       }
       if (action === 'navigate' && tabId && args.url) {
@@ -567,9 +590,38 @@ export async function executeExtendedTool(
 
     case 'send_chat_message': {
       const app = String(args.app || 'whatsapp').toLowerCase();
-      const to = String(args.to || '').trim();
+      let to = String(args.to || '').trim();
+      let toName = String(args.__to || '').replace(/^__resolved /, '') || to;
       const text = String(args.text || '').trim();
       if (!text) return { result: 'Message text is empty.' };
+      // Send for real where RAY can: the linked WhatsApp, or Instagram in RAY's browser on the PC.
+      // Both find the person by name properly (and ask Ray when two people match).
+      if (app === 'whatsapp' && to && whatsappStatus(roomId).status === 'connected') {
+        return (await executeWhatsAppTool(roomId, 'whatsapp', { action: 'send', chat: to, text }, opts)) || { result: 'WhatsApp did not respond.' };
+      }
+      if (app === 'instagram' && to && !metaStatus().instagramApi && browserBridge(roomId)) {
+        return (await executeInstagramTool(roomId, 'instagram', { action: 'send_dm', to, text }, opts)) || { result: 'Instagram did not respond.' };
+      }
+      // Compose links need a number (WhatsApp) or a username (Instagram), not a name.
+      if (to && !/^__resolved/.test(String(args.__to || ''))) {
+        if (app === 'whatsapp' && !/^[+\d\s()-]{8,}$/.test(to)) {
+          const r = await resolveContact(roomId, to, 'whatsapp', { ask: true, why: `WhatsApp message to "${to}"` });
+          if (r.status === 'found' && r.hit.digits) {
+            args = { ...args, to: `+${r.hit.digits}`, __to: `__resolved ${r.hit.name}` };
+            to = `+${r.hit.digits}`;
+            toName = `${r.hit.name} (+${r.hit.digits})`;
+          }
+          else if (r.status === 'ambiguous') return { result: `${r.note}. Tell me which one.` };
+          else return { result: `I couldn't find a number for "${to}" in your WhatsApp or phone contacts. Say the full saved name, or the number once and I'll remember it — or link WhatsApp in JARVIS Core → Accounts so RAY can message anyone in your chats.` };
+        }
+        if (app === 'instagram' && !/^@?[a-z0-9._]{3,30}$/i.test(to)) {
+          // A display name isn't a username: use a remembered @username, else open the inbox.
+          const known = (await findContacts(roomId, to, 'instagram')).find((c) => c.instagram && c.score >= 0.9);
+          toName = known?.instagram ? `${to} (@${known.instagram})` : `${to} (pick them in your inbox)`;
+          to = known?.instagram ? `@${known.instagram}` : '';
+          args = { ...args, to, __to: `__resolved ${toName}` };
+        }
+      }
       // Ray can opt out of the extra tap with RAY_AUTO_SEND_MESSAGES=true (his command is still required by policy).
       const autoSend = /^(1|true|yes)$/i.test(process.env.RAY_AUTO_SEND_MESSAGES || '');
       if (!opts.confirmed && !autoSend) {
@@ -577,13 +629,13 @@ export async function executeExtendedTool(
           roomId,
           toolName: 'send_chat_message',
           safetyLevel: 'sensitive',
-          summary: `Send ${app} message to ${to || '(pick contact)'}: "${text.slice(0, 160)}"`,
+          summary: `Send ${app} message to ${toName || '(pick contact)'}: "${text.slice(0, 160)}"`,
           targetDevice: String(args.targetDevice || 'phone'),
           args,
         });
         broadcastHudSound(roomId, 'alert');
         return {
-          result: `REQUIRES_CONFIRMATION: Ready to send the ${app} message to ${to || 'a contact'}. Waiting for Ray to tap Approve (confirmationId=${req.id}).`,
+          result: `REQUIRES_CONFIRMATION: Ready to send the ${app} message to ${toName || 'a contact'}. Waiting for Ray to tap Approve (confirmationId=${req.id}).`,
           confirmation: req,
         };
       }
@@ -607,7 +659,7 @@ export async function executeExtendedTool(
         // Instagram links can't carry text — put it on the clipboard first.
         await dispatchDeviceCommand({ roomId, type: 'clipboard', targetQuery: exec.id, source: 'assistant', payload: { content: text, label: 'Message for Instagram' }, waitForAckMs: 3000 });
       }
-      const out = await openUrlOnBestDevice(roomId, link, `${app} chat with ${to || 'contact'}`, exec?.id || 'auto');
+      const out = await openUrlOnBestDevice(roomId, link, `${app} chat with ${toName || 'contact'}`, exec?.id || 'auto');
       return {
         result: `${args.__apiError ? `API send failed (${String(args.__apiError)}); ` : ''}Opened ${app} on ${out.device || 'Ray’s device'} with the message ${
           app === 'instagram' ? 'copied to the clipboard (paste + send)' : 'pre-filled'

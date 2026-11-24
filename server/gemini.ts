@@ -642,7 +642,8 @@ Behavioral Guidelines:
 29. VIDEOS: "watch / summarise this video" or a course video link → watch_video (timestamps); save what matters with learn_about or a Knowledge note when Ray wants to keep it.
 30. HOME: lights, fans, AC, plugs, TV, blinds, locks, scenes → home_control (check names with home_devices). "Goodnight" style requests = several home_control calls. Locks/garage/alarm wait for Ray's approval.
 31. HARD STOPS: passwords, OTP codes, payments and CAPTCHAs are never skipped silently and never guessed. Ask Ray's approval first; after he approves, RAY can type a password/OTP he enters in the secure prompt, press Pay, or bring the CAPTCHA page in front for him to solve, then continue the task.
-34. WHATSAPP & INSTAGRAM (free): WhatsApp → the whatsapp tool (Ray's own account linked to RAY: chats, read, send, send_media, download); if it is not linked, fall back to read_incoming_messages / send_chat_message on the phone. Instagram (personal) → the instagram tool (instagram.com in RAY's browser on the PC: dms, read_dm, send_dm, feed, stories, profile, post/reel from a PC file, comment, like); professional accounts can also use meta_api_request. Only send or post what Ray asked for — never mass-message. "Call / video call X on WhatsApp or Instagram" → social_call (app, to, video). A call between Ray's own devices → call_device; his real phone number → phone_call_me.
+34. WHATSAPP & INSTAGRAM (free): WhatsApp → the whatsapp tool (Ray's own account linked to RAY: chats, read, send, send_media, download); if it is not linked, fall back to read_incoming_messages / send_chat_message on the phone. Instagram (personal) → the instagram tool (instagram.com in RAY's browser on the PC: dms, read_dm, send_dm, feed, stories, profile, post/reel from a PC file, comment, like); professional accounts can also use meta_api_request. Only send or post what Ray asked for — never mass-message. "Call / video call X on WhatsApp or Instagram" → social_call (app, to, video). A call between Ray's own devices → call_device; his real phone number → phone_call_me. PEOPLE: pass the name exactly as Ray said it ("Arun", "priya s") in to/chat — RAY finds the contact itself (remembered people, WhatsApp, phone contacts; fuzzy) and asks Ray when two match. Never search a person's name with search_and_open or Instagram's main search, and don't ask Ray for a number before trying the name.
+35b. BROWSERS: "in Chrome / Brave / Edge / Firefox" → pass browser on open_url_on_device / search_and_open / browser_tab_action; otherwise leave it empty (Ray's default browser setting applies). RAY reuses already-open tabs by itself — don't ask for tab="new" unless Ray said "new tab".
 33. ASK, DON'T GUESS: mid-task, when something is ambiguous, risky, costs money, contacts a person, or needs Ray's choice (which one, send or not, how much), call ask_user with a short question and options — it reaches him on any device (a pop-up on his Android even when the RAY app is closed, push, a ring, a phone call) and returns his answer; then carry on. Don't ask about things you can safely decide or look up yourself. Video calls between his devices → call_device with video=true.
 32. RAY'S OWN BROWSER vs RAY'S BROWSER: "this page / this tab / what I'm reading / reply here / fill this" → browser_page in Ray's own browser (his logins; read first, then click/type by element number). Old visits or saved links → browser_history. Research or tasks on sites he isn't on → browse_web.
 
@@ -899,6 +900,18 @@ export interface ToolExecutionContextOptions {
   customConnectors?: AppConnector[];
 }
 
+/** chrome | brave | edge | firefox | opera | vivaldi when the message says which browser to use. */
+export function browserNamedIn(text: string): string {
+  const t = String(text || '').toLowerCase();
+  if (/\bbrave\b/.test(t)) return 'brave';
+  if (/\b(google )?chrome\b/.test(t) && !/\bchrome:\/\//.test(t)) return 'chrome';
+  if (/\b(microsoft edge|ms edge|edge browser|(in|on|with|using|via|use) (the )?edge)\b/.test(t)) return 'edge';
+  if (/\bfire ?fox\b/.test(t)) return 'firefox';
+  if (/\b(in|on|with|using|via) (the )?opera\b|\bopera (gx|browser)\b/.test(t)) return 'opera';
+  if (/\bvivaldi\b/.test(t)) return 'vivaldi';
+  return '';
+}
+
 export async function executeDeviceTool(
   roomId: string,
   sourceDeviceName: string,
@@ -912,6 +925,11 @@ export async function executeDeviceTool(
   const blocked = checkActionPolicy(name, args, options?.userCommand, confirmed);
   if (blocked) return { result: blocked };
 
+  // "open youtube in chrome" — honour the browser Ray named even when the AI forgot the browser argument.
+  if (/^(open_url_on_device|search_and_open|browser_tab_action)$/.test(name) && !args.browser) {
+    const named = browserNamedIn(options?.userCommand || '');
+    if (named) args = { ...args, browser: named };
+  }
   const extended = await executeExtendedTool(roomId, name, args, { confirmed });
   if (extended) return extended;
   const callOut = await executeCallTool(roomId, sourceDeviceName, name, args, { confirmed });

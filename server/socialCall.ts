@@ -14,8 +14,10 @@ import type { FunctionDeclaration } from '@google/genai';
 import { createConfirmationRequest } from './capabilities.ts';
 import { broadcastHudSound, dispatchBridgeProxyCall, dispatchDeviceCommand, getRoomDevices, isRoomScreenControlArmed } from './hub.ts';
 import { browserBridge, executeBrowserTool } from './browserAgent.ts';
+import { instagramTarget } from './instagramWeb.ts';
 import { executeComputerUseTool } from './computerUse.ts';
 import { whatsappNumberFor } from './whatsappLink.ts';
+import { rememberContact, resolveContact } from './contactFinder.ts';
 import type { ConfirmationRequest } from '../src/types/relay.ts';
 
 export const socialCallToolDeclarations: FunctionDeclaration[] = [
@@ -40,16 +42,15 @@ const online = (roomId: string) => getRoomDevices(roomId).filter((d) => d.online
 const phoneBridge = (roomId: string) => online(roomId).find((d) => /android/i.test(d.os || ''));
 const pcBridge = (roomId: string) => online(roomId).find((d) => !/android/i.test(d.os || ''));
 
-async function resolveWhatsAppNumber(roomId: string, to: string): Promise<{ digits: string; name: string } | null> {
+async function resolveWhatsAppNumber(roomId: string, to: string): Promise<{ digits: string; name: string } | { error: string }> {
+  // Remembered people, the linked WhatsApp's contacts and the phone's contacts, fuzzy — asks Ray if two fit.
+  const r = await resolveContact(roomId, to, 'whatsapp', { ask: true, why: `WhatsApp call to "${to}"` });
+  if (r.status === 'found' && r.hit.digits) return { digits: r.hit.digits, name: r.hit.name };
   const fromWa = whatsappNumberFor(roomId, to);
   if (fromWa) return fromWa;
-  const phone = phoneBridge(roomId);
-  if (phone) {
-    const out = await dispatchBridgeProxyCall(roomId, { action: 'lookup_contact', name: to }, 15000, phone.id);
-    const d = out.data as { number?: string; name?: string } | undefined;
-    if (out.ok && d?.number) return { digits: d.number.replace(/[^\d]/g, ''), name: d.name || to };
-  }
-  return null;
+  if (r.status === 'ambiguous') return { error: `${r.note}. Tell me which one (or answer the question RAY sent you).` };
+  if (r.status === 'found') return { error: `${r.hit.name} has no phone number RAY can see (WhatsApp hides it). Say the number once and I'll remember it.` };
+  return { error: `I couldn't find "${to}" in your WhatsApp or phone contacts${phoneBridge(roomId) ? '' : ' (the phone bridge is offline, so phone contacts weren’t searched)'}. Say the full name as saved, or the number once — I'll remember it.` };
 }
 
 export async function executeSocialCallTool(
@@ -67,13 +68,21 @@ export async function executeSocialCallTool(
 
   if (app === 'instagram') {
     if (!browserBridge(roomId)) return { result: 'Instagram calls run in RAY’s browser on your PC, and the PC bridge is offline.' };
-    const goal = `On Instagram, open the direct message conversation with "${to}" (search it in the inbox if needed) and click the ${video ? 'video call (camera icon)' : 'audio call (phone icon)'} button at the top of the conversation. When the call window opens and starts ringing, stop and report that it is ringing. If Instagram asks for camera/microphone permission, report that Ray must click Allow in the browser window once. If a login page appears, report that Ray needs to log into Instagram once in RAY’s browser.`;
-    return executeBrowserTool(roomId, 'browse_web', { goal, mode: 'do', startUrl: 'https://www.instagram.com/direct/inbox/', useLogin: true }, opts);
+    if (!opts.confirmed) {
+      const req = createConfirmationRequest({ roomId, toolName: name, safetyLevel: 'sensitive', summary: `Start an Instagram ${kind} call with ${to} (in RAY’s browser on your PC).`, targetDevice: 'RAY’s browser on the PC', args: { ...args, app: 'instagram' } });
+      broadcastHudSound(roomId, 'alert');
+      return { result: `REQUIRES_CONFIRMATION: Instagram ${kind} call to ${to} — waiting for Ray (confirmationId=${req.id}).`, confirmation: req };
+    }
+    const who = await instagramTarget(roomId, to);
+    if ('error' in who) return { result: who.error };
+    const goal = `${who.open} Then click the ${video ? 'video call (camera icon)' : 'audio call (phone icon)'} button at the top of the conversation. When the call window opens and starts ringing, stop and report that it is ringing. If Instagram asks for camera/microphone permission, report that Ray must click Allow in the browser window once. If a login page appears, report that Ray needs to log into Instagram once in RAY’s browser.`;
+    return executeBrowserTool(roomId, 'browse_web', { goal, mode: 'do', startUrl: who.startUrl, useLogin: true }, opts);
   }
 
   // WhatsApp
-  const target = await resolveWhatsAppNumber(roomId, to);
-  if (!target) return { result: `I couldn't find a WhatsApp number for "${to}". Say the number with country code, or link WhatsApp in JARVIS Core so I can look up contacts.` };
+  // After approval the resolved number is in args, so Ray isn't asked twice.
+  const target = args.__digits ? { digits: String(args.__digits), name: String(args.__name || to) } : await resolveWhatsAppNumber(roomId, to);
+  if ('error' in target) return { result: target.error };
   const pref = String(args.device || 'auto').toLowerCase();
   const phone = phoneBridge(roomId);
   const pc = pcBridge(roomId);
@@ -88,12 +97,13 @@ export async function executeSocialCallTool(
       safetyLevel: 'sensitive',
       summary: `Start a WhatsApp ${kind} call with ${target.name} (+${target.digits}) from your ${usePhone ? 'phone' : 'PC'}.`,
       targetDevice: device.name,
-      args: { ...args, app: 'whatsapp', device: usePhone ? 'phone' : 'pc' },
+      args: { ...args, app: 'whatsapp', device: usePhone ? 'phone' : 'pc', __digits: target.digits, __name: target.name },
     });
     broadcastHudSound(roomId, 'alert');
     return { result: `REQUIRES_CONFIRMATION: WhatsApp ${kind} call to ${target.name} — waiting for Ray (confirmationId=${req.id}).`, confirmation: req };
   }
 
+  if (!/^\+?[\d\s()-]+$/.test(to)) void rememberContact(roomId, to, { name: target.name, digits: target.digits });
   // 1) open the chat in the WhatsApp app
   // whatsapp:// opens the WhatsApp app straight on the chat (no "continue to chat" web page).
   await dispatchDeviceCommand({ roomId, type: 'open_url', targetQuery: device.id, source: 'assistant', payload: { url: `whatsapp://send?phone=${target.digits}`, title: `WhatsApp · ${target.name}` }, waitForAckMs: 6000 });

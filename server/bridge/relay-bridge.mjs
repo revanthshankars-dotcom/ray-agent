@@ -33,7 +33,7 @@ import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import WebSocket, { WebSocketServer } from 'ws';
 
-const BRIDGE_VERSION = '3.8';
+const BRIDGE_VERSION = '3.9';
 const IS_TERMUX = Boolean(process.env.PREFIX && process.env.PREFIX.includes('com.termux')) || fs.existsSync('/data/data/com.termux');
 const PLATFORM = IS_TERMUX ? 'android' : os.platform();
 const WS_URL = process.env.RELAY_WS_URL || "__RAY_WS_URL__";
@@ -764,6 +764,56 @@ function runSafeCommand(cmd, args, cb) {
   });
 }
 
+// Each browser's program on this PC, so "open it in Chrome" uses Chrome even when Brave is the default.
+const BROWSER_APPS = {
+  chrome: { win: [['Google', 'Chrome', 'Application', 'chrome.exe']], mac: 'Google Chrome', linux: ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser'] },
+  brave: { win: [['BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe']], mac: 'Brave Browser', linux: ['brave-browser', 'brave', 'brave-browser-stable'] },
+  edge: { win: [['Microsoft', 'Edge', 'Application', 'msedge.exe']], mac: 'Microsoft Edge', linux: ['microsoft-edge', 'microsoft-edge-stable'] },
+  firefox: { win: [['Mozilla Firefox', 'firefox.exe']], mac: 'Firefox', linux: ['firefox'] },
+  opera: { win: [['Programs', 'Opera', 'opera.exe'], ['Programs', 'Opera GX', 'opera.exe'], ['Opera', 'opera.exe']], mac: 'Opera', linux: ['opera'] },
+  vivaldi: { win: [['Vivaldi', 'Application', 'vivaldi.exe']], mac: 'Vivaldi', linux: ['vivaldi', 'vivaldi-stable'] },
+};
+
+async function findBrowserBinary(name) {
+  const app = BROWSER_APPS[String(name || '').toLowerCase()];
+  if (!app) return null;
+  const exists = (p) => { try { return fs.existsSync(p); } catch { return false; } };
+  if (PLATFORM === 'win32') {
+    for (const base of [process.env.PROGRAMFILES, process.env['PROGRAMFILES(X86)'], process.env.LOCALAPPDATA].filter(Boolean)) {
+      for (const parts of app.win) {
+        const p = path.join(base, ...parts);
+        if (exists(p)) return { bin: p, args: [] };
+      }
+    }
+    return null;
+  }
+  if (PLATFORM === 'darwin') {
+    return exists('/Applications/' + app.mac + '.app') || exists(path.join(os.homedir(), 'Applications', app.mac + '.app')) ? { bin: 'open', args: ['-a', app.mac] } : null;
+  }
+  for (const b of app.linux) {
+    const where = await whichBin(b);
+    if (where) return { bin: where, args: [] };
+  }
+  return null;
+}
+
+/** Opens the link in the named browser; falls back to the system default (and says so). */
+async function launchUrlInBrowser(urlStr, browser, cb) {
+  const want = String(browser || '').toLowerCase();
+  if (!want || PLATFORM === 'android' || !/^https?:/i.test(urlStr)) return launchUrlSafely(urlStr, (out, ok) => cb(out, ok, ''));
+  const found = await findBrowserBinary(want);
+  if (!found) return launchUrlSafely(urlStr, (out, ok) => cb(out, ok, want + ' is not installed here, so it opened in the default browser'));
+  try {
+    // Detached: if the browser wasn't running, it keeps running after RAY's command returns.
+    const child = spawn(found.bin, [...found.args, urlStr], { detached: true, stdio: 'ignore', windowsHide: false });
+    child.on('error', () => launchUrlSafely(urlStr, () => undefined));
+    child.unref();
+    cb('OK', true, '');
+  } catch (e) {
+    launchUrlSafely(urlStr, (out, ok) => cb(out, ok, 'could not start ' + want + ' (' + (e?.message || e) + '), used the default browser'));
+  }
+}
+
 function launchUrlSafely(urlStr, cb) {
   const plat = PLATFORM;
   if (plat === 'android') {
@@ -1249,6 +1299,25 @@ function ringThisDevice(call, cb) {
   openRayWindow(answerUrl + '&room=' + encodeURIComponent(ROOM_ID), 'RAY Call', 20, () => {});
   setTimeout(() => speakNative(line, () => {}), 1500);
   cb('Ringing ' + DEVICE_NAME + ' (window in front)', true);
+}
+
+/** All phone contacts (name + number) for RAY's contact finder — Android only, read-only. */
+function listPhoneContacts() {
+  if (!IS_TERMUX) return Promise.resolve({ ok: false, error: 'Phone contacts are only on the Android bridge.' });
+  return new Promise((res) => {
+    execFile('termux-contact-list', [], { timeout: 15000, maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
+      if (err || !stdout) return res({ ok: false, error: 'Could not read contacts (grant Termux:API the Contacts permission).' });
+      try {
+        const list = JSON.parse(stdout)
+          .map((c) => ({ name: String(c.name || '').slice(0, 80), number: String(c.number || '').replace(/[^+\d]/g, '') }))
+          .filter((c) => c.name && c.number.replace(/\D/g, '').length >= 6)
+          .slice(0, 5000);
+        res({ ok: true, data: list });
+      } catch {
+        res({ ok: false, error: 'Contacts unreadable.' });
+      }
+    });
+  });
 }
 
 function lookupContactNumber(name, cb) {
@@ -2217,6 +2286,7 @@ async function homeAssistantAction(req) {
 
 async function jarvisAction(action, req) {
   if (action === 'home_assistant') return await homeAssistantAction(req);
+  if (action === 'list_contacts') return await listPhoneContacts();
   if (action === 'lookup_contact') return await new Promise((res) => lookupContactNumber(String(req.name || ''), (number, label) => res(number ? { ok: true, data: { number, name: label } } : { ok: false, error: label })));
   if (action === 'browser') return await browserAction(req);
   if (action === 'diagnose') return { ok: true, data: await diagnoseDevice() };
@@ -2888,7 +2958,10 @@ function executeDeviceCommand(cmd, ack, ws) {
   if (cmd.type === 'open_url' && cmd.payload?.url) {
     try {
       const safeUrl = validateSafeUrl(cmd.payload.url, true);
-      launchUrlSafely(safeUrl, (out, ok) => ack(ok ? 'completed' : 'failed', ok ? 'Opened ' + safeUrl + ' in a new browser tab on ' + DEVICE_NAME : 'Could not open URL: ' + out));
+      const want = String(cmd.payload.browser || '').toLowerCase().replace(/[^a-z]/g, '');
+      launchUrlInBrowser(safeUrl, want, (out, ok, note) =>
+        ack(ok ? 'completed' : 'failed', ok ? 'Opened ' + safeUrl + ' in a new ' + (want && !note ? want.charAt(0).toUpperCase() + want.slice(1) + ' ' : 'browser ') + 'tab on ' + DEVICE_NAME + (note ? ' (' + note + ')' : '') : 'Could not open URL: ' + out)
+      );
     } catch (err) {
       ack('failed', err.message);
     }

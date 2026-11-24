@@ -752,22 +752,66 @@ function resolveOfflineTargets(room: RoomState, targetQuery: string): DeviceInfo
 export function pickExecutorDevice(
   roomId: string,
   targetQuery: string,
-  need: 'url' | 'app' | 'os'
+  need: 'url' | 'app' | 'os',
+  browser?: string
 ): DeviceInfo | null {
   const room = getOrCreateRoom(roomId);
   const online = Array.from(room.devices.values()).filter((d) => d.online);
   const q = (targetQuery || 'all').trim().toLowerCase();
-  const named = q && !/^(all|auto|any|best)$/.test(q) ? matchDevices(online, q) : online;
+  let named = q && !/^(all|auto|any|best)$/.test(q) ? matchDevices(online, q) : online;
+  // "On my PC" often names the PC's bridge; the RAY Tabs extension on that same PC can reuse its open
+  // tabs while the bridge can only open new ones, so add it as a candidate for links.
+  if (need === 'url' && named.length && !named.some(isTabsDevice)) {
+    const fams = new Set(named.filter((d) => d.type === 'bridge' && !/android/i.test(d.os)).map((d) => osFamily(d.os)));
+    if (fams.size) named = [...named, ...online.filter((d) => isTabsDevice(d) && fams.has(osFamily(d.os)))];
+  }
   const canExec = (d: DeviceInfo) =>
-    d.type === 'bridge' || d.capabilities?.includes('os-bridge') || (need === 'url' && d.capabilities?.includes('browser-tabs'));
+    d.type === 'bridge' || d.capabilities?.includes('os-bridge') || (need === 'url' && isTabsDevice(d));
+  const want = need === 'url' ? normalizeBrowserName(browser) : '';
   const rank = (d: DeviceInfo) => {
-    if (need === 'url' && d.capabilities?.includes('browser-tabs')) return 0;
+    if (want) {
+      // A named browser: its own RAY Tabs extension first, then a PC bridge (it launches that browser).
+      if (isTabsDevice(d)) return browserOfDevice(d) === want ? 0 : 4;
+      if (d.type === 'bridge' && !/android/i.test(d.os)) return 1;
+      if (d.type === 'bridge') return 2;
+      return 3;
+    }
+    if (need === 'url' && isTabsDevice(d)) return 0;
     if (d.type === 'bridge' && !/android/i.test(d.os)) return 1;
     if (d.type === 'bridge') return 2;
     return 3;
   };
   const candidates = named.filter(canExec).sort((a, b) => rank(a) - rank(b) || b.lastSeen - a.lastSeen);
   return candidates[0] || null;
+}
+
+const isTabsDevice = (d: DeviceInfo) => Boolean(d.capabilities?.includes('browser-tabs'));
+
+/** windows | mac | linux | android | chromeos — bridges say "Windows_NT x64", extensions say "Windows". */
+export function osFamily(os: string): string {
+  const o = String(os || '').toLowerCase();
+  if (/android/.test(o)) return 'android';
+  if (/windows/.test(o)) return 'windows';
+  if (/darwin|mac/.test(o)) return 'mac';
+  if (/cros|chromeos/.test(o)) return 'chromeos';
+  return 'linux';
+}
+
+/** chrome | brave | edge | firefox | opera | vivaldi | '' (system default). */
+export function normalizeBrowserName(b?: string): string {
+  const s = String(b || '').toLowerCase();
+  if (!s || /^(default|auto|any|system)$/.test(s)) return '';
+  if (/brave/.test(s)) return 'brave';
+  if (/edge|edg\b/.test(s)) return 'edge';
+  if (/firefox|mozilla/.test(s)) return 'firefox';
+  if (/opera|opr/.test(s)) return 'opera';
+  if (/vivaldi/.test(s)) return 'vivaldi';
+  if (/chrom/.test(s)) return 'chrome';
+  return '';
+}
+
+export function browserOfDevice(d: DeviceInfo): string {
+  return normalizeBrowserName(`${d.browser || ''} ${d.name || ''}`.replace(/\(RAY Tabs\)/i, ''));
 }
 
 export async function dispatchBridgeProxyCall(

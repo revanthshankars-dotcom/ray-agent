@@ -365,9 +365,12 @@ export async function executeBrowserTool(
       roomId,
       toolName: 'browse_web',
       safetyLevel: 'sensitive',
-      summary: `Use the browser on ${pc.name} to: "${goal}". It can click and type on websites (never passwords or payments). Stop any time.`,
+      summary: args.summary
+        ? `${String(args.summary).slice(0, 300)} — in RAY’s browser on ${pc.name} (never passwords or payments). Stop any time.`
+        : `Use the browser on ${pc.name} to: "${goal}". It can click and type on websites (never passwords or payments). Stop any time.`,
       targetDevice: pc.name,
-      args: { goal, mode, startUrl },
+      // Keep useLogin so the approved run still uses Ray's logged-in profile.
+      args: { goal, mode, startUrl, ...(args.useLogin ? { useLogin: true } : {}), ...(args.summary ? { summary: args.summary } : {}) },
     });
     broadcastHudSound(roomId, 'alert');
     return { result: `REQUIRES_CONFIRMATION: Ready to do this in the browser on ${pc.name}. Tap Approve (confirmationId=${req.id}).`, confirmation: req };

@@ -15,6 +15,8 @@ import { createConfirmationRequest } from './capabilities.ts';
 import { broadcastHudSound, broadcastRoomEvent, listRoomIds, normalizeRoomId, recordIncomingMessage } from './hub.ts';
 import { loadJson, scheduleSave } from './persistence.ts';
 import { seal, unseal } from './accounts.ts';
+import { scoreName } from './nameMatch.ts';
+import { resolveContact } from './contactFinder.ts';
 import type { ConfirmationRequest } from '../src/types/relay.ts';
 
 type Baileys = typeof import('baileys');
@@ -55,6 +57,7 @@ interface Session {
   pairingCode: string | null;
   me: { id: string; name?: string } | null;
   names: Map<string, string>; // jid → display name
+  pn: Map<string, string>; // @lid jid → phone-number jid (WhatsApp hides numbers behind LIDs)
   chats: Map<string, { name: string; lastAt: number; unread: number }>;
   msgs: Map<string, StoredMsg[]>; // jid → recent messages (memory only)
   wanted: boolean;
@@ -65,7 +68,7 @@ const sessions = new Map<string, Session>();
 function session(roomId: string): Session {
   let s = sessions.get(roomId);
   if (!s) {
-    s = { roomId, sock: null, status: 'off', qr: null, pairingCode: null, me: null, names: new Map(), chats: new Map(), msgs: new Map(), wanted: false, error: null };
+    s = { roomId, sock: null, status: 'off', qr: null, pairingCode: null, me: null, names: new Map(), pn: new Map(), chats: new Map(), msgs: new Map(), wanted: false, error: null };
     sessions.set(roomId, s);
   }
   return s;
@@ -140,6 +143,38 @@ function textOf(m: Record<string, unknown> | null | undefined): { text: string; 
   if (g('locationMessage')) return { text: '[location]', kind: 'location' };
   if (g('contactMessage')) return { text: `[contact ${String(g('contactMessage')!.displayName || '')}]`, kind: 'contact' };
   return { text: '', kind: 'other' };
+}
+
+/** Saves a contact's name under every id WhatsApp gives it (phone-number jid and LID). */
+function learnContact(s: Session, c: { id?: string; lid?: string; phoneNumber?: string; name?: string; notify?: string; verifiedName?: string }) {
+  if (!c?.id) return;
+  const pn = c.phoneNumber || (c.id.endsWith('@s.whatsapp.net') ? c.id : '');
+  const lid = c.lid || (c.id.endsWith('@lid') ? c.id : '');
+  if (lid && pn) s.pn.set(lid, pn);
+  // Ray's own saved name wins over the name they set for themselves.
+  const name = c.name || (s.names.has(c.id) ? '' : c.notify || c.verifiedName);
+  if (!name) return;
+  for (const id of [c.id, pn, lid]) if (id) s.names.set(id, String(name));
+}
+
+/** Phone-number jid for a chat id, resolving hidden-number LIDs when WhatsApp told us the mapping. */
+async function phoneJid(s: Session, jid: string): Promise<string | null> {
+  if (jid.endsWith('@s.whatsapp.net')) return jid;
+  if (!jid.endsWith('@lid')) return null;
+  const known = s.pn.get(jid);
+  if (known) return known;
+  try {
+    const repo = (s.sock as unknown as { signalRepository?: { lidMapping?: { getPNForLID(l: string): Promise<string | null> } } } | null)?.signalRepository;
+    const pn = await repo?.lidMapping?.getPNForLID(jid);
+    if (pn) {
+      const full = pn.includes('@') ? pn.replace(/:\d+@/, '@') : `${pn}@s.whatsapp.net`;
+      s.pn.set(jid, full);
+      return full;
+    }
+  } catch {
+    // mapping not known yet
+  }
+  return null;
 }
 
 function nameFor(s: Session, jid: string): string {
@@ -252,12 +287,19 @@ export async function linkWhatsApp(roomId: string, opts: { phone?: string } = {}
     }
   });
   sock.ev.on('messaging-history.set', ({ chats, contacts, messages }) => {
-    for (const c of contacts || []) if (c.id && (c.name || c.notify)) s.names.set(c.id, String(c.name || c.notify));
+    for (const c of contacts || []) learnContact(s, c);
     for (const c of chats || []) if (c.id) s.chats.set(c.id, { name: String(c.name || nameFor(s, c.id)), lastAt: Number(c.conversationTimestamp || 0) * 1000, unread: Number(c.unreadCount || 0) });
     for (const m of (messages || []).slice(-2000)) storeMessage(s, m, false);
   });
   sock.ev.on('contacts.upsert', (list) => {
-    for (const c of list) if (c.id && (c.name || c.notify)) s.names.set(c.id, String(c.name || c.notify));
+    for (const c of list) learnContact(s, c);
+  });
+  // Renames and newly saved contacts after linking.
+  sock.ev.on('contacts.update', (list) => {
+    for (const c of list) learnContact(s, c);
+  });
+  sock.ev.on('lid-mapping.update', (m) => {
+    if (m?.lid && m?.pn) s.pn.set(m.lid, m.pn.includes('@') ? m.pn : `${m.pn}@s.whatsapp.net`);
   });
   sock.ev.on('chats.upsert', (list) => {
     for (const c of list) if (c.id && !s.chats.has(c.id)) s.chats.set(c.id, { name: String(c.name || nameFor(s, c.id)), lastAt: Number(c.conversationTimestamp || 0) * 1000, unread: Number(c.unreadCount || 0) });
@@ -319,15 +361,28 @@ function findChat(s: Session, q: string): string | null {
   if (/@(s\.whatsapp\.net|g\.us|lid)$/.test(t)) return t;
   const digits = t.replace(/[^\d]/g, '');
   if (digits.length >= 8 && /^[+\d\s()-]+$/.test(t)) return `${digits}@s.whatsapp.net`;
-  const low = t.toLowerCase();
   const all = new Map<string, string>();
   for (const [jid, c] of s.chats) all.set(jid, c.name);
-  for (const [jid, n] of s.names) if (!all.has(jid)) all.set(jid, n);
-  const entries = [...all.entries()];
-  const exact = entries.find(([, n]) => n.toLowerCase() === low);
-  if (exact) return exact[0];
-  const part = entries.filter(([, n]) => n.toLowerCase().includes(low)).sort((a, b) => (s.chats.get(b[0])?.lastAt || 0) - (s.chats.get(a[0])?.lastAt || 0));
-  return part[0]?.[0] || null;
+  for (const [jid, n] of s.names) if (!all.has(jid) || /^\+?\d+$/.test(all.get(jid) || '')) all.set(jid, n);
+  // Fuzzy: first names, initials, small typos; ties go to the most recent chat.
+  const ranked = [...all.entries()]
+    .map(([jid, n]) => ({ jid, score: scoreName(t, n), lastAt: s.chats.get(jid)?.lastAt || 0 }))
+    .filter((x) => x.score >= 0.6)
+    .sort((a, b) => b.score - a.score || b.lastAt - a.lastAt);
+  return ranked[0]?.jid || null;
+}
+
+/** A person (fuzzy, asks Ray when two fit) or a group; '?message' when Ray still has to pick. */
+async function pickChat(roomId: string, s: Session, said: string): Promise<string | null> {
+  const t = said.trim();
+  if (!t) return null;
+  if (/@(s\.whatsapp\.net|g\.us|lid)$/.test(t)) return t;
+  const groupHit = findChat(s, t);
+  if (groupHit?.endsWith('@g.us') && scoreName(t, nameFor(s, groupHit)) >= 0.9) return groupHit;
+  const r = await resolveContact(roomId, t, 'whatsapp', { ask: true, why: `WhatsApp chat "${t}"` });
+  if (r.status === 'found') return r.hit.jid || (r.hit.digits ? `${r.hit.digits}@s.whatsapp.net` : null) || groupHit;
+  if (r.status === 'ambiguous') return `?${r.note}. Tell me which one (or answer RAY's question).`;
+  return groupHit;
 }
 
 const MEDIA_KIND = (url: string) =>
@@ -402,8 +457,11 @@ export async function executeWhatsAppTool(
       .map(([jid, c]) => `- ${c.name}${jid.endsWith('@g.us') ? ' (group)' : ''}${c.unread ? ` · ${c.unread} unread` : ''}${c.lastAt ? ` · ${new Date(c.lastAt).toISOString().slice(0, 16).replace('T', ' ')}` : ''}`);
     return { result: list.join('\n') || 'No chats synced yet (they appear as messages arrive).' };
   }
-  const jid = findChat(s, String(args.chat || ''));
-  if (!jid) return { result: `No WhatsApp chat matches "${args.chat}". Use action "chats" to see names, or give the number with country code.` };
+  const jid = args.__jid ? String(args.__jid) : await pickChat(roomId, s, String(args.chat || ''));
+  if (jid && jid.startsWith('?')) return { result: jid.slice(1) };
+  if (!jid) return { result: `No WhatsApp chat or contact matches "${args.chat}". Use action "chats" to see names, or give the number with country code once — I'll remember it.` };
+  // Keep the resolved chat in the approval's args so Ray isn't asked "which one" again after approving.
+  args.__jid = jid;
   const chatName = nameFor(s, jid);
   if (action === 'read') {
     const list = (s.msgs.get(jid) || []).slice(-limit);
@@ -466,7 +524,26 @@ export async function executeWhatsAppTool(
 }
 
 /** Internals for tests (message parsing, chat lookup, session state). */
-export const __whatsappInternals = { session, storeMessage, textOf, findChat };
+export const __whatsappInternals = { session, storeMessage, textOf, findChat, learnContact };
+
+/** Every person (not group) the linked WhatsApp knows: name, chat id, number when known, last chat time. */
+export async function whatsappContactList(roomId: string): Promise<Array<{ name: string; jid: string; digits?: string; lastAt: number }>> {
+  const s = sessions.get(roomId);
+  if (!s) return [];
+  const byJid = new Map<string, { name: string; jid: string; digits?: string; lastAt: number }>();
+  const ids = new Set<string>([...s.names.keys(), ...s.chats.keys()]);
+  for (const jid of ids) {
+    if (!/@(s\.whatsapp\.net|lid)$/.test(jid)) continue;
+    const name = s.names.get(jid) || s.chats.get(jid)?.name || '';
+    if (!name || /^\+?\d+$/.test(name)) continue;
+    const pn = await phoneJid(s, jid);
+    const key = pn || jid;
+    const lastAt = Math.max(s.chats.get(jid)?.lastAt || 0, pn ? s.chats.get(pn)?.lastAt || 0 : 0);
+    const prev = byJid.get(key);
+    if (!prev || lastAt > prev.lastAt) byJid.set(key, { name, jid: key, digits: pn ? pn.replace(/@.*/, '').replace(/:.*/, '') : undefined, lastAt });
+  }
+  return [...byJid.values()];
+}
 
 /** Phone number (digits) for a contact name/number via the linked WhatsApp, or null. */
 export function whatsappNumberFor(roomId: string, who: string): { digits: string; name: string } | null {
