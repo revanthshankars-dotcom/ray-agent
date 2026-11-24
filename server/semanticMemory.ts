@@ -5,7 +5,7 @@
  * Everything RAY knows — Memory/About Ray facts, Email Style, Knowledge notes, installed skills
  * and Ray's own notes — is split into small units and embedded with a FREE model:
  *   1. Gemini embeddings (GEMINI_API_KEY, free tier)            → 768 dims
- *   2. Cloudflare Workers AI bge-m3 (CLOUDFLARE_API_TOKEN + _ACCOUNT_ID, free daily allowance)
+ *   2. Cloudflare Workers AI qwen3-embedding-0.6b (CLOUDFLARE_API_TOKEN + _ACCOUNT_ID, free daily allowance)
  * Only new/changed units are embedded; vectors are stored int8-quantised per room. Each request
  * embeds the message and pulls in only the closest facts, notes and playbooks (Luke's Day 2: small
  * prompt, the right facts). Without either key RAY falls back to keyword recall.
@@ -34,18 +34,24 @@ interface RoomIndex {
 
 const rooms = new Map<string, RoomIndex>();
 const MAX_UNITS = 1500;
-const MIN_SCORE = Number(process.env.RAY_RECALL_MIN || 0.5);
+// Score scales differ per model (measured: qwen3 right answers 0.41–0.51, wrong ≤0.36), so each has
+// its own floor, and only results close to the best match are kept.
+const MIN_SCORE_BY: Record<string, number> = { gemini: 0.45, 'cloudflare-qwen3': 0.38 };
+const RELATIVE = 0.85;
+const CF_EMBED_MODEL = process.env.RAY_CF_EMBED_MODEL || '@cf/qwen/qwen3-embedding-0.6b';
+const CF_QUERY_PREFIX = 'Instruct: Given a personal question or request, retrieve the memory facts, notes or playbooks that help answer it\nQuery: ';
 
 function env(n: string): string {
   const v = (process.env[n] || '').trim();
   return /^(unset|none)$/i.test(v) ? '' : v;
 }
 
-function provider(): 'gemini' | 'cloudflare' | null {
+function provider(): 'gemini' | 'cloudflare-qwen3' | null {
   if (env('GEMINI_API_KEY')) return 'gemini';
-  if (env('CLOUDFLARE_API_TOKEN') && env('CLOUDFLARE_ACCOUNT_ID')) return 'cloudflare';
+  if (env('CLOUDFLARE_API_TOKEN') && env('CLOUDFLARE_ACCOUNT_ID')) return 'cloudflare-qwen3';
   return null;
 }
+const minScore = () => Number(process.env.RAY_RECALL_MIN) || MIN_SCORE_BY[provider() || ''] || 0.45;
 
 async function embed(texts: string[], mode: 'doc' | 'query'): Promise<number[][]> {
   const p = provider();
@@ -62,13 +68,14 @@ async function embed(texts: string[], mode: 'doc' | 'query'): Promise<number[][]
     }
     return out;
   }
-  if (p === 'cloudflare') {
+  if (p === 'cloudflare-qwen3') {
     const out: number[][] = [];
-    for (let i = 0; i < texts.length; i += 50) {
-      const r = await fetch(`https://api.cloudflare.com/client/v4/accounts/${env('CLOUDFLARE_ACCOUNT_ID')}/ai/run/@cf/baai/bge-m3`, {
+    const input = mode === 'query' ? texts.map((t) => CF_QUERY_PREFIX + t) : texts;
+    for (let i = 0; i < input.length; i += 50) {
+      const r = await fetch(`https://api.cloudflare.com/client/v4/accounts/${env('CLOUDFLARE_ACCOUNT_ID')}/ai/run/${CF_EMBED_MODEL}`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${env('CLOUDFLARE_API_TOKEN')}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: texts.slice(i, i + 50) }),
+        body: JSON.stringify({ text: input.slice(i, i + 50) }),
         signal: AbortSignal.timeout(30000),
       });
       const j = (await r.json()) as { result?: { data?: number[][] }; errors?: Array<{ message?: string }> };
@@ -233,12 +240,15 @@ export async function semanticRecall(roomId: string, message: string): Promise<R
   } catch {
     return null;
   }
-  const scored = [...idx.units.values()].map((u) => ({ u, s: cosineQ(q, u.v) })).filter((x) => x.s >= MIN_SCORE).sort((a, b) => b.s - a.s);
+  const floor = minScore();
+  const all = [...idx.units.values()].map((u) => ({ u, s: cosineQ(q, u.v) })).sort((a, b) => b.s - a.s);
+  const best = all[0]?.s || 0;
+  const scored = all.filter((x) => x.s >= floor && x.s >= best * RELATIVE);
   const out: Recall = { memory: [], passages: [], skills: [] };
   const seenNotes = new Set<string>();
   for (const { u, s } of scored) {
     if (u.kind === 'memory' && out.memory.length < 10) out.memory.push(u.text);
-    else if (u.kind === 'skill' && out.skills.length < 2 && s >= MIN_SCORE + 0.05) out.skills.push({ noteId: u.noteId, title: u.title, score: s });
+    else if (u.kind === 'skill' && out.skills.length < 2 && s >= floor + 0.03) out.skills.push({ noteId: u.noteId, title: u.title, score: s });
     else if ((u.kind === 'knowledge' || u.kind === 'note') && out.passages.length < 4 && !seenNotes.has(`${u.noteId}:${u.kind}`)) {
       seenNotes.add(`${u.noteId}:${u.kind}`);
       out.passages.push({ title: u.title, text: u.text.replace(/^[^\n]*\n/, '').slice(0, 900), score: s });
@@ -257,6 +267,14 @@ let indexer = false;
 export function startSemanticIndexer(): void {
   if (indexer) return;
   indexer = true;
+  // One-time check so the server log shows whether free embeddings work with the configured keys.
+  setTimeout(() => {
+    const p = provider();
+    if (!p) return console.log('[RAY memory] keyword recall (add GEMINI_API_KEY or CLOUDFLARE_ACCOUNT_ID for meaning-based memory)');
+    embed(['ping'], 'query')
+      .then((v) => console.log(`[RAY memory] meaning-based recall ON via ${p} (${v[0]?.length || 0} dims)`))
+      .catch((e) => console.warn(`[RAY memory] ${p} embeddings failed: ${e instanceof Error ? e.message : e} — using keyword recall`));
+  }, 15_000).unref();
   setInterval(async () => {
     if (!provider()) return;
     for (const roomId of listRoomIds()) {
