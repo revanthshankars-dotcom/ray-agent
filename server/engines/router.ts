@@ -33,7 +33,7 @@
  */
 import { isRoomInterrupted, setRoomInterrupted } from '../hub.ts';
 import { sanitizeErrorMessage } from '../security.ts';
-import { balanceView, blockedReason, canRecheck, noteError, noteHeaders, noteSuccess, probeBalances } from './balance.ts';
+import { balanceView, blockedReason, canRecheck, noteError, providerFractionLeft, noteHeaders, noteSuccess, probeBalances } from './balance.ts';
 import { mcpKnownWords } from '../mcpConnectors.ts';
 import {
   PROVIDERS,
@@ -158,7 +158,13 @@ async function buildCandidates(kind: TaskKind, needsTools: boolean, pinned?: str
     const model = await resolveModel(p, tier);
     if (model && isModelAvailable(p, model) && !out.some((c) => c.p.id === p.id && c.model === model)) out.push({ p, model, tier });
   }
-  return out;
+  // Spread the load: an engine its provider reports under 30% left goes behind engines with more left,
+  // so one free allowance isn't drained while others sit unused. (Order is kept otherwise.)
+  const low = (c: { p: ProviderDef; model: string }) => {
+    const f = providerFractionLeft(c.p.id, c.model);
+    return f !== null && f < 0.3;
+  };
+  return [...out.filter((c) => !low(c)), ...out.filter(low)];
 }
 
 // ---------------------------------------------------------------------------
@@ -305,9 +311,15 @@ function sanitizeTools(tools: RouterChatInput['tools']): RouterChatInput['tools'
     const props = (t.function.parameters?.properties || {}) as Record<string, Record<string, unknown>>;
     const fixed: Record<string, Record<string, unknown>> = {};
     for (const [k, v] of Object.entries(props)) {
-      fixed[k] = v.type === 'array' && !v.items ? { ...v, items: { type: 'string' } } : v;
+      const base: Record<string, unknown> = v.type === 'array' && !v.items ? { ...v, items: { type: 'string' } } : { ...v };
+      // Token diet: parameter hints rarely need more than a line.
+      if (typeof base.description === 'string' && base.description.length > 120) base.description = `${base.description.slice(0, 117)}…`;
+      fixed[k] = base;
     }
-    return { ...t, function: { ...t.function, parameters: { ...t.function.parameters, properties: fixed } } };
+    // Tool descriptions are sent with every request; the first ~300 characters carry what a model needs.
+    const desc = String(t.function.description || '');
+    const short = desc.length > 320 ? `${desc.slice(0, 317).replace(/\s+\S*$/, '')}…` : desc;
+    return { ...t, function: { ...t.function, description: short, parameters: { ...t.function.parameters, properties: fixed } } };
   });
 }
 
@@ -496,7 +508,7 @@ async function runSwarm(input: RouterChatInput, emitEngine: (d: Record<string, u
   const merged = await completeWithFailover(
     synthCandidates.length ? synthCandidates : fastCandidates,
     [
-      { role: 'system', content: input.systemInstruction },
+      { role: 'system', content: trimSystemPrompt(input.systemInstruction, []) },
       ...input.history.slice(-6).map((h) => ({ role: h.role, content: h.text }) as ChatMessage),
       {
         role: 'user',
@@ -566,7 +578,8 @@ export async function runAutoChatTurn(input: RouterChatInput): Promise<{ handled
 
   const tools = needsTools ? selectRelevantTools(input.message, sanitizeTools(input.tools)) : [];
   const messages: ChatMessage[] = [
-    { role: 'system', content: input.systemInstruction },
+    // Only the rules for the tools this message can use (the full rulebook is ~3,000 tokens per request).
+    { role: 'system', content: trimSystemPrompt(input.systemInstruction, tools.map((t) => t.function.name)) },
     ...input.history.slice(-10).map((h) => ({ role: h.role, content: h.text.slice(0, 1500) }) as ChatMessage),
   ];
   const images = (input.attachments || []).filter((a) => a.mimeType.startsWith('image/'));
@@ -786,4 +799,56 @@ export async function getEngineBalances(refresh = false) {
     );
   }
   return Promise.all(configured.map(async (p) => ({ label: p.label, ...(await balanceView(p.id)) })));
+}
+
+
+// ---------------------------------------------------------------------------
+// Token diet: RAY's full rulebook is ~12K characters (~3,000 tokens) and went out with every request,
+// even "hello". Keep the core rules plus only the rules for the tools this request can call.
+// ---------------------------------------------------------------------------
+const CORE_RULES = new Set(['1', '2', '9', '10', '17', '33']);
+// Whenever any tool is offered: device control, sensitive actions, access policy, offline devices, missions.
+const TOOL_CORE_RULES = new Set(['3', '4', '6', '7', '18']);
+const NOTE_TOOLS = /^(search_second_brain|read_brain_note|upsert_brain_note|link_brain_notes|skill_\w+)$/;
+
+export function trimSystemPrompt(full: string, toolNames: string[]): string {
+  const lines = full.split('\n');
+  const out: string[] = [];
+  let inRules = false;
+  let inNotes = false;
+  let notes = 0;
+  const wantNotes = toolNames.some((t) => NOTE_TOOLS.test(t));
+  const words = toolNames.map((t) => t.toLowerCase());
+  for (const line of lines) {
+    if (/^Behavioral Guidelines:/.test(line)) {
+      inRules = true;
+      out.push(line);
+      continue;
+    }
+    if (/^Second Brain Vault notes/.test(line)) {
+      inNotes = true;
+      out.push(line);
+      continue;
+    }
+    if (inNotes) {
+      if (/^- \[\[/.test(line)) {
+        notes++;
+        if (wantNotes) out.push(line);
+        continue;
+      }
+      inNotes = false;
+      if (!wantNotes && notes) out.push(`(${notes} notes — use search_second_brain to look inside)`);
+    }
+    if (inRules) {
+      const m = line.match(/^(\d+)b?\.\s/);
+      if (m) {
+        const low = line.toLowerCase();
+        if (CORE_RULES.has(m[1]) || (words.length && TOOL_CORE_RULES.has(m[1])) || words.some((w) => low.includes(w))) out.push(line);
+        continue;
+      }
+      if (line.trim()) inRules = false; // next section
+    }
+    out.push(line);
+  }
+  return out.join('\n');
 }
