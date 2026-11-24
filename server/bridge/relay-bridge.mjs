@@ -33,7 +33,7 @@ import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import WebSocket, { WebSocketServer } from 'ws';
 
-const BRIDGE_VERSION = '3.11';
+const BRIDGE_VERSION = '3.12';
 const IS_TERMUX = Boolean(process.env.PREFIX && process.env.PREFIX.includes('com.termux')) || fs.existsSync('/data/data/com.termux');
 const PLATFORM = IS_TERMUX ? 'android' : os.platform();
 const WS_URL = process.env.RELAY_WS_URL || "__RAY_WS_URL__";
@@ -2288,6 +2288,7 @@ async function jarvisAction(action, req) {
   if (action === 'home_assistant') return await homeAssistantAction(req);
   if (action === 'list_contacts') return await listPhoneContacts();
   if (action === 'notch') return await notchAction(req);
+  if (action === 'local_ai') return await localAiAction(req);
   if (action === 'lookup_contact') return await new Promise((res) => lookupContactNumber(String(req.name || ''), (number, label) => res(number ? { ok: true, data: { number, name: label } } : { ok: false, error: label })));
   if (action === 'browser') return await browserAction(req);
   if (action === 'diagnose') return { ok: true, data: await diagnoseDevice() };
@@ -2302,6 +2303,13 @@ async function runBridgeAction(action, reqData) {
     const jv = await jarvisAction(action, reqData || {});
     if (jv) return jv;
     if (action === 'ollama_tags') {
+      // RAY's own local brain comes first; Ollama models (if installed) are added after it.
+      const local = Object.values(LOCAL_MODELS).filter((m, i) => localModelReady(Object.keys(LOCAL_MODELS)[i])).map((m) => ({ name: m.name }));
+      if (local.length) {
+        let extra = [];
+        try { const r = await fetch(OLLAMA_HOST + '/api/tags', { signal: AbortSignal.timeout(2000) }); if (r.ok) extra = (await r.json()).models || []; } catch {}
+        return { ok: true, data: { models: [...local, ...extra] } };
+      }
       const targetBase = new URL(reqData.ollamaUrl || OLLAMA_HOST);
       if (!['127.0.0.1', 'localhost'].includes(targetBase.hostname)) {
         return { ok: false, data: null, error: 'Ollama bridge proxy only allows 127.0.0.1/localhost.' };
@@ -2317,6 +2325,9 @@ async function runBridgeAction(action, reqData) {
       }
     }
     if (action === 'ollama_chat') {
+      const want = String(reqData.body?.model || '');
+      const ollamaUp = ollamaState.running && ollamaState.models.length > 0;
+      if (/RAY local|qwen3-1\.7b|smolvlm/i.test(want) || (!ollamaUp && (localModelReady('text') || localModelReady('vision')))) return await localChat(reqData.body || {});
       const targetBase = new URL(reqData.ollamaUrl || OLLAMA_HOST);
       if (!['127.0.0.1', 'localhost'].includes(targetBase.hostname)) {
         return { ok: false, data: null, error: 'Ollama bridge proxy only allows 127.0.0.1/localhost.' };
@@ -2830,9 +2841,14 @@ async function answerLocally(text, fromPeer = false) {
     const r = await lanRequest({ type: 'ask', text: q }, 90000);
     return r.ok ? r.answer : "I'm offline and can't reach your PC. Link them with Wi-Fi, hotspot, Bluetooth tethering or USB tethering.";
   }
+  const system = "You are RAY, a concise personal assistant running OFFLINE on the user's computer. Answer in 1-3 short spoken sentences.";
+  if (localModelReady('text')) {
+    const lo = await localChat({ messages: [{ role: 'system', content: system }, { role: 'user', content: q }] });
+    if (lo.ok) return String(lo.data.message.content || '').trim() || 'Done.';
+  }
   const up = await ensureOllamaRunning(true);
   if (!up || !ollamaState.models.length) {
-    return "I'm offline and this computer has no local model. Install Ollama and run: ollama pull llama3.2 — device commands (open, call, ring, send, messages, battery, files) still work offline.";
+    return "I'm offline and this computer has no local brain yet. In RAY → Connections → Local brain press Install (free, ~1.7 GB, no Ollama needed). Device commands (open, call, ring, send, messages, battery, files) still work offline.";
   }
   const model = ollamaState.models.find((x) => /llama3\.2|qwen|gemma|phi|mistral/i.test(x)) || ollamaState.models[0];
   const out = await runBridgeAction('ollama_chat', {
@@ -3158,6 +3174,204 @@ function connect() {
     if (!loggedProxyRedirect) console.log('[RAY Bridge] Disconnected, retrying in ' + Math.round(delay / 1000) + 's...');
     setTimeout(connect, delay);
   });
+}
+
+// ---------------------------------------------------------------------------
+// RAY local brain (no Ollama needed): llama.cpp + Qwen3 1.7B for text & commands and SmolVLM2 500M for
+// photos/screenshots. The bridge downloads them once (~1.7 GB) into ~/.ray-local-ai, starts each model
+// only when asked, and stops it after 15 idle minutes. Ollama still works if it's installed.
+// ---------------------------------------------------------------------------
+const LOCAL_AI_DIR = path.join(os.homedir(), '.ray-local-ai');
+const LLAMA_FALLBACK_TAG = 'b12680';
+const HF = 'https://huggingface.co';
+const LOCAL_MODELS = {
+  text: { name: 'qwen3-1.7b (RAY local)', label: 'Qwen3 1.7B — answers & commands', repo: 'unsloth/Qwen3-1.7B-GGUF', file: 'Qwen3-1.7B-Q4_K_M.gguf', mb: 1107, port: 17351, ctx: 8192 },
+  vision: { name: 'smolvlm2-500m (RAY local)', label: 'SmolVLM2 500M — photos & screenshots', repo: 'ggml-org/SmolVLM2-500M-Video-Instruct-GGUF', file: 'SmolVLM2-500M-Video-Instruct-Q8_0.gguf', mmproj: 'mmproj-SmolVLM2-500M-Video-Instruct-Q8_0.gguf', mb: 546, port: 17352, ctx: 4096 },
+};
+const localAi = { installing: false, step: '', progress: 0, error: '', procs: {}, lastUse: {} };
+
+function llamaAsset(tag) {
+  const arm = os.arch() === 'arm64';
+  if (process.platform === 'win32') return `llama-${tag}-bin-win-cpu-${arm ? 'arm64' : 'x64'}.zip`;
+  if (process.platform === 'darwin') return `llama-${tag}-bin-macos-${arm ? 'arm64' : 'x64'}.tar.gz`;
+  return `llama-${tag}-bin-ubuntu-${arm ? 'arm64' : 'x64'}.tar.gz`;
+}
+async function latestLlamaTag() {
+  try {
+    const r = await fetch('https://api.github.com/repos/ggml-org/llama.cpp/releases/latest', { headers: { 'User-Agent': 'RAY-bridge' }, signal: AbortSignal.timeout(15000) });
+    const j = await r.json();
+    if (j && j.tag_name && (j.assets || []).some((a) => a.name === llamaAsset(j.tag_name))) return j.tag_name;
+  } catch {}
+  return LLAMA_FALLBACK_TAG;
+}
+function findLlamaServer() {
+  const want = process.platform === 'win32' ? 'llama-server.exe' : 'llama-server';
+  const walk = (dir, depth) => {
+    if (depth > 4 || !fs.existsSync(dir)) return null;
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, e.name);
+      if (e.isFile() && e.name === want) return full;
+      if (e.isDirectory()) { const f = walk(full, depth + 1); if (f) return f; }
+    }
+    return null;
+  };
+  return walk(path.join(LOCAL_AI_DIR, 'bin'), 0);
+}
+const modelPath = (f) => path.join(LOCAL_AI_DIR, 'models', f);
+function localModelReady(kind) {
+  const m = LOCAL_MODELS[kind];
+  return Boolean(findLlamaServer()) && fs.existsSync(modelPath(m.file)) && (!m.mmproj || fs.existsSync(modelPath(m.mmproj)));
+}
+async function downloadFile(url, dest, label) {
+  if (fs.existsSync(dest)) return;
+  const r = await fetch(url, { redirect: 'follow', headers: { 'User-Agent': 'RAY-bridge' } });
+  if (!r.ok || !r.body) throw new Error(label + ': download failed (' + r.status + ')');
+  const total = Number(r.headers.get('content-length') || 0);
+  const tmp = dest + '.part';
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  const out = fs.createWriteStream(tmp);
+  let got = 0;
+  for await (const chunk of r.body) {
+    got += chunk.length;
+    if (!out.write(chunk)) await new Promise((res) => out.once('drain', res));
+    if (total) localAi.progress = got / total;
+  }
+  await new Promise((res, rej) => out.end((e) => (e ? rej(e) : res())));
+  fs.renameSync(tmp, dest);
+}
+async function installLocalAi(kinds = ['text', 'vision']) {
+  if (localAi.installing) return { ok: true, status: 'installing' };
+  localAi.installing = true;
+  localAi.error = '';
+  try {
+    if (!findLlamaServer()) {
+      const tag = await latestLlamaTag();
+      const asset = llamaAsset(tag);
+      localAi.step = 'Downloading llama.cpp ' + tag;
+      const archive = path.join(LOCAL_AI_DIR, asset);
+      await downloadFile(`https://github.com/ggml-org/llama.cpp/releases/download/${tag}/${asset}`, archive, 'llama.cpp');
+      localAi.step = 'Unpacking llama.cpp';
+      fs.mkdirSync(path.join(LOCAL_AI_DIR, 'bin'), { recursive: true });
+      // tar is built into Windows 10+, macOS and Linux and also opens .zip on Windows/macOS.
+      await new Promise((res, rej) => execFile('tar', ['-xf', archive, '-C', path.join(LOCAL_AI_DIR, 'bin')], { timeout: 600000, windowsHide: true }, (e, _o, err) => (e ? rej(new Error(String(err || e.message))) : res())));
+      fs.rmSync(archive, { force: true });
+      if (!findLlamaServer()) throw new Error('llama-server not found after unpacking');
+      if (process.platform !== 'win32') { try { fs.chmodSync(findLlamaServer(), 0o755); } catch {} }
+    }
+    for (const kind of kinds) {
+      const m = LOCAL_MODELS[kind];
+      for (const f of [m.file, m.mmproj].filter(Boolean)) {
+        localAi.step = 'Downloading ' + m.label + (f === m.mmproj ? ' (vision part)' : '');
+        localAi.progress = 0;
+        await downloadFile(`${HF}/${m.repo}/resolve/main/${f}`, modelPath(f), m.label);
+      }
+    }
+    localAi.step = 'Ready';
+    return { ok: true, status: 'installed' };
+  } catch (e) {
+    localAi.error = e && e.message ? e.message : String(e);
+    localAi.step = '';
+    return { ok: false, error: localAi.error };
+  } finally {
+    localAi.installing = false;
+  }
+}
+async function ensureLocalServer(kind) {
+  const m = LOCAL_MODELS[kind];
+  if (!localModelReady(kind)) return null;
+  const base = 'http://127.0.0.1:' + m.port;
+  localAi.lastUse[kind] = Date.now();
+  const healthy = async () => { try { const r = await fetch(base + '/health', { signal: AbortSignal.timeout(1500) }); return r.ok; } catch { return false; } };
+  if (await healthy()) return base;
+  const bin = findLlamaServer();
+  const threads = String(Math.max(2, Math.min(8, (os.cpus() || []).length - 1)));
+  const args = ['-m', modelPath(m.file), '--host', '127.0.0.1', '--port', String(m.port), '-c', String(m.ctx), '-t', threads, '--jinja'];
+  if (m.mmproj) args.push('--mmproj', modelPath(m.mmproj));
+  const env = { ...process.env };
+  if (process.platform === 'linux') env.LD_LIBRARY_PATH = path.dirname(bin) + (env.LD_LIBRARY_PATH ? ':' + env.LD_LIBRARY_PATH : '');
+  const child = spawn(bin, args, { cwd: path.dirname(bin), stdio: 'ignore', windowsHide: true, env });
+  child.on('error', () => {});
+  child.on('exit', () => { if (localAi.procs[kind] === child) delete localAi.procs[kind]; });
+  localAi.procs[kind] = child;
+  for (let i = 0; i < 120; i++) { await new Promise((r) => setTimeout(r, 500)); if (await healthy()) return base; }
+  return null;
+}
+// Free the memory when the models sit idle.
+setInterval(() => {
+  for (const [kind, child] of Object.entries(localAi.procs)) {
+    if (Date.now() - (localAi.lastUse[kind] || 0) > 15 * 60_000) { try { child.kill(); } catch {} delete localAi.procs[kind]; }
+  }
+}, 60_000).unref?.();
+
+/** Ollama-style chat body -> local llama.cpp (OpenAI API) -> Ollama-style answer. Images go to SmolVLM2. */
+async function localChat(body) {
+  const msgs = Array.isArray(body.messages) ? body.messages : [];
+  const hasImages = msgs.some((m) => Array.isArray(m.images) && m.images.length);
+  const kind = hasImages && localModelReady('vision') ? 'vision' : 'text';
+  const base = await ensureLocalServer(kind);
+  if (!base) return { ok: false, error: 'The RAY local brain is not installed on this PC yet (RAY → Connections → Local brain → Install).' };
+  let callN = 0;
+  const pendingIds = [];
+  const messages = msgs.map((m) => {
+    if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+      const tool_calls = m.tool_calls.map((tc) => {
+        const id = 'call_' + ++callN;
+        pendingIds.push(id);
+        const a = tc.function?.arguments;
+        return { id, type: 'function', function: { name: tc.function?.name || '', arguments: typeof a === 'string' ? a : JSON.stringify(a || {}) } };
+      });
+      return { role: 'assistant', content: m.content || '', tool_calls };
+    }
+    if (m.role === 'tool') return { role: 'tool', content: String(m.content || ''), tool_call_id: pendingIds.shift() || 'call_' + callN };
+    if (Array.isArray(m.images) && m.images.length && kind === 'vision') {
+      return { role: m.role, content: [...m.images.slice(0, 2).map((b64) => ({ type: 'image_url', image_url: { url: 'data:image/jpeg;base64,' + b64 } })), { type: 'text', text: String(m.content || '') }] };
+    }
+    return { role: m.role, content: String(m.content || '') };
+  });
+  // Qwen3: answer directly (its long "thinking" is slow on a CPU).
+  if (kind === 'text' && messages[0] && messages[0].role === 'system') messages[0] = { ...messages[0], content: messages[0].content + ' /no_think' };
+  const req = { messages, temperature: 0.3, max_tokens: 700 };
+  if (kind === 'text' && Array.isArray(body.tools) && body.tools.length) req.tools = body.tools;
+  try {
+    const r = await fetch(base + '/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req), signal: AbortSignal.timeout(170000) });
+    const j = await r.json();
+    if (!r.ok) return { ok: false, error: 'Local brain returned ' + r.status + ': ' + String(j?.error?.message || '').slice(0, 200) };
+    const msg = j.choices?.[0]?.message || {};
+    const content = String(msg.content || '').replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    const tool_calls = (msg.tool_calls || []).map((tc) => { let args = {}; try { args = JSON.parse(tc.function?.arguments || '{}'); } catch {} return { function: { name: tc.function?.name, arguments: args } }; });
+    return { ok: true, data: { model: LOCAL_MODELS[kind].name, message: { role: 'assistant', content, ...(tool_calls.length ? { tool_calls } : {}) }, done: true } };
+  } catch (e) {
+    return { ok: false, error: 'Local brain failed: ' + (e && e.message ? e.message : e) };
+  }
+}
+function localAiStatus() {
+  return {
+    status: localAi.installing ? 'installing' : localModelReady('text') || localModelReady('vision') ? 'installed' : 'not-installed',
+    step: localAi.step, progress: localAi.progress, error: localAi.error,
+    engine: Boolean(findLlamaServer()),
+    models: Object.entries(LOCAL_MODELS).map(([kind, m]) => ({ kind, name: m.name, label: m.label, mb: m.mb + (m.mmproj ? 0 : 0), ready: localModelReady(kind), running: Boolean(localAi.procs[kind]) })),
+    dir: LOCAL_AI_DIR,
+  };
+}
+async function localAiAction(req) {
+  const op = String(req.op || 'status');
+  if (op === 'install') {
+    const kinds = Array.isArray(req.kinds) && req.kinds.length ? req.kinds.filter((k) => LOCAL_MODELS[k]) : ['text', 'vision'];
+    void installLocalAi(kinds);
+    return { ok: true, data: { ...localAiStatus(), status: 'installing' } };
+  }
+  if (op === 'stop') { for (const c of Object.values(localAi.procs)) { try { c.kill(); } catch {} } localAi.procs = {}; return { ok: true, data: localAiStatus() }; }
+  if (op === 'remove') {
+    for (const c of Object.values(localAi.procs)) { try { c.kill(); } catch {} }
+    localAi.procs = {};
+    try { fs.rmSync(LOCAL_AI_DIR, { recursive: true, force: true }); } catch {}
+    return { ok: true, data: localAiStatus() };
+  }
+  if (op === 'test') {
+    const out = await localChat({ messages: [{ role: 'system', content: 'You are RAY. Reply in one short sentence.' }, { role: 'user', content: String(req.text || 'Say hello.') }] });
+    return out.ok ? { ok: true, data: { answer: out.data.message.content, model: out.data.model } } : out;
+  }
+  return { ok: true, data: localAiStatus() };
 }
 
 // ---------------------------------------------------------------------------

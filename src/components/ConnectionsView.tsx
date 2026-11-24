@@ -25,6 +25,7 @@ import { ConnectThisDevice } from './ConnectThisDevice';
 import { AutopilotCard } from './AutopilotCard';
 import { EngineBalance } from './EngineBalance';
 import { EngineLimits } from './EngineLimits';
+import { LocalBrainCard } from './LocalBrainCard';
 
 interface EngineStatus {
   id: string;
@@ -536,6 +537,9 @@ export function ConnectionsView({
 
           {configured.length > 0 ? (
             <>
+              <div className="mt-4">
+                <LocalBrainCard roomId={roomId} />
+              </div>
               <EngineLimits roomId={roomId} />
               <EngineBalance roomId={roomId} engines={configured} />
             </>

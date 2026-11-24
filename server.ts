@@ -442,6 +442,20 @@ async function startServer() {
     res.json({ ok: true, device: pc.name, ...(out.data as Record<string, unknown>) });
   });
 
+  // RAY local brain on the PC (llama.cpp + Qwen3 1.7B + SmolVLM2): install / status / test / stop / remove.
+  app.post('/api/local-ai/:op', requireRoomAuth, async (req, res) => {
+    const op = String(req.params.op);
+    if (!['install', 'status', 'test', 'stop', 'remove'].includes(op)) return res.status(400).json({ error: 'Unknown operation' });
+    const body = req.body as { roomId?: string; kinds?: string[]; text?: string; device?: string };
+    const roomId = normalizeRoomId(String(body.roomId || ''));
+    const bridges = getRoomDevices(roomId).filter((d) => d.online && d.type === 'bridge' && !/android/i.test(d.os || ''));
+    const pc = (body.device && bridges.find((d) => d.id === body.device || d.name === body.device)) || bridges[0];
+    if (!pc) return res.status(409).json({ error: 'Your PC bridge is offline. Turn on the PC (or start the RAY bridge) and try again.' });
+    const out = await dispatchBridgeProxyCall(roomId, { action: 'local_ai', op, kinds: body.kinds, text: body.text }, op === 'test' ? 180000 : 20000, pc.id);
+    if (!out.ok) return res.status(502).json({ error: out.error || 'The bridge did not answer.' });
+    res.json({ ok: true, device: pc.name, ...(out.data as Record<string, unknown>) });
+  });
+
   // Autopilot (self-thinking) settings + manual run.
   app.get('/api/autopilot', requireRoomAuth, async (req, res) => {
     res.json(await getAutopilot(normalizeRoomId(String(req.query.room || 'RLY-HOME'))));
