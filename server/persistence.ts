@@ -153,6 +153,14 @@ export function loadJsonSync<T extends Json>(key: string): T | null {
   return null;
 }
 
+// KV budget savers: skip writes whose content hasn't changed, and after a 429 (daily write limit
+// reached) hold KV writes for a while and retry the latest value later instead of dropping it.
+const lastKvBody = new Map<string, string>();
+let kvHoldUntil = 0;
+const KV_HOLD_MS = 30 * 60_000;
+/** Keys that change constantly but matter little: saved at most every 30 minutes on KV. */
+const SLOW_KEYS = /^(engine-usage|awareness-|files-)/;
+
 async function writeNow(key: string, value: Json): Promise<void> {
   const k = safeKey(key);
   const body = JSON.stringify(value);
@@ -163,7 +171,11 @@ async function writeNow(key: string, value: Json): Promise<void> {
     // read-only FS (e.g. some serverless) – GCS still gets the write
   }
   const kv = await getKv();
-  if (kv) {
+  if (kv && lastKvBody.get(k) !== body) {
+    if (Date.now() < kvHoldUntil) {
+      scheduleSave(key, () => value, kvHoldUntil - Date.now() + 1000);
+      return;
+    }
     try {
       const r = await fetch(`${kv.base}/${encodeURIComponent(`${PREFIX}/${k}`)}`, {
         method: 'PUT',
@@ -171,7 +183,12 @@ async function writeNow(key: string, value: Json): Promise<void> {
         body,
         signal: AbortSignal.timeout(15000),
       });
-      if (!r.ok) console.warn('[RAY persistence] KV write failed for', k, r.status);
+      if (r.ok) lastKvBody.set(k, body);
+      else if (r.status === 429) {
+        if (Date.now() >= kvHoldUntil) console.warn(`[RAY persistence] Cloudflare KV daily write limit reached — holding writes for ${KV_HOLD_MS / 60000} min (latest values kept and retried).`);
+        kvHoldUntil = Date.now() + KV_HOLD_MS;
+        scheduleSave(key, () => value, KV_HOLD_MS + 1000);
+      } else console.warn('[RAY persistence] KV write failed for', k, r.status);
     } catch (err) {
       console.warn('[RAY persistence] KV write failed for', k, (err as Error).message);
     }
@@ -200,7 +217,7 @@ export function scheduleSave(key: string, getValue: () => Json, delayMs = 1500):
       pending.get(key)!.getValue = getValue;
       return;
     }
-    delayMs = Math.max(delayMs, Number(process.env.RAY_KV_WRITE_INTERVAL_MS || 300_000));
+    delayMs = Math.max(delayMs, Number(process.env.RAY_KV_WRITE_INTERVAL_MS || 300_000), SLOW_KEYS.test(key) ? 30 * 60_000 : 0);
   }
   const existing = pending.get(key);
   if (existing) clearTimeout(existing.timer);

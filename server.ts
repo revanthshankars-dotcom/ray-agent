@@ -1218,7 +1218,31 @@ async function startServer() {
       const pinnable = ['groq', 'openrouter', 'huggingface', 'opencode', 'cerebras', 'mistral', 'deepseek', 'zhipu', 'siliconflow', 'dashscope', 'novita'];
       const routerMode =
         engine?.provider && pinnable.includes(engine.provider) ? engine.provider : engine?.routerMode || 'auto';
-      if (!engine?.provider || engine.provider === 'auto' || pinnable.includes(engine.provider)) {
+      // "Local (Ollama)" is a preference, not a trap: if Ollama isn't reachable right now (PC off, bridge
+      // offline, Ollama not running, no models), answer with the free cloud engines instead of failing.
+      let ollamaPick: { model: string; viaBridge: boolean } | null = null;
+      if (engine?.provider === 'ollama') {
+        const bridgeUp = getRoomDevices(normalizedRoom).some((d) => d.online && d.type === 'bridge');
+        const probes = [
+          ...(bridgeUp ? [{ useBridgeProxy: true }] : []),
+          ...(engine.useBridgeProxy && !bridgeUp ? [] : [{ useBridgeProxy: false }]),
+        ];
+        for (const pr of probes) {
+          const out = await fetchOllamaModels({ roomId: normalizedRoom, ollamaUrl: engine.ollamaUrl, ...pr }).catch(() => null);
+          if (out?.ok && out.models.length) {
+            const want = engine.ollamaModel || 'llama3.2';
+            const model = out.models.find((m) => m === want || m.split(':')[0] === want.split(':')[0]) || out.models[0];
+            ollamaPick = { model, viaBridge: pr.useBridgeProxy };
+            break;
+          }
+        }
+        if (!ollamaPick) {
+          sendEvent({ type: 'engine', data: { phase: 'fallback', provider: 'Ollama offline → free engines', reason: 'Local Ollama is offline right now (PC/bridge off or Ollama not running) — answering with the free cloud engines instead.' } });
+        }
+      }
+      const ollamaOffline = engine?.provider === 'ollama' && !ollamaPick;
+      // The free auto-router (with Gemini / local-Ollama last resorts) — also the fallback when Local fails.
+      const runAutoRouted = async () => {
         const sysPrompt = buildJarvisSystemInstruction(normalizedRoom, sourceDeviceName || 'Web Client', targetDeviceHint, false, {
           hasGoogleToken: Boolean(googleAccessToken),
           customConnectors,
@@ -1278,6 +1302,9 @@ async function startServer() {
             }
           }
         }
+      };
+      if (!engine?.provider || engine.provider === 'auto' || pinnable.includes(engine.provider) || ollamaOffline) {
+        await runAutoRouted();
       } else if (engine?.provider === 'openrouter') {
         const sysPrompt = buildJarvisSystemInstruction(
           normalizedRoom,
@@ -1358,6 +1385,7 @@ async function startServer() {
             customConnectors,
           }
         );
+        try {
         await runOllamaChatTurn({
           roomId: normalizedRoom,
           sourceDeviceName: sourceDeviceName || 'Web Client',
@@ -1366,14 +1394,19 @@ async function startServer() {
           history: history || [],
           attachments: attachments || [],
           ollamaUrl: engine.ollamaUrl,
-          ollamaModel: engine.ollamaModel || 'llama3.2',
-          useBridgeProxy: Boolean(engine.useBridgeProxy),
+          ollamaModel: ollamaPick?.model || engine.ollamaModel || 'llama3.2',
+          useBridgeProxy: ollamaPick ? ollamaPick.viaBridge : Boolean(engine.useBridgeProxy),
           autoBridgeFallback: true,
           systemInstruction: sysPrompt,
           ollamaTools: getOllamaToolDeclarations(),
           executeTool: toolExecutor,
           onEvent: sendEvent,
         });
+        } catch (ollamaErr) {
+          // Ollama answered the probe but failed mid-reply (crashed, model unloaded, PC slept): don't leave Ray hanging.
+          sendEvent({ type: 'engine', data: { phase: 'fallback', provider: 'Ollama offline → free engines', reason: `Local Ollama failed (${sanitizeErrorMessage(ollamaErr)}) — answering with the free cloud engines instead.` } });
+          await runAutoRouted();
+        }
       } else {
         await runGeminiNative();
       }
