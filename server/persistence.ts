@@ -159,7 +159,7 @@ const lastKvBody = new Map<string, string>();
 let kvHoldUntil = 0;
 const KV_HOLD_MS = 30 * 60_000;
 /** Keys that change constantly but matter little: saved at most every 30 minutes on KV. */
-const SLOW_KEYS = /^(engine-usage|awareness-|files-)/;
+const SLOW_KEYS = /^(engine-usage|engine-balance|awareness-|files-)/;
 
 async function writeNow(key: string, value: Json): Promise<void> {
   const k = safeKey(key);

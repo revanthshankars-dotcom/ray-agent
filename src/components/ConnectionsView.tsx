@@ -23,6 +23,7 @@ import { authFetch, getStoredRoomToken } from '../utils/roomAuth';
 import type { PushWakeStatus } from '../hooks/usePushWake';
 import { ConnectThisDevice } from './ConnectThisDevice';
 import { AutopilotCard } from './AutopilotCard';
+import { EngineBalance } from './EngineBalance';
 
 interface EngineStatus {
   id: string;
@@ -532,35 +533,11 @@ export function ConnectionsView({
             </div>
           )}
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 mt-4">
-            {configured.map((e) => (
-              <div key={e.id} className="rounded-xl border border-slate-200 dark:border-slate-800 p-3">
-                <div className="flex items-center gap-2">
-                  <Dot ok={e.available} warn={!e.available} />
-                  <span className="text-sm font-semibold text-slate-900 dark:text-slate-100">{e.label}</span>
-                  {e.supportsTools && <Zap className="w-3.5 h-3.5 text-amber-500" aria-label="Can control devices" />}
-                </div>
-                <div className="mt-2 h-1.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
-                  <div
-                    className={`h-full rounded-full ${e.quotaUsedPct > 85 ? 'bg-red-500' : e.quotaUsedPct > 60 ? 'bg-amber-500' : 'bg-emerald-500'}`}
-                    style={{ width: `${Math.max(2, Math.min(100, e.quotaUsedPct))}%` }}
-                  />
-                </div>
-                <p className="text-[11px] text-slate-500 mt-1.5">
-                  {e.requestsToday}/{e.dailyLimit} today
-                  {e.coolingDownSec > 0 ? ` · cooling down ${e.coolingDownSec}s` : ''}
-                </p>
-                {e.lastError && (
-                  <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-1 break-words" title={e.lastError.message}>
-                    Last error ({e.lastError.status}): {e.lastError.message.slice(0, 120)}
-                  </p>
-                )}
-              </div>
-            ))}
-            {configured.length === 0 && (
-              <p className="text-xs text-slate-500 col-span-full">No engine keys yet — add any one below (Groq or Cerebras recommended).</p>
-            )}
-          </div>
+          {configured.length > 0 ? (
+            <EngineBalance roomId={roomId} engines={configured} />
+          ) : (
+            <p className="text-xs text-slate-500 mt-4">No engine keys yet — add any one below (Groq or Cerebras recommended).</p>
+          )}
 
           {unconfigured.length > 0 && (
             <details className="mt-4 group">

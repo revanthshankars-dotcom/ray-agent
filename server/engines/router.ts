@@ -33,6 +33,7 @@
  */
 import { isRoomInterrupted, setRoomInterrupted } from '../hub.ts';
 import { sanitizeErrorMessage } from '../security.ts';
+import { balanceView, blockedReason, noteError, noteHeaders, noteSuccess, probeBalances } from './balance.ts';
 import { mcpKnownWords } from '../mcpConnectors.ts';
 import {
   PROVIDERS,
@@ -223,11 +224,16 @@ async function callCompletion(
     let ra = Number(resp.headers.get('retry-after') || '') || undefined;
     const m = errMsg.match(/try again in (?:(\d+)m)?([\d.]+)s/i);
     if (!ra && m) ra = Math.ceil(Number(m[1] || 0) * 60 + Number(m[2] || 0));
+    // Real numbers for the balance bar (and how long the provider says it is used up).
+    const usedUpFor = noteError(p.id, model, resp.status, errMsg, resp.headers);
+    if (usedUpFor) ra = Math.max(ra || 0, usedUpFor);
     let status = resp.status;
     if (status === 400 && /credit|afford|max_tokens|insufficient/i.test(errMsg)) status = 402;
     if (/request too large|tokens per minute|TPM/i.test(errMsg) && status !== 429) status = 413;
     throw new ProviderError(`${p.label} (${model}): ${errMsg}`.slice(0, 300), status, ra);
   }
+  noteHeaders(p.id, model, resp.headers);
+  noteSuccess(p.id, model, json.usage?.total_tokens || 0);
   const msg = json.choices?.[0]?.message || {};
   const rawCalls = msg.tool_calls || [];
   const toolCalls = rawCalls.map((tc, i) => {
@@ -745,4 +751,33 @@ export async function visionComplete(system: string, userText: string, imageData
     { maxTokens, timeoutMs: 45000, kind: 'vision' }
   );
   return { text: out.content, engine: `${out.provider.label} · ${out.model}` };
+}
+
+
+// ---------------------------------------------------------------------------
+// Real balances for the Connections page ("Check now" also pings engines whose limits come in headers)
+// ---------------------------------------------------------------------------
+const HEADER_PROVIDERS = new Set(['groq', 'mistral', 'cerebras', 'github', 'sambanova', 'nvidia']);
+const lastPing = new Map<string, number>();
+
+export async function getEngineBalances(refresh = false) {
+  const configured = PROVIDERS.filter((p) => isProviderConfigured(p));
+  await probeBalances(
+    configured.filter((p) => ['openrouter', 'siliconflow', 'deepseek'].includes(p.id)).map((p) => ({ id: p.id, baseUrl: p.baseUrl() || '', apiKey: p.apiKey() || '' })),
+    refresh
+  );
+  if (refresh) {
+    // One 1-token request per engine so it reports its current limits (at most every 10 minutes).
+    await Promise.all(
+      configured
+        .filter((p) => HEADER_PROVIDERS.has(p.id) && !blockedReason(p.id) && Date.now() - (lastPing.get(p.id) || 0) > 10 * 60_000)
+        .map(async (p) => {
+          lastPing.set(p.id, Date.now());
+          const model = await resolveModel(p, 'large').catch(() => null);
+          if (!model || blockedReason(p.id, model)) return;
+          await callCompletion(p, model, [{ role: 'user', content: 'hi' }], undefined, { maxTokens: 1, timeoutMs: 12000 }).catch(() => undefined);
+        })
+    );
+  }
+  return Promise.all(configured.map(async (p) => ({ label: p.label, ...(await balanceView(p.id)) })));
 }

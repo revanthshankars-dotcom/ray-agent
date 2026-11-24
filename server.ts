@@ -85,7 +85,7 @@ import {
   validateScreenControlAction,
 } from './server/security.ts';
 import { executeAppConnectorAction, executeGoogleWorkspaceAction } from './server/workspace.ts';
-import { getEngineAssignments, runAutoChatTurn, selectRelevantTools } from './server/engines/router.ts';
+import { getEngineAssignments, getEngineBalances, runAutoChatTurn, selectRelevantTools } from './server/engines/router.ts';
 import { dailyBudget, getEngineStatus, getKeySources, loadUsage, normalizeProviderEnv } from './server/engines/providers.ts';
 import { installShutdownFlush, persistenceBackend } from './server/persistence.ts';
 import { getVapidPublicKey, initWakeServices, sendPush } from './server/wake.ts';
@@ -320,6 +320,16 @@ async function startServer() {
       assignments: await getEngineAssignments(),
       keySources: getKeySources(),
     });
+  });
+
+  // What each engine's provider says is left (headers, limit errors, balance APIs) — not RAY's guess.
+  app.get('/api/engines/balance', requireRoomAuth, async (req, res) => {
+    try {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ checkedAt: Date.now(), providers: await getEngineBalances(req.query.refresh === '1') });
+    } catch (err) {
+      res.status(500).json({ error: sanitizeErrorMessage(err) });
+    }
   });
 
   // Meta (WhatsApp Cloud API / Instagram Messaging) webhook

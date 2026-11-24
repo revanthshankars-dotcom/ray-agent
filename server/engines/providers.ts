@@ -6,6 +6,7 @@
  * Limits are the published free-tier numbers; RAY tracks real usage per day and treats
  * HTTP 429 / Retry-After as the source of truth.
  */
+import { blockedReason } from './balance.ts';
 import { loadJson, scheduleSave } from '../persistence.ts';
 
 export type TaskKind = 'quick' | 'chat' | 'code' | 'reasoning' | 'vision' | 'tools';
@@ -716,7 +717,8 @@ export function recordFailure(providerId: string, status: number, retryAfterSec?
 }
 
 export function isModelAvailable(p: ProviderDef, model: string): boolean {
-  return isAvailable(p) && (cooldownUntil.get(`${p.id}|${model}`) || 0) <= Date.now();
+  // Skip models the provider itself said are used up (daily tokens, no credit…) until they reset.
+  return isAvailable(p) && (cooldownUntil.get(`${p.id}|${model}`) || 0) <= Date.now() && !blockedReason(p.id, model);
 }
 
 /** Output-token cap for a model (never the 65K some providers default to). */
@@ -744,6 +746,7 @@ export function isAvailable(p: ProviderDef): boolean {
   if (!isProviderConfigured(p)) return false;
   if (p.id !== 'custom' && dailyBudget().exceeded) return false;
   if ((cooldownUntil.get(p.id) || 0) > Date.now()) return false;
+  if (blockedReason(p.id)) return false; // whole account used up (credit, daily cap)
   if (quotaUsed(p) >= 0.98) return false;
   const win = (minuteWindow.get(p.id) || []).filter((t) => Date.now() - t < 60_000);
   return win.length < p.rpm;
