@@ -17,6 +17,7 @@ import type { FunctionDeclaration } from '@google/genai';
 import { broadcastHudSound, broadcastRoomEvent, dispatchDeviceCommand, getRoomDevices, normalizeRoomId } from './hub.ts';
 import { ringDevice } from './calls.ts';
 import { phoneLineStatus, startPhoneCall } from './phoneCall.ts';
+import { getUiPrefs } from './uiPrefs.ts';
 
 export interface PendingAsk {
   id: string;
@@ -103,7 +104,7 @@ export function startAsk(roomId: string, input: { question: string; options?: st
   t(a.urgent ? 0 : 45_000, () => {
     for (const d of devices()) {
       if (d.online && isPcBridge(d)) {
-        void dispatchDeviceCommand({ roomId, type: 'ask', targetQuery: d.id, source: 'assistant', payload, waitForAckMs: 3000 }).catch(() => undefined);
+        void getUiPrefs(roomId).then((p) => dispatchDeviceCommand({ roomId, type: 'ask', targetQuery: d.id, source: 'assistant', payload: { ...payload, pin: p.pinPopups }, waitForAckMs: 3000 })).catch(() => undefined);
         a.reached.push(`${d.name} (pop-up)`);
       } else if (!d.online && d.type !== 'bridge') {
         // Offline app devices: queued + web push ("RAY needs you") that opens the question.

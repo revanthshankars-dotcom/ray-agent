@@ -5,6 +5,7 @@
 import { Type } from '@google/genai';
 import type { FunctionDeclaration } from '@google/genai';
 import { dispatchDeviceCommand } from './hub.ts';
+import { getUiPrefs } from './uiPrefs.ts';
 import { browserToolDeclarations, executeBrowserTool } from './browserAgent.ts';
 import { executeLearningTool, learningToolDeclarations } from './learning.ts';
 import { executeRepairTool, repairToolDeclarations } from './repair.ts';
@@ -36,7 +37,7 @@ export async function executeJarvisTool(
       type: 'wake',
       targetQuery: String(args.device || 'pc'),
       source: 'assistant',
-      payload: { popup: true, reason: String(args.reason || '') },
+      payload: { popup: true, reason: String(args.reason || ''), pin: (await getUiPrefs(roomId)).pinPopups },
       waitForAckMs: 6000,
     });
     return { result: out.summary };

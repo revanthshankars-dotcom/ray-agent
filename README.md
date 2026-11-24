@@ -134,7 +134,24 @@ Webhooks (`/api/phone/voice`, `/api/phone/status`) are verified with Twilio's si
 - **Shared mic** — in the assistant toolbar choose **Runs on** (speak on the phone, act on the PC, or the other way) or **Use mic on…** to make another device listen for this one (a phone runs its Talk loop; a PC pops up RAY listening). "on my PC / phone" in a command always wins.
 - **Video calls** — call any of your devices with video (camera button next to the phone icon, or "video call my phone"). Camera on/off and front/back flip mid-call; audio calls can switch the camera on without re-dialling.
 - **Ask Ray** — when a task needs your decision, RAY asks instead of guessing (`ask_user`) and waits for your answer: a card in every RAY window (tap, type or speak), a pop-up dialog over any app on your Android phone even when the RAY app is closed (Termux bridge; the question is also spoken), the PC pops RAY up, push notifications to closed devices, then a ring, then a real phone call if Twilio is set up. The first answer from any device continues the task.
+- **On top of every app (PC)** — **Float** in the top bar (or Alt+O, or JARVIS Core → *Float RAY now*) opens a small RAY window that stays above every app on Windows, Mac and Linux (Chrome/Edge 116+): mic, live captions, a quick ask box and RAY's questions. JARVIS Core → *Keep RAY's pop-ups pinned on top* keeps pop-ups from "Hey Ray", questions and other devices above other windows until you close them (Windows & Linux PC bridge; on Mac use Float).
 - **Free 24/7 server** — Oracle Cloud Always Free: [`deploy/oracle/README.md`](deploy/oracle/README.md), one command (`deploy/oracle/setup.sh`).
+
+## Connect your Android phone — step by step
+
+The QR code in **Connect → Android phone** pairs the RAY app in one tap. For full control (open apps and links, read WhatsApp/Instagram notifications, dial, ask you questions over any app, ring you, listen — even while the RAY app is closed), do this once (~10 min):
+
+1. **Install F-Droid** — on the phone open f-droid.org and install it (allow "Install unknown apps" for your browser). Don't use the Play Store Termux; it is outdated.
+2. **Install four apps from F-Droid:** Termux, Termux:API, Termux:Boot, Termux:Widget.
+3. **Open Termux and paste the command** from Connect → Android phone (your room and key are already inside it). Wait for **Connected** (1–3 min).
+4. **Display over other apps** — the settings screen opens by itself; switch it on for Termux (Settings → Apps → Termux → Display over other apps). Needed for pop-ups, calls and questions over other apps.
+5. **Run in the background** — allow "ignore battery optimisation" when asked, and set Termux → Battery → **Unrestricted** (Samsung: remove from Sleeping apps; Xiaomi: Autostart on).
+6. **Termux:API permissions** — allow Microphone, Phone, Contacts, SMS and Notifications, then Settings → Notifications → **Notification access** → Termux:API → Allow (to read WhatsApp/Instagram messages). On Android 13+ a "Restricted setting" message means: App info → ⋮ → **Allow restricted settings**, then retry.
+7. **Open Termux:Boot once** so RAY starts after every restart.
+8. **Add the Talk button** — home screen → Widgets → Termux:Widget → **Talk to RAY**, or tap **Talk** on the "RAY is running" notification.
+9. **Check** — the Android card shows a green dot; try "open YouTube on my phone" or tap Talk and speak.
+
+Troubleshooting: offline → open Termux once and re-check step 5; no pop-ups over apps → step 4; no WhatsApp messages → step 6. The phone bridge updates itself afterwards.
 
 ## Skills from Orbit
 

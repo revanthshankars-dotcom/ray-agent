@@ -16,7 +16,7 @@ export interface AskItem {
  * "RAY needs your answer" — the agent paused a task to check with Ray. Answer with a tap, by typing
  * or by voice; the first answer from any device is the one RAY uses.
  */
-export function AskCard({ roomId }: { roomId: string }) {
+export function AskCard({ roomId, quiet }: { roomId: string; /** No sound/voice (the main window already announces it). */ quiet?: boolean }) {
   const [queue, setQueue] = useState<AskItem[]>([]);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState<'send' | 'voice' | null>(null);
@@ -27,6 +27,7 @@ export function AskCard({ roomId }: { roomId: string }) {
   const add = useCallback((a: AskItem) => {
     if (!a?.id || !a.question) return;
     setQueue((q) => (q.some((x) => x.id === a.id) ? q : [...q, { ...a, options: a.options || [] }]));
+    if (quiet) return;
     playHudSound('alert');
     if ('speechSynthesis' in window && document.visibilityState === 'visible') {
       try {
@@ -37,7 +38,7 @@ export function AskCard({ roomId }: { roomId: string }) {
         // ignore
       }
     }
-  }, []);
+  }, [quiet]);
 
   const fetchAsk = useCallback(
     async (id: string) => {
@@ -129,7 +130,7 @@ export function AskCard({ roomId }: { roomId: string }) {
   }
 
   return (
-    <div role="dialog" aria-modal="false" aria-labelledby="ray-ask-q" className="fixed z-[95] inset-x-0 bottom-16 md:inset-auto md:right-6 md:bottom-6 md:w-[26rem] p-3 md:p-0">
+    <div role="dialog" aria-modal="false" aria-labelledby="ray-ask-q" className={quiet ? "fixed z-[95] inset-x-0 bottom-0 p-2" : "fixed z-[95] inset-x-0 bottom-16 md:inset-auto md:right-6 md:bottom-6 md:w-[26rem] p-3 md:p-0"}>
       <div className={`rounded-2xl border bg-white dark:bg-slate-900 shadow-2xl p-4 ${current.urgent ? 'border-rose-400' : 'border-blue-300 dark:border-blue-800'}`}>
         <div className="flex items-start gap-2">
           <HelpCircle className={`w-5 h-5 shrink-0 mt-0.5 ${current.urgent ? 'text-rose-500' : 'text-blue-500'}`} />

@@ -180,6 +180,7 @@ export function JarvisView({
   const [haBusy, setHaBusy] = useState(false);
   const [haMsg, setHaMsg] = useState('');
   const [aware, setAware] = useState<boolean | null>(null);
+  const [pinPopups, setPinPopups] = useState<boolean | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -198,6 +199,8 @@ export function JarvisView({
       if (hr.ok) setHome((await hr.json()) as { connected: boolean; url: string | null });
       const ar = await authFetch(`/api/awareness?room=${encodeURIComponent(roomId)}`, roomId);
       if (ar.ok) setAware(((await ar.json()) as { on: boolean }).on);
+      const up = await authFetch(`/api/ui-prefs?room=${encodeURIComponent(roomId)}`, roomId);
+      if (up.ok) setPinPopups(((await up.json()) as { pinPopups: boolean }).pinPopups);
     } catch {
       /* offline */
     } finally {
@@ -357,6 +360,11 @@ export function JarvisView({
     await authFetch('/api/home/disconnect', roomId, { method: 'POST', body: JSON.stringify({ roomId }) });
     await load();
   };
+  const togglePin = async () => {
+    const r = await authFetch('/api/ui-prefs', roomId, { method: 'POST', body: JSON.stringify({ roomId, pinPopups: !pinPopups }) });
+    if (r.ok) setPinPopups(((await r.json()) as { pinPopups: boolean }).pinPopups);
+  };
+  const floatOk = typeof window !== 'undefined' && 'documentPictureInPicture' in window;
   const toggleAware = async () => {
     const r = await authFetch('/api/awareness', roomId, { method: 'POST', body: JSON.stringify({ roomId, on: !aware }) });
     if (r.ok) setAware(((await r.json()) as { on: boolean }).on);
@@ -687,6 +695,34 @@ export function JarvisView({
             </div>
             <p className="text-[11px] text-slate-500 -mt-2">Off by default. Window titles stay in memory only and are cleared when you turn it off.</p>
             <div>
+              <div className="text-xs font-medium text-slate-700 dark:text-slate-200">PC: on top of every app</div>
+              <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  className={btnPrimary}
+                  disabled={!floatOk}
+                  title={floatOk ? 'A small RAY window that stays above every app (Alt+O)' : 'Needs Chrome or Edge 116+ on a computer'}
+                  onClick={() => window.dispatchEvent(new Event('ray:float'))}
+                >
+                  <MonitorUp className="w-3.5 h-3.5" /> Float RAY now
+                </button>
+                <span className="text-[11px] text-slate-500">{floatOk ? 'or press Alt+O · Windows, Mac, Linux' : 'Open RAY in Chrome/Edge on your PC to use this'}</span>
+              </div>
+              <label className="mt-2 flex items-center gap-2 text-[11px] text-slate-600 dark:text-slate-300">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={Boolean(pinPopups)}
+                  aria-label="Keep RAY pop-ups on top"
+                  onClick={() => void togglePin()}
+                  className={`shrink-0 relative w-9 h-5 rounded-full transition-colors ${pinPopups ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-700'}`}
+                >
+                  <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${pinPopups ? 'translate-x-4' : ''}`} />
+                </button>
+                Keep RAY’s pop-ups (Hey Ray, questions, other devices) pinned on top until you close them — Windows &amp; Linux PC bridge
+              </label>
+            </div>
+            <div>
               <div className="text-xs font-medium text-slate-700 dark:text-slate-200">Phone: always on, in front of every app</div>
               <ol className="mt-1 text-[11px] text-slate-600 dark:text-slate-300 list-decimal pl-4 space-y-0.5">
                 <li>Android Settings → Apps → Termux → <b>Display over other apps</b>: on</li>
@@ -694,6 +730,11 @@ export function JarvisView({
                 <li>Install <b>Termux:Boot</b> and open it once (RAY starts after a reboot)</li>
                 <li>Add the <b>Termux:Widget</b> → “Talk to RAY” to your home screen, or tap <b>Talk</b> on the RAY notification</li>
               </ol>
+              {onOpenConnect && (
+                <button type="button" className="mt-1.5 text-[11px] font-semibold text-blue-600 dark:text-blue-400" onClick={onOpenConnect}>
+                  Full step-by-step Android setup →
+                </button>
+              )}
             </div>
             <p className="text-[11px] text-slate-500">
               Server always on for free: Oracle Cloud Always Free — guide in <code className="font-mono">deploy/oracle/README.md</code>.

@@ -20,6 +20,7 @@ import { CallScreen } from './components/CallScreen';
 import { AgentRunPanel } from './components/AgentRunPanel';
 import { VoiceRouting } from './components/VoiceRouting';
 import { AskCard } from './components/AskCard';
+import { useFloatingRay } from './components/FloatingRay';
 import { JarvisView } from './components/JarvisView';
 import { PairDeviceModal } from './components/PairDeviceModal';
 import { CameraModal } from './components/CameraModal';
@@ -393,6 +394,31 @@ export default function App() {
     engineSettings,
     runOn: sessionRunOn || voiceRunOn,
   });
+
+  // "Display over other apps" on PCs: a small RAY window that stays on top of everything.
+  const floating = useFloatingRay({
+    roomId,
+    deviceName: identity.name,
+    voiceState,
+    userCaption,
+    jarvisCaption,
+    onMic: () => (voiceState === 'off' || voiceState === 'standby' ? void startLiveSession() : stopLiveSession(true)),
+  });
+  useEffect(() => {
+    const onFloat = () => void floating.open();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.altKey && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === 'o') {
+        e.preventDefault();
+        void floating.open();
+      }
+    };
+    window.addEventListener('ray:float', onFloat);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('ray:float', onFloat);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [floating.open]);
 
   useEffect(() => {
     const onRemote = (e: Event) => {
@@ -998,6 +1024,8 @@ export default function App() {
         onOpenPairModal={() => setPairModalOpen(true)}
         onEmergencyStop={() => void handleEmergencyStopAll()}
         showEmergencyStop={showEmergencyStop}
+        onFloat={floating.supported ? () => void floating.open() : undefined}
+        floating={floating.isOpen}
       />
       )}
 

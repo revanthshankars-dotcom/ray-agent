@@ -308,13 +308,96 @@ export function ConnectionsView({
                 <p>It opens RAY already paired. Tap <b>Connect everything</b> and allow the pop-ups — wake-ups, calls, voice and alerts are on.</p>
               </div>
             </div>
-            <p className="text-xs text-slate-600 dark:text-slate-400 mt-3">
-              <b>Optional, for full control</b> (open apps, read WhatsApp/Instagram notifications, dial contacts): install <b>Termux</b>, <b>Termux:API</b> and <b>Termux:Boot</b> from F-Droid, then paste this in Termux. RAY can then open apps &amp; links on the phone and relay WhatsApp / Instagram notifications.
-            </p>
-            <div className="mt-3 space-y-2">
-              <CopyLine text={`pkg install -y nodejs termux-api && mkdir -p ~/ray && cd ~/ray && curl -fsSL "${bridgeUrl}" -o ${bridgeFile} && npm install ws && node ${bridgeFile}`} />
-              <p className="text-[11px] text-slate-500">
-                Then allow Termux “Display over other apps” and grant Termux:API notification access. Open Termux:Boot once so it starts on boot.
+            <div className="mt-4">
+              <p className="text-xs font-semibold text-slate-900 dark:text-slate-100">Full control of the phone — step by step (about 10 minutes, once)</p>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                Lets RAY open apps and links, read WhatsApp/Instagram notifications, dial, show questions over any app, ring you and listen — even while the RAY app is closed.
+              </p>
+              <ol className="mt-3 space-y-3 text-xs text-slate-700 dark:text-slate-300 list-none">
+                {[
+                  {
+                    t: 'Install F-Droid',
+                    d: (
+                      <>
+                        On the phone open <b>f-droid.org</b>, download and install F-Droid (allow “Install unknown apps” for your browser when asked). The Play Store version of Termux is outdated — use F-Droid.
+                      </>
+                    ),
+                  },
+                  {
+                    t: 'Install the four Termux apps from F-Droid',
+                    d: (
+                      <>
+                        Search and install <b>Termux</b>, <b>Termux:API</b>, <b>Termux:Boot</b> and <b>Termux:Widget</b>.
+                      </>
+                    ),
+                  },
+                  {
+                    t: 'Open Termux and paste this command',
+                    d: (
+                      <>
+                        Copy it here, long-press in Termux → Paste → Enter. Wait until it says <b>Connected</b> (1–3 minutes). Your room and key are already inside the command.
+                        <div className="mt-2">
+                          <CopyLine text={`pkg install -y nodejs termux-api && mkdir -p ~/ray && cd ~/ray && curl -fsSL "${bridgeUrl}" -o ${bridgeFile} && npm install ws && node ${bridgeFile}`} />
+                        </div>
+                      </>
+                    ),
+                  },
+                  {
+                    t: 'Allow “Display over other apps”',
+                    d: (
+                      <>
+                        A settings screen opens by itself — switch it on for Termux. If not: Settings → Apps → Termux → <b>Display over other apps</b> → Allow. This lets RAY pop up, ring and ask you over any app.
+                      </>
+                    ),
+                  },
+                  {
+                    t: 'Let it run in the background',
+                    d: (
+                      <>
+                        When asked “Let Termux run in the background / ignore battery optimisation” → <b>Allow</b>. Also Settings → Apps → Termux → Battery → <b>Unrestricted</b> (Samsung: also remove it from “Sleeping apps”; Xiaomi: Autostart on).
+                      </>
+                    ),
+                  },
+                  {
+                    t: 'Give Termux:API its permissions',
+                    d: (
+                      <>
+                        Settings → Apps → Termux:API → Permissions: allow <b>Microphone</b>, <b>Phone</b>, <b>Contacts</b>, <b>SMS</b>, <b>Notifications</b>. Then Settings → Notifications → <b>Notification access</b> (or Device &amp; app notifications) → Termux:API → Allow, so RAY can read WhatsApp/Instagram messages. Android 13+ shows “Restricted setting”? Open App info → ⋮ → <b>Allow restricted settings</b>, then try again.
+                      </>
+                    ),
+                  },
+                  {
+                    t: 'Open Termux:Boot once',
+                    d: <>Just open it and close it — from now on RAY starts by itself after every restart.</>,
+                  },
+                  {
+                    t: 'Add the “Talk to RAY” button',
+                    d: (
+                      <>
+                        Long-press the home screen → Widgets → <b>Termux:Widget</b> → drop it → pick <b>Talk to RAY</b>. Or just tap <b>Talk</b> on the permanent “RAY is running” notification.
+                      </>
+                    ),
+                  },
+                  {
+                    t: 'Check it works',
+                    d: (
+                      <>
+                        This card shows a green dot when the phone is connected{phoneBridge ? ' — it is connected now ✓' : ''}. Try: “open YouTube on my phone”, “what are my new WhatsApp messages?”, or tap Talk and speak.
+                      </>
+                    ),
+                  },
+                ].map((step, i) => (
+                  <li key={step.t} className="flex gap-2.5">
+                    <span className="shrink-0 w-5 h-5 rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-[11px] font-bold flex items-center justify-center">{i + 1}</span>
+                    <div className="min-w-0">
+                      <p className="font-semibold text-slate-900 dark:text-slate-100">{step.t}</p>
+                      <div className="text-[11px] text-slate-600 dark:text-slate-400 mt-0.5 break-words">{step.d}</div>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+              <p className="mt-3 text-[11px] text-slate-500">
+                Something off? Stays offline → open Termux once and check step 5. No pop-ups over apps → step 4. No WhatsApp messages → step 6 (notification access). After updates RAY’s phone bridge updates itself.
               </p>
             </div>
           </Card>

@@ -33,7 +33,7 @@ import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import WebSocket, { WebSocketServer } from 'ws';
 
-const BRIDGE_VERSION = '3.5';
+const BRIDGE_VERSION = '3.6';
 const IS_TERMUX = Boolean(process.env.PREFIX && process.env.PREFIX.includes('com.termux')) || fs.existsSync('/data/data/com.termux');
 const PLATFORM = IS_TERMUX ? 'android' : os.platform();
 const WS_URL = process.env.RELAY_WS_URL || "__RAY_WS_URL__";
@@ -1625,7 +1625,7 @@ async function askOnThisDevice(p) {
   }
   showNativeNotification('RAY needs your answer', question, () => {});
   const url = rayAppUrl({ popup: 1, ask: askId });
-  if (url) openRayWindow(url, 'RAY Assistant', 6, () => {});
+  if (url) openRayWindow(url, 'RAY Assistant', p.pin ? 0 : 6, () => {});
 }
 
 // --- RAY pop-up ------------------------------------------------------------
@@ -1649,7 +1649,9 @@ const WIN_RAISE_CS = [
   '}',
 ].join('\n');
 
+// holdSeconds 0 = pin: stay above other windows until Ray closes it ("display over other apps").
 function raiseWindow(titlePrefix, holdSeconds) {
+  const pin = holdSeconds === 0;
   const hold = Math.max(1, Math.min(60, Number(holdSeconds) || 4));
   const t = String(titlePrefix).replace(/[^\w .-]/g, '');
   if (os.platform() === 'win32') {
@@ -1657,7 +1659,7 @@ function raiseWindow(titlePrefix, holdSeconds) {
       'Add-Type -TypeDefinition @"\n' + WIN_RAISE_CS + '\n"@;' +
       '$h=[IntPtr]::Zero;$d=(Get-Date).AddSeconds(15);' +
       "while($h -eq [IntPtr]::Zero -and (Get-Date) -lt $d){$h=[RayWin]::Find('" + t + "');if($h -eq [IntPtr]::Zero){Start-Sleep -Milliseconds 300}}" +
-      'if($h -ne [IntPtr]::Zero){[RayWin]::Front($h);Start-Sleep -Seconds ' + hold + ';[RayWin]::Front($h);[RayWin]::Release($h)}';
+      'if($h -ne [IntPtr]::Zero){[RayWin]::Front($h);Start-Sleep -Seconds ' + hold + ';[RayWin]::Front($h)' + (pin ? '' : ';[RayWin]::Release($h)') + '}';
     execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', ps], { timeout: (hold + 25) * 1000, windowsHide: true }, () => {});
   } else if (os.platform() === 'darwin') {
     setTimeout(() => {
@@ -1667,7 +1669,10 @@ function raiseWindow(titlePrefix, holdSeconds) {
     }, 2500);
   } else if (!IS_TERMUX) {
     let tries = 0;
-    const tick = () => execFile('wmctrl', ['-a', t], { timeout: 4000 }, (err) => { if (err && ++tries < 10) setTimeout(tick, 1000); });
+    const tick = () => execFile('wmctrl', ['-a', t], { timeout: 4000 }, (err) => {
+      if (err && ++tries < 10) return setTimeout(tick, 1000);
+      if (!err && pin) execFile('wmctrl', ['-r', t, '-b', 'add,above'], { timeout: 4000 }, () => {});
+    });
     setTimeout(tick, 1500);
   }
 }
@@ -1713,13 +1718,13 @@ function playRingtone(seconds) {
 }
 
 let lastPopupAt = 0;
-function openRayPopup(reason, cb, runOn) {
+function openRayPopup(reason, cb, runOn, pin) {
   const done = cb || (() => {});
   if (Date.now() - lastPopupAt < 4000) return done('Already opening', true);
   lastPopupAt = Date.now();
   const url = rayAppUrl(runOn ? { popup: 1, listen: 1, runon: runOn } : { popup: 1, listen: 1 });
   if (!url) return done('RAY URL unknown', false);
-  openRayWindow(url, 'RAY Assistant', 4, (m, ok) => done(m + (reason ? ' (' + reason + ')' : ''), ok));
+  openRayWindow(url, 'RAY Assistant', pin ? 0 : 4, (m, ok) => done(m + (reason ? ' (' + reason + ')' : '') + (pin ? ' · pinned on top' : ''), ok));
 }
 
 /** Windows: Start-menu shortcut "RAY" with the global hotkey Ctrl+Alt+R that pops RAY up. */
@@ -2895,7 +2900,7 @@ function executeDeviceCommand(cmd, ack, ws) {
         spawn('sh', [talk], { detached: true, stdio: 'ignore', env: { ...process.env, RAY_RUN_ON: runOn } }).unref();
         ack('completed', DEVICE_NAME + ' is listening' + (runOn ? ' for ' + runOn : ''));
       } else ack('failed', 'Talk shortcut missing on ' + DEVICE_NAME);
-    } else if (cmd.payload && cmd.payload.popup) openRayPopup(String(cmd.payload.reason || ''), (m) => ack('completed', DEVICE_NAME + ': ' + m), cmd.payload.listen ? String(cmd.payload.runOn || '') : '');
+    } else if (cmd.payload && cmd.payload.popup) openRayPopup(String(cmd.payload.reason || ''), (m) => ack('completed', DEVICE_NAME + ': ' + m), cmd.payload.listen ? String(cmd.payload.runOn || '') : '', Boolean(cmd.payload.pin));
     else ack('completed', DEVICE_NAME + ' is awake');
   } else if (cmd.type === 'refresh_telemetry') {
     sampleTopProcesses((procs) => {

@@ -255,7 +255,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     <button
                       type="button"
                       onClick={() => onSelectDeviceTarget(device.name)}
-                      className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800/70 transition-colors flex items-start gap-2.5 group"
+                      className="flex-1 min-w-0 text-left px-2.5 py-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800/70 transition-colors flex items-start gap-2.5 group"
                       title={`Target ${device.name} in Assistant`}
                     >
                       <span

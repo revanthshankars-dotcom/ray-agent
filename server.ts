@@ -102,6 +102,7 @@ import { sttAvailable, transcribeSpeech } from './server/speechToText.ts';
 import { semanticStatus, startSemanticIndexer } from './server/semanticMemory.ts';
 import { registerHomeRoutes } from './server/homeAssistant.ts';
 import { registerAskRoutes } from './server/askUser.ts';
+import { getUiPrefs, registerUiPrefRoutes } from './server/uiPrefs.ts';
 import { registerAwarenessRoutes, startAwareness } from './server/awareness.ts';
 import { registerInboxRoutes, startInboxScheduler } from './server/inboxRoutine.ts';
 import { phoneLineStatus, recentPhoneCalls, registerPhoneRoutes } from './server/phoneCall.ts';
@@ -398,6 +399,7 @@ async function startServer() {
   registerInboxRoutes(app, requireRoomAuth as never);
   registerHomeRoutes(app, requireRoomAuth as never);
   registerAskRoutes(app, requireRoomAuth as never);
+  registerUiPrefRoutes(app, requireRoomAuth as never);
   registerAwarenessRoutes(app, requireRoomAuth as never);
   registerPhoneRoutes(app);
   app.get('/api/phone', requireRoomAuth, (req, res) => {
@@ -455,7 +457,7 @@ async function startServer() {
   });
   app.post('/api/jarvis/popup', requireRoomAuth, async (req, res) => {
     const { roomId, device } = req.body as { roomId: string; device: string };
-    const out = await dispatchDeviceCommand({ roomId: normalizeRoomId(roomId), type: 'wake', targetQuery: device || 'pc', source: 'assistant', payload: { popup: true }, waitForAckMs: 6000 });
+    const out = await dispatchDeviceCommand({ roomId: normalizeRoomId(roomId), type: 'wake', targetQuery: device || 'pc', source: 'assistant', payload: { popup: true, pin: (await getUiPrefs(normalizeRoomId(roomId))).pinPopups }, waitForAckMs: 6000 });
     res.json({ summary: out.summary });
   });
 
@@ -499,7 +501,7 @@ async function startServer() {
       type: 'wake',
       targetQuery: String(micDevice),
       source: 'user',
-      payload: { popup: true, listen: true, runOn: String(runOn || '').slice(0, 80), reason: `listening for ${runOn || 'you'}` },
+      payload: { popup: true, listen: true, runOn: String(runOn || '').slice(0, 80), reason: `listening for ${runOn || 'you'}`, pin: (await getUiPrefs(normalizeRoomId(String(roomId || '')))).pinPopups },
       waitForAckMs: 6000,
     });
     res.json({ summary });

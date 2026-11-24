@@ -1,5 +1,5 @@
 import React from 'react';
-import { OctagonX } from 'lucide-react';
+import { OctagonX, PictureInPicture2 } from 'lucide-react';
 import { PWAInstallButton } from './PWAInstallButton';
 
 export type ActiveTab = 'dashboard' | 'assistant' | 'brain' | 'files' | 'apps' | 'devices' | 'routines' | 'handoff' | 'connect' | 'brain3d' | 'jarvis';
@@ -10,6 +10,9 @@ interface TopBarProps {
   onOpenPairModal: () => void;
   onEmergencyStop: () => void;
   showEmergencyStop?: boolean;
+  /** Opens RAY as a small window on top of every app (PC browsers that support it). */
+  onFloat?: () => void;
+  floating?: boolean;
 }
 
 const NAV_ITEMS: Array<{ id: ActiveTab; label: string }> = [
@@ -32,6 +35,8 @@ export const TopBar: React.FC<TopBarProps> = ({
   onOpenPairModal,
   onEmergencyStop,
   showEmergencyStop = false,
+  onFloat,
+  floating = false,
 }) => {
   return (
     <header className="h-14 shrink-0 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 sm:px-6 flex items-center justify-between gap-6">
@@ -82,6 +87,21 @@ export const TopBar: React.FC<TopBarProps> = ({
           </button>
         )}
         <PWAInstallButton compact />
+        {onFloat && (
+          <button
+            type="button"
+            onClick={onFloat}
+            title="Float RAY on top of every app (Alt+O)"
+            className={`hidden md:inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
+              floating
+                ? 'border-cyan-500/40 bg-cyan-50 dark:bg-cyan-950/40 text-cyan-700 dark:text-cyan-300'
+                : 'border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'
+            }`}
+          >
+            <PictureInPicture2 className="w-3.5 h-3.5" />
+            {floating ? 'Floating' : 'Float'}
+          </button>
+        )}
         <button
           type="button"
           onClick={onOpenPairModal}
