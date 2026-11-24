@@ -94,6 +94,8 @@ import { getAutopilot, learnFromTurn, runAutopilot, setAutopilot, startAutonomy 
 import { getLearning, getTopics, observeTurn, runLearningCycle, saveTopics, setLearning, startLearningScheduler, withRecall } from './server/learning.ts';
 import { getLatestBridgeVersion } from './server/repair.ts';
 import { registerAccountRoutes } from './server/accounts.ts';
+import { registerConnectorRoutes } from './server/mcpConnectors.ts';
+import { phoneLineStatus, recentPhoneCalls, registerPhoneRoutes } from './server/phoneCall.ts';
 import { getIceServers, listScheduledCalls, cancelScheduledCall, startCallScheduler } from './server/calls.ts';
 import { checkFishKey, fishUsable, getFishKey, getFishStatus } from './server/fishAudio.ts';
 import { checkMetaSignature, handleMetaWebhook, metaStatus, verifyMetaWebhook } from './server/meta.ts';
@@ -379,6 +381,12 @@ async function startServer() {
 
   // Google / Meta accounts (server-side OAuth so RAY works from any device).
   registerAccountRoutes(app, requireRoomAuth as never);
+  registerConnectorRoutes(app, requireRoomAuth as never);
+  registerPhoneRoutes(app);
+  app.get('/api/phone', requireRoomAuth, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ ...phoneLineStatus(), calls: recentPhoneCalls(normalizeRoomId(String(req.query.room || 'RLY-HOME'))) });
+  });
 
   // JARVIS status: learning, knowledge, lessons, repairs, bridge versions.
   app.get('/api/jarvis', requireRoomAuth, async (req, res) => {

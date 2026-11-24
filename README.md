@@ -96,6 +96,29 @@ RAY then uses `google_api_request` (any Google REST endpoint, chained until the 
 - WhatsApp Business: `WHATSAPP_TOKEN` + `WHATSAPP_PHONE_NUMBER_ID`.
 - **Personal** Instagram/WhatsApp: no API exists. RAY reads incoming messages from the phone's notifications and does things through the logged-in browser on your PC (`browse_web` "do", with your approval) or the app on your phone (`operate_computer`, via ADB). Heavy automation of personal accounts can get them rate-limited by Meta, so RAY works at a human pace and asks before posting or sending.
 
+## Connectors (MCP servers) — plug in any agent toolkit
+
+JARVIS Core → **Connectors** adds any remote MCP server (Streamable HTTP, `https://…`). RAY lists its tools (`mcp_servers`) and calls them (`mcp_call`) from chat, voice and Autopilot; tools that send, call, buy, post or delete ask you once. URLs and keys are stored encrypted (`RELAY_MASTER_SECRET`).
+
+Presets:
+- **AgentPhone** — `https://mcp.agentphone.ai/mcp`, API key from agentphone.ai → Settings: buy a number, SMS/WhatsApp, AI voice calls (US/Canada numbers).
+- **CallForMe** — `https://callforme.tel/mcp`: RAY phones businesses for you.
+- **n8n** — your instance → Settings → Instance-level MCP → copy the URL + token; every exposed workflow becomes a RAY tool.
+- **Course / challenge servers** — paste the MCP link the course gives you. If you paste the course web page instead, RAY also tries `/mcp` and `/api/mcp` on that site. Tokens in links are personal: don't share or commit them.
+
+Skill catalogs (e.g. agentskillexchange) that ship hosted MCP servers plug in the same way; plain SKILL.md skills are instructions, not servers.
+
+## Phone line — RAY rings your real number
+
+Like `call-me`: `phone_call_me` dials your phone, says the message, listens, answers, and returns what you said so a mission can continue with your decision ("call me when the build is done", "call me if anything is urgent"). Works with no RAY app open. Add in Render:
+
+- `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` (a Twilio number; trial accounts can call verified numbers only)
+- `RAY_USER_PHONE` — your number in `+91…` form
+- `PUBLIC_BASE_URL` — optional on Render (uses `RENDER_EXTERNAL_URL`)
+- optional `RAY_PHONE_VOICE` (default `Polly.Matthew-Neural`), `RAY_PHONE_LANG` (default `en-IN`)
+
+Webhooks (`/api/phone/voice`, `/api/phone/status`) are verified with Twilio's signature. Cost is roughly Twilio's per-minute rate; speech recognition is included in `<Gather>`.
+
 ## JARVIS layer (bridge 3.1)
 
 - **Browser hands** — RAY drives a real Chrome/Edge on your PC (its own "RAY" profile — sign in there once). `browse_web` reads pages as text + numbered buttons/fields and a free model picks one step at a time (open, click, type, scroll, note, done). *Research* mode runs hidden and returns an answer with sources; *Do* mode (forms, bookings, settings) needs one Approve. It never types into password fields and never pays or posts on its own. With the PC offline, research falls back to the cloud.

@@ -13,6 +13,7 @@ import {
   MonitorUp,
   MousePointer2,
   Phone,
+  Plug,
   Plus,
   RefreshCw,
   ShieldCheck,
@@ -89,6 +90,28 @@ function SectionTitle({ icon: Icon, title, hint, tone = 'text-blue-500' }: { ico
   );
 }
 
+interface ConnectorRow {
+  id: string;
+  name: string;
+  host: string;
+  hasKey: boolean;
+  tools: Array<{ name: string; description: string }>;
+  lastError: string | null;
+}
+interface PhoneLine {
+  configured: boolean;
+  missing: string[];
+  number: string | null;
+  calls: Array<{ id: string; purpose: string; status: string; transcript: Array<{ who: string; text: string }>; startedAt: number }>;
+}
+const PRESETS: Array<{ label: string; name: string; url: string; hint: string }> = [
+  { label: 'AgentPhone', name: 'agentphone', url: 'https://mcp.agentphone.ai/mcp', hint: 'Numbers, SMS, WhatsApp, AI calls — API key from agentphone.ai → Settings' },
+  { label: 'CallForMe', name: 'callforme', url: 'https://callforme.tel/mcp', hint: 'RAY calls businesses for you' },
+  { label: 'n8n', name: 'n8n', url: '', hint: 'Your n8n: Settings → Instance-level MCP → copy URL + token' },
+  { label: 'Course / challenge', name: 'challenge', url: '', hint: 'Paste the MCP link from the course page (RAY also tries /mcp on that site)' },
+  { label: 'Custom', name: '', url: '', hint: 'Any Streamable-HTTP MCP server (https)' },
+];
+
 interface Accounts {
   google: { configured: boolean; connected: boolean; email: string | null };
   meta: { instagram: boolean; facebookPage: boolean; whatsapp: boolean };
@@ -112,6 +135,15 @@ export function JarvisView({
   const [learning, setLearning] = useState(false);
   const [diag, setDiag] = useState<Record<string, { loading: boolean; data?: Diagnosis; error?: string }>>({});
   const [popupMsg, setPopupMsg] = useState('');
+  const [connectors, setConnectors] = useState<ConnectorRow[]>([]);
+  const [phone, setPhone] = useState<PhoneLine | null>(null);
+  const [preset, setPreset] = useState(0);
+  const [cName, setCName] = useState(PRESETS[0].name);
+  const [cUrl, setCUrl] = useState(PRESETS[0].url);
+  const [cKey, setCKey] = useState('');
+  const [cBusy, setCBusy] = useState(false);
+  const [cMsg, setCMsg] = useState('');
+  const [openConn, setOpenConn] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -120,6 +152,10 @@ export function JarvisView({
       if (r.ok) setSt((await r.json()) as JarvisStatus);
       const a = await authFetch(`/api/accounts?room=${encodeURIComponent(roomId)}`, roomId);
       if (a.ok) setAccounts((await a.json()) as Accounts);
+      const m = await authFetch(`/api/mcp?room=${encodeURIComponent(roomId)}`, roomId);
+      if (m.ok) setConnectors(((await m.json()) as { connectors: ConnectorRow[] }).connectors);
+      const p = await authFetch(`/api/phone?room=${encodeURIComponent(roomId)}`, roomId);
+      if (p.ok) setPhone((await p.json()) as PhoneLine);
     } catch {
       /* offline */
     } finally {
@@ -183,6 +219,39 @@ export function JarvisView({
     return 'Reinstall bridge (v3.1)';
   };
   const token = getStoredRoomToken(roomId);
+
+  const pickPreset = (i: number) => {
+    setPreset(i);
+    setCName(PRESETS[i].name);
+    setCUrl(PRESETS[i].url);
+    setCMsg('');
+  };
+  const addConnector = async () => {
+    setCBusy(true);
+    setCMsg('');
+    try {
+      const r = await authFetch('/api/mcp/add', roomId, { method: 'POST', body: JSON.stringify({ roomId, name: cName, url: cUrl, token: cKey }) });
+      const j = (await r.json()) as { ok: boolean; error?: string; connector?: ConnectorRow };
+      if (!j.ok) setCMsg(j.error || 'Could not connect.');
+      else {
+        setCMsg(`Connected ${j.connector?.name} · ${j.connector?.tools.length} tools`);
+        setCKey('');
+        await load();
+      }
+    } catch {
+      setCMsg('Network error.');
+    } finally {
+      setCBusy(false);
+    }
+  };
+  const removeConnector = async (id: string) => {
+    await authFetch('/api/mcp/remove', roomId, { method: 'POST', body: JSON.stringify({ roomId, id }) });
+    await load();
+  };
+  const refreshConnector = async (id: string) => {
+    await authFetch('/api/mcp/refresh', roomId, { method: 'POST', body: JSON.stringify({ roomId, id }) });
+    await load();
+  };
   const installer = (os: string) => `/api/bridge-installer?room=${encodeURIComponent(roomId)}&token=${encodeURIComponent(token)}&os=${os}`;
 
   const abilities: Array<{ icon: typeof Globe; label: string; on: boolean; detail: string; prompt: string; cap: string }> = [
@@ -320,6 +389,112 @@ export function JarvisView({
               Personal Instagram/WhatsApp have no API: RAY uses them through the browser on your PC and the apps on your phone. Business/creator accounts get full API access with a token in Render.
             </p>
           </div>
+        </div>
+      </section>
+
+      {/* Connectors + phone line */}
+      <section className={`${card} p-4 sm:p-5`}>
+        <SectionTitle icon={Plug} title="Connectors" hint="Plug MCP servers into RAY — their tools work from one command" tone="text-violet-500" />
+        <div className="mt-3 grid grid-cols-1 lg:grid-cols-[1.3fr_1fr] gap-3">
+          <div className="space-y-2 min-w-0">
+            {connectors.length === 0 && <p className="text-xs text-slate-500">Nothing connected yet. Add AgentPhone for SMS and calls, your n8n workflows, or a course server.</p>}
+            {connectors.map((c) => (
+              <div key={c.id} className="rounded-xl border border-slate-200 dark:border-slate-800 p-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${c.lastError ? 'bg-amber-500' : 'bg-emerald-500'}`} />
+                  <span className="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">{c.name}</span>
+                  <span className="text-[11px] text-slate-500 truncate">{c.host}</span>
+                  <span className="ml-auto text-[11px] text-slate-500 shrink-0">{c.tools.length} tools</span>
+                </div>
+                {c.lastError && <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">{c.lastError}</p>}
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  <button type="button" className={btnGhost} onClick={() => setOpenConn(openConn === c.id ? null : c.id)}>
+                    {openConn === c.id ? 'Hide tools' : 'Tools'}
+                  </button>
+                  <button type="button" className={btnGhost} onClick={() => void refreshConnector(c.id)}>
+                    <RefreshCw className="w-3.5 h-3.5" /> Refresh
+                  </button>
+                  <button type="button" className={btnGhost} onClick={() => onAskRay(`What can you do with my ${c.name} connector? Give me 3 examples.`)}>
+                    Ask RAY
+                  </button>
+                  <button type="button" className={`${btnGhost} text-rose-600 dark:text-rose-400`} onClick={() => void removeConnector(c.id)}>
+                    <X className="w-3.5 h-3.5" /> Remove
+                  </button>
+                </div>
+                {openConn === c.id && (
+                  <ul className="mt-2 max-h-48 overflow-auto space-y-1 text-xs">
+                    {c.tools.map((t) => (
+                      <li key={t.name} className="min-w-0">
+                        <code className="font-mono text-violet-600 dark:text-violet-400">{t.name}</code>
+                        <span className="text-slate-500"> — {t.description || 'no description'}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))}
+          </div>
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-3 space-y-2 min-w-0">
+            <div className="flex flex-wrap gap-1.5">
+              {PRESETS.map((p, i) => (
+                <button
+                  key={p.label}
+                  type="button"
+                  onClick={() => pickPreset(i)}
+                  className={`text-[11px] px-2 py-1 rounded-full border ${preset === i ? 'border-violet-500 bg-violet-500/10 text-violet-700 dark:text-violet-300' : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'}`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] text-slate-500">{PRESETS[preset].hint}</p>
+            <input className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent px-2.5 py-1.5 text-xs" placeholder="Name" value={cName} onChange={(e) => setCName(e.target.value)} />
+            <input className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent px-2.5 py-1.5 text-xs font-mono" placeholder="https://…/mcp" value={cUrl} onChange={(e) => setCUrl(e.target.value)} />
+            <input
+              className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent px-2.5 py-1.5 text-xs font-mono"
+              placeholder="API key / token (optional, stored encrypted)"
+              type="password"
+              autoComplete="off"
+              value={cKey}
+              onChange={(e) => setCKey(e.target.value)}
+            />
+            <div className="flex items-center gap-2">
+              <button type="button" className={btnPrimary} disabled={cBusy || !cUrl.trim()} onClick={() => void addConnector()}>
+                {cBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />} Connect
+              </button>
+              {cMsg && <span className="text-xs text-slate-600 dark:text-slate-300 min-w-0 break-words">{cMsg}</span>}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3 rounded-xl border border-slate-200 dark:border-slate-800 p-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Phone className="w-4 h-4 text-emerald-500" />
+            <span className="text-sm font-semibold text-slate-900 dark:text-slate-100">Phone line</span>
+            <span className="text-xs text-slate-500">RAY rings your real number and talks with you</span>
+            {phone?.configured ? (
+              <span className="ml-auto text-xs font-medium text-emerald-600 dark:text-emerald-400 inline-flex items-center gap-1">
+                <CheckCircle2 className="w-3.5 h-3.5" /> Ready · {phone.number}
+              </span>
+            ) : null}
+          </div>
+          {phone?.configured ? (
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button type="button" className={btnGhost} onClick={() => onAskRay('Call my phone now and ask how my day is going')}>
+                Test call
+              </button>
+              {phone.calls[0] && (
+                <span className="text-xs text-slate-500 min-w-0 truncate">
+                  Last: {phone.calls[0].status} · {ago(phone.calls[0].startedAt)}
+                  {phone.calls[0].transcript.filter((t) => t.who === 'Ray').slice(-1).map((t) => ` · “${t.text}”`)}
+                </span>
+              )}
+            </div>
+          ) : (
+            <p className="mt-2 text-xs text-slate-500">
+              Add in Render: <code className="font-mono">{(phone?.missing || ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM_NUMBER', 'RAY_USER_PHONE']).join(', ')}</code> (README → Phone line). Until then RAY rings the RAY app with call_me.
+            </p>
+          )}
         </div>
       </section>
 

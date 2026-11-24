@@ -33,6 +33,8 @@ import { codingAgentToolDeclarations, executeCodingAgentTool } from './codingAge
 import { memoryExcerpt } from './autopilot.ts';
 import { executeJarvisTool, jarvisToolDeclarations } from './jarvisTools.ts';
 import { accountToolDeclarations, executeAccountTool, getServerGoogleToken } from './accounts.ts';
+import { connectorToolDeclarations, executeConnectorTool, mcpCatalogExcerpt } from './mcpConnectors.ts';
+import { executePhoneTool, phoneToolDeclarations } from './phoneCall.ts';
 import { lessonsExcerpt, withRecall } from './learning.ts';
 import { checkActionPolicy, executeExtendedTool, extendedToolDeclarations } from './deviceTools.ts';
 import type {
@@ -474,7 +476,7 @@ export const baseToolDeclarations: FunctionDeclaration[] = [
 ];
 
 // Extended tools (search & open, apps, tabs, messages, wake) — replace older duplicates by name.
-for (const decl of [...extendedToolDeclarations, ...callToolDeclarations, ...fileIndexToolDeclarations, ...computerUseToolDeclarations, ...codingAgentToolDeclarations, ...jarvisToolDeclarations, ...accountToolDeclarations]) {
+for (const decl of [...extendedToolDeclarations, ...callToolDeclarations, ...fileIndexToolDeclarations, ...computerUseToolDeclarations, ...codingAgentToolDeclarations, ...jarvisToolDeclarations, ...accountToolDeclarations, ...connectorToolDeclarations, ...phoneToolDeclarations]) {
   const idx = baseToolDeclarations.findIndex((d) => d.name === decl.name);
   if (idx >= 0) baseToolDeclarations[idx] = decl;
   else baseToolDeclarations.push(decl);
@@ -620,6 +622,11 @@ Behavioral Guidelines:
 21. SELF-HEALING: "my PC is slow / internet broken / app frozen / fix my phone / free up space" → repair_device (diagnoses, proposes safe fixes, asks once, re-checks). Health questions → diagnose_device. Undo a file change → restore_file. If a fix needs clicking in an app use operate_computer; broken code → run_coding_agents.
 22. "Open RAY on my PC/phone", or a task needs Ray's eyes on another device → show_ray.
 23. ACCOUNTS: for anything in Gmail, Calendar, Drive, Docs, Sheets, Slides, Tasks, Contacts or YouTube use google_api_request with the official REST endpoints — chain as many calls as the job needs (search → read → act) so one command finishes everything. For Instagram/Facebook use meta_api_request (professional accounts). If an account is not connected (check connected_accounts), say how to connect it, and for personal Instagram/WhatsApp fall back to browse_web mode "do" or operate_computer on the phone.
+24. CONNECTORS: Ray can plug extra MCP servers into RAY (JARVIS Core → Connectors) — phone/SMS services, n8n workflows, course or skill servers. When a connected server has a tool for the job, check its schema with mcp_servers (server=…) and call it with mcp_call; chain calls until done.
+25. PHONE LINE: "call me / phone me (when …)" on his real number, urgent alerts, or when a mission needs Ray's decision and he is not in the app → phone_call_me (waitForReply true returns his answer, then continue the task). call_me only rings the RAY app.
+
+Connected MCP servers and their tools:
+${mcpCatalogExcerpt(roomId) || 'None connected.'}
 
 Lessons RAY learned from its own mistakes (follow them):
 ${lessonsExcerpt(roomId, 20) || 'None yet.'}
@@ -896,6 +903,10 @@ export async function executeDeviceTool(
   if (jarvisOut) return jarvisOut;
   const accountOut = await executeAccountTool(roomId, name, args, { confirmed, clientGoogleToken: options?.googleAccessToken });
   if (accountOut) return accountOut;
+  const connectorOut = await executeConnectorTool(roomId, name, args, { confirmed });
+  if (connectorOut) return connectorOut;
+  const phoneOut = await executePhoneTool(roomId, name, args);
+  if (phoneOut) return phoneOut;
 
   switch (name) {
     case 'list_connected_devices': {
