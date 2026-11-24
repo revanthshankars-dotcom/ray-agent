@@ -90,7 +90,7 @@ interface AssistantViewProps {
   onEmergencyStop: () => void;
   pendingConfirmations: ConfirmationRequest[];
   onAddConfirmation: (req: ConfirmationRequest) => void;
-  onResolveConfirmation: (id: string, approved: boolean) => Promise<void>;
+  onResolveConfirmation: (id: string, approved: boolean, secret?: string) => Promise<void>;
   veronicaMode: boolean;
   onPersistMessage: (msg: ChatMessage) => void;
   onUpdatePersistedMessage: (msg: ChatMessage) => void;
@@ -275,6 +275,7 @@ export const AssistantView: React.FC<AssistantViewProps> = ({
   roomToken = '',
 }) => {
   const [input, setInput] = useState('');
+  const [secretInputs, setSecretInputs] = useState<Record<string, string>>({});
   const [thinkingMode, setThinkingMode] = useState<'fast' | 'deep'>('fast');
   const [groundingMode, setGroundingMode] = useState<GroundingMode>('search');
   const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | undefined>(
@@ -1734,6 +1735,22 @@ export const AssistantView: React.FC<AssistantViewProps> = ({
                   </p>
                 </div>
               </div>
+              {req.secretPrompt && (
+                <label className="block">
+                  <span className="text-[11px] font-medium text-slate-600 dark:text-slate-300">{req.secretPrompt}</span>
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    className="mt-1 w-full rounded-lg border border-amber-300 dark:border-amber-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-sm"
+                    placeholder="Used once · never saved · not shown to the AI"
+                    value={secretInputs[req.id] || ''}
+                    onChange={(e) => setSecretInputs((p) => ({ ...p, [req.id]: e.target.value }))}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') void onResolveConfirmation(req.id, true, secretInputs[req.id] || undefined);
+                    }}
+                  />
+                </label>
+              )}
               <div className="flex items-center justify-end gap-2">
                 <button
                   type="button"
@@ -1744,7 +1761,15 @@ export const AssistantView: React.FC<AssistantViewProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => void onResolveConfirmation(req.id, true)}
+                  onClick={() => {
+                    const secret = secretInputs[req.id] || undefined;
+                    setSecretInputs((p) => {
+                      const n = { ...p };
+                      delete n[req.id];
+                      return n;
+                    });
+                    void onResolveConfirmation(req.id, true, secret);
+                  }}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg"
                 >
                   <ShieldCheck className="w-3.5 h-3.5" />

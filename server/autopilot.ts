@@ -17,6 +17,7 @@
  * Self-healing: a watchdog re-wakes devices with stuck commands, retries offline bridges, notices
  * failing engines and writes a System Health note, alerting Ray only when something changes.
  */
+import { awarenessExcerpt } from './awareness.ts';
 import { dispatchDeviceCommand, getIncomingMessages, getRoomBrainNotes, getRoomDevices, getRoomSnapshot, listRoomIds, upsertRoomBrainNote } from './hub.ts';
 import { loadJson, scheduleSave } from './persistence.ts';
 import { getEngineStatus } from './engines/providers.ts';
@@ -119,7 +120,7 @@ Devices:\n${devices.join('\n') || 'none'}
 Unread messages:\n${unread.map((m) => `- [${m.app}] ${m.from}: ${m.text.slice(0, 120)}`).join('\n') || 'none'}
 Open tasks:\n${tasks.map((t) => `- ${t.title} (${t.priority})`).join('\n') || 'none'}
 Scheduled calls:\n${calls.map((c) => `- ${new Date(c.nextAt).toISOString()} ${c.message}`).join('\n') || 'none'}
-Known about Ray:\n${memoryExcerpt(roomId, 15) || 'nothing yet'}`;
+Known about Ray:\n${memoryExcerpt(roomId, 15) || 'nothing yet'}${awarenessExcerpt(roomId) ? `\n${awarenessExcerpt(roomId)}` : ''}`;
   return { text, signals };
 }
 

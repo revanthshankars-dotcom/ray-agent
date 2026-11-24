@@ -8,6 +8,8 @@ import { WebSocketServer } from 'ws';
 import {
   CAPABILITIES_CATALOG,
   executeProtocol,
+  getConfirmationRequest,
+  putSecret,
 } from './server/capabilities.ts';
 import {
   deleteRoomBrainNote,
@@ -91,11 +93,14 @@ import { zipDirectory } from './server/zip.ts';
 import { buildInstaller } from './server/installer.ts';
 import { getFileMap, refreshDeviceIndex, startFileIndexScheduler } from './server/fileIndex.ts';
 import { getAutopilot, learnFromTurn, runAutopilot, setAutopilot, startAutonomy } from './server/autopilot.ts';
-import { getLearning, getTopics, observeTurn, runLearningCycle, saveTopics, setLearning, startLearningScheduler, withRecall } from './server/learning.ts';
+import { getLearning, getTopics, observeTurn, runLearningCycle, saveTopics, setLearning, startLearningScheduler, withRecallAsync } from './server/learning.ts';
 import { getLatestBridgeVersion } from './server/repair.ts';
 import { registerAccountRoutes } from './server/accounts.ts';
 import { registerConnectorRoutes } from './server/mcpConnectors.ts';
 import { registerSkillRoutes } from './server/skillLibrary.ts';
+import { semanticStatus, startSemanticIndexer } from './server/semanticMemory.ts';
+import { registerHomeRoutes } from './server/homeAssistant.ts';
+import { registerAwarenessRoutes, startAwareness } from './server/awareness.ts';
 import { registerInboxRoutes, startInboxScheduler } from './server/inboxRoutine.ts';
 import { phoneLineStatus, recentPhoneCalls, registerPhoneRoutes } from './server/phoneCall.ts';
 import { getIceServers, listScheduledCalls, cancelScheduledCall, startCallScheduler } from './server/calls.ts';
@@ -193,6 +198,8 @@ async function startServer() {
   startAutonomy();
   startLearningScheduler();
   startInboxScheduler();
+  startSemanticIndexer();
+  startAwareness();
   if (getFishKey()) setInterval(() => void checkFishKey(), 6 * 3600_000).unref();
   if (getFishKey()) {
     const fish = await checkFishKey();
@@ -387,6 +394,8 @@ async function startServer() {
   registerConnectorRoutes(app, requireRoomAuth as never);
   registerSkillRoutes(app, requireRoomAuth as never);
   registerInboxRoutes(app, requireRoomAuth as never);
+  registerHomeRoutes(app, requireRoomAuth as never);
+  registerAwarenessRoutes(app, requireRoomAuth as never);
   registerPhoneRoutes(app);
   app.get('/api/phone', requireRoomAuth, (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -401,8 +410,10 @@ async function startServer() {
     const lines = (folder: string, title: RegExp) =>
       (notes.find((n) => n.folder === folder && title.test(n.title))?.content || '').split('\n').filter((l) => l.startsWith('- ')).slice(0, 12).map((l) => l.slice(2));
     const latest = getLatestBridgeVersion();
+    const memoryIndex = await semanticStatus(roomId).catch(() => null);
     res.setHeader('Cache-Control', 'no-store');
     res.json({
+      memoryIndex,
       learning: {
         enabled: learning.enabled,
         dailyAt: `${String(learning.hour).padStart(2, '0')}:${String(learning.minute).padStart(2, '0')}`,
@@ -572,14 +583,19 @@ async function startServer() {
 
   app.post('/api/confirmations/resolve', deviceLimiter, requireRoomAuth, async (req, res) => {
     try {
-      const { roomId, confirmationId, approved, sourceDeviceName, preferredVoice, customConnectors } = req.body as {
+      const { roomId, confirmationId, approved, sourceDeviceName, preferredVoice, customConnectors, secret } = req.body as {
         roomId: string;
         confirmationId: string;
         approved: boolean;
+        secret?: string;
         sourceDeviceName?: string;
         preferredVoice?: VoicePersona;
         customConnectors?: AppConnector[];
       };
+      if (approved && typeof secret === 'string' && secret) {
+        const pending = getConfirmationRequest(confirmationId);
+        if (pending?.secretPrompt && typeof pending.args.secretSlot === 'string') putSecret(pending.args.secretSlot, secret);
+      }
       const out = await resolvePendingConfirmation(
         normalizeRoomId(roomId),
         confirmationId,
@@ -1169,7 +1185,7 @@ async function startServer() {
             message: message || '',
             history: history || [],
             attachments: attachments || [],
-            systemInstruction: withRecall(normalizedRoom, sysPrompt, message || ''),
+            systemInstruction: await withRecallAsync(normalizedRoom, sysPrompt, message || ''),
             tools: getOllamaToolDeclarations(),
             executeTool: toolExecutor,
             onEvent: sendEvent,

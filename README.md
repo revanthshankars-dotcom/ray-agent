@@ -119,6 +119,17 @@ Like `call-me`: `phone_call_me` dials your phone, says the message, listens, ans
 
 Webhooks (`/api/phone/voice`, `/api/phone/status`) are verified with Twilio's signature. Cost is roughly Twilio's per-minute rate; speech recognition is included in `<Gather>`.
 
+## Always-on JARVIS (free)
+
+- **Pop-ups and calls in front of everything** — the PC bridge opens RAY as its own window and forces it above other apps (Windows focus rules, macOS activate, Linux wmctrl); calls ring with a sound even when no browser is open. On Android, give Termux **Display over other apps**; a heads-up notification is the backup.
+- **Phone assistant, always running** — Termux keeps a wake lock and starts on boot (Termux:Boot). Tap **Talk** on the RAY notification or the *Talk to RAY* widget from any app: a spoken back-and-forth until you say "stop". Phones on bridge v3.1 update to v3.2 automatically.
+- **Meaning-based memory** — facts, notes, Knowledge and skills are embedded with free Gemini embeddings (or Cloudflare Workers AI) and recalled by meaning on every request; keyword recall is the fallback.
+- **Stronger on free models** — long goals get a written plan that is re-shown every round, old tool output is trimmed, struggling missions move to the strongest free models (gpt-oss-120b, Qwen3-235B, DeepSeek, Gemini Flash…), and a final check catches unfinished steps before RAY says "done".
+- **Smart home** — JARVIS Core → *Home & always on*: connect Home Assistant (free) with a long-lived token; on your home Wi-Fi it is reached through the PC bridge. Locks, garage doors and alarms ask first.
+- **Hard stops, with your OK** — in browser tasks RAY pauses at password/OTP fields (you type it into a secure box on the approval card: used once, never saved, never shown to the AI; OTPs from your phone's notifications are pre-filled), at Pay / Place-order buttons (shows the amount), and at CAPTCHAs (brings the browser in front of you and continues once you solve it).
+- **Awareness (opt-in)** — RAY knows the app/window you're in and your recent windows (memory only).
+- **Free 24/7 server** — Oracle Cloud Always Free: [`deploy/oracle/README.md`](deploy/oracle/README.md), one command (`deploy/oracle/setup.sh`).
+
 ## Skills from Orbit
 
 JARVIS Core → **Skills** installs playbooks from [Orbit](https://orbitskills.app) (skills taken from AI creators' posts, credited to them). Installed skills are Second Brain notes under *Skills*; on every request RAY adds the 1–2 that fit (e.g. "my app keeps crashing" → *Investigate*). RAY can also `skill_search` / `skill_install` by chat. The **Recommended for RAY** pack is hand-picked and every pick is rated "nothing risky" by Orbit; skills Orbit flags "use with care" need your approval. Skill text is treated as reference only — it never overrides your instructions or the approval flow.

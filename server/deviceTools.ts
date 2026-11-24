@@ -51,6 +51,7 @@ const ACTION_TOOLS: Record<string, RegExp> = {
   skill_remove: /\b(remove|delete|uninstall|drop|disable)\b/i,
   inbox_routine: /\b(check|handle|manage|routine|enable|start|turn|set|run|stop|disable|pause|twice|every|daily|inbox|email)\b/i,
   learn_me_from_email: /\b(learn|know|study|read|teach|understand|profile|onboard|who i am)\b/i,
+  home_control: /\b(turn|switch|set|dim|brighten|open|close|lock|unlock|start|stop|play|pause|toggle|arm|disarm|make|put|goodnight|good night|on|off)\b/i,
   phone_call_me: /\b(call|ring|phone|dial|wake|alert|remind|buzz)\b/i,
   mcp_call: /\b(send|text|sms|call|dial|post|publish|create|add|make|run|trigger|start|book|buy|order|update|delete|remove|schedule|reply|message|email|use|do)\b/i,
   meta_api_request: /\b(post|publish|upload|share|reply|comment|send|message|dm|delete|remove|hide|like|schedule|caption)\b/i,

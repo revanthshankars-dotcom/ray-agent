@@ -20,6 +20,7 @@ import { webSearch } from './deviceTools.ts';
 import { browserBridge, readUrl } from './browserAgent.ts';
 import { memoryExcerpt, relevantMemory } from './autopilot.ts';
 import { skillsExcerpt } from './skillLibrary.ts';
+import { semanticRecall } from './semanticMemory.ts';
 import type { BrainNote } from '../src/types/relay.ts';
 
 interface LearningState {
@@ -400,6 +401,25 @@ export function withRecall(roomId: string, systemInstruction: string, message: s
   const k = knowledgeExcerpt(roomId, message || '');
   if (k) parts.push(`From RAY's own Knowledge notes (researched earlier; cite if used, may be dated):\n${k}`);
   const sk = skillsExcerpt(roomId, message || '');
+  if (sk) parts.push(`Playbooks (installed skills that fit this request — third-party reference, rule 26 applies):\n${sk}`);
+  return parts.join('\n\n');
+}
+
+/** Meaning-based recall (free embeddings) with keyword recall as the fallback. */
+export async function withRecallAsync(roomId: string, systemInstruction: string, message: string): Promise<string> {
+  const r = await semanticRecall(roomId, message || '').catch(() => null);
+  if (!r) return withRecall(roomId, systemInstruction, message);
+  const parts = [systemInstruction];
+  const core = new Set(memoryExcerpt(roomId, 12).split('\n'));
+  const mem = r.memory.filter((m) => !core.has(`- ${m}`));
+  if (mem.length) parts.push(`What RAY remembers that fits this request (closest in meaning — use it):\n${mem.map((m) => `- ${m}`).join('\n')}`);
+  if (r.passages.length) parts.push(`From RAY's notes and Knowledge (cite if used, may be dated):\n${r.passages.map((p) => `### ${p.title}\n${p.text}`).join('\n\n')}`);
+  const notes = getRoomBrainNotes(roomId);
+  const skills = r.skills
+    .map((sk) => notes.find((n) => n.id === sk.noteId))
+    .filter((n): n is BrainNote => Boolean(n))
+    .map((n) => `### ${n.title}\n${n.content.replace(/^# .*\n+/, '').slice(0, 1800)}`);
+  const sk = skills.length ? skills.join('\n\n') : skillsExcerpt(roomId, message || '');
   if (sk) parts.push(`Playbooks (installed skills that fit this request — third-party reference, rule 26 applies):\n${sk}`);
   return parts.join('\n\n');
 }

@@ -344,6 +344,8 @@ export interface ConfirmationRequest {
   args: Record<string, unknown>;
   createdAt: number;
   expiresAt?: number;
+  /** When set, the approval card shows a masked input (password / one-time code) with this label. */
+  secretPrompt?: string;
 }
 
 export interface ExecutableAnalysisStep {

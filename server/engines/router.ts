@@ -74,7 +74,7 @@ export interface RouterChatInput {
 // ---------------------------------------------------------------------------
 
 const TOOL_HINTS =
-  /\b(mcp|connectors?|n8n|workflow|agentphone|sms|skills?|playbook|video|youtube|watch|routine|gmail|email|inbox|calendar|drive|docs|sheets|slides|youtube|instagram|facebook|reel|research|learn about|learn|keep up with|study|browse|website|repair|fix my|fix the|diagnose|frozen|not responding|free up|disk space|internet|restore|undo|health|codex|claude code|aider|coding agents?|teach|show me|how do i|how to|navigate|fill|settings?|call|ring|dial|wake|alarm|open|launch|start|close|kill|play|search|find|show|list|read|send|message|whatsapp|instagram|text|call|notify|remind|timer|alarm|tab|tabs|app|apps|file|files|folder|screen|screenshot|click|type|press|volume|clipboard|copy|phone|pc|laptop|desktop|device|note|brain|save|calendar|email|gmail|drive|task|todo|protocol|wake)\b/i;
+  /\b(lights?|lamp|fan|thermostat|unlock|smart home|home assistant|goodnight|mcp|connectors?|n8n|workflow|agentphone|sms|skills?|playbook|video|youtube|watch|routine|gmail|email|inbox|calendar|drive|docs|sheets|slides|youtube|instagram|facebook|reel|research|learn about|learn|keep up with|study|browse|website|repair|fix my|fix the|diagnose|frozen|not responding|free up|disk space|internet|restore|undo|health|codex|claude code|aider|coding agents?|teach|show me|how do i|how to|navigate|fill|settings?|call|ring|dial|wake|alarm|open|launch|start|close|kill|play|search|find|show|list|read|send|message|whatsapp|instagram|text|call|notify|remind|timer|alarm|tab|tabs|app|apps|file|files|folder|screen|screenshot|click|type|press|volume|clipboard|copy|phone|pc|laptop|desktop|device|note|brain|save|calendar|email|gmail|drive|task|todo|protocol|wake)\b/i;
 const CODE_HINTS = /\b(code|function|bug|error|stack ?trace|typescript|javascript|python|java|rust|golang|sql|regex|compile|refactor|api|script|class|component|debug)\b|```/i;
 const REASONING_HINTS =
   /\b(why|analy[sz]e|compare|plan|strategy|design|architecture|prove|derive|step[- ]by[- ]step|pros and cons|trade-?offs?|research|explain in depth|deep dive|evaluate)\b/i;
@@ -306,6 +306,8 @@ const TOOL_TOPICS: Array<[RegExp, string[]]> = [
   [/\b(skills?|playbooks?|orbit|better way|best way|workflow)\b/i, ['skill_search', 'skill_install', 'skill_list', 'skill_remove']],
   [/\b(inbox|emails?|gmail|drafts?|routine|twice a day|learn (about )?me|get to know me|who i am|my style)\b/i, ['inbox_routine', 'learn_me_from_email', 'google_api_request']],
   [/\b(video|videos|youtube|youtu\.be|watch|reel|clip|lecture|course)\b/i, ['watch_video', 'learn_about']],
+  [/\b(awareness|aware|what i'?m (doing|working on)|this (window|app|page|error)|on my screen)\b/i, ['awareness', 'request_device_snapshot']],
+  [/\b(lights?|lamp|fan|ac|aircon|air conditioner|heater|thermostat|temperature|plug|switch|tv|television|blinds?|curtains?|garage|door lock|lock|unlock|scene|goodnight|good night|bedroom|living room|kitchen|home assistant|smart home|vacuum)\b/i, ['home_control', 'home_devices']],
   [/\b(research|find out|look up|compare|best|price|prices|review|reviews|docs|documentation|website|web ?site|browse|browser|on the web|online|book|booking|form|sign up|order)\b/i, ['browse_web', 'read_web_page', 'web_search']],
   [/\b(learn|study|keep up|follow|knowledge|what did you learn|briefing|topics?)\b/i, ['learn_about', 'manage_learning', 'search_second_brain']],
   [/\b(fix|repair|broken|slow|frozen|hang|hanging|crash|crashing|not responding|not working|space|disk|storage|internet|wifi|wi-fi|dns|health|diagnos\w*|check ?up|update ray|restore|undo|previous version)\b/i, ['diagnose_device', 'repair_device', 'restore_file', 'operate_computer']],
@@ -320,6 +322,66 @@ export function selectRelevantTools(message: string, tools: RouterChatInput['too
   const words = message.toLowerCase().split(/[^a-z0-9]+/);
   if (words.some((w) => w.length > 3 && mcpKnownWords().has(w))) ['mcp_servers', 'mcp_call'].forEach((n) => wanted.add(n));
   return tools.filter((t) => wanted.has(t.function.name)).slice(0, 18);
+}
+
+// ---------------------------------------------------------------------------
+// Free-model mission strength: plan ledger, strongest-first escalation, compaction, final check
+// ---------------------------------------------------------------------------
+
+/** Free models that hold long tool missions best (matched on model id). */
+const STRONG_FREE = /gpt-oss-120b|qwen-?3-?235b|qwen3-coder|deepseek-(v3|r1|chat|reasoner)|kimi-k2|glm-4\.[5-9]|gemini-[\d.]+-(pro|flash)(?!-lite)|llama-3\.3-70b|llama-4-maverick|mistral-(large|medium)|nemotron-.*(super|ultra)|gpt-4\.1(?!-nano)/i;
+
+export function strongFirst<T extends { model: string }>(list: T[]): T[] {
+  return [...list.filter((c) => STRONG_FREE.test(c.model)), ...list.filter((c) => !STRONG_FREE.test(c.model))];
+}
+
+/** Multi-step goals get a written plan up front. */
+export function looksLikeMission(message: string): boolean {
+  const m = message.toLowerCase();
+  if (m.length < 40) return false;
+  return /\b(and then|then|after that|and also|also|every|all|each|finish|complete|whole|entire|until|step by step|plan|organi[sz]e|set up|sort out|clean up|book|research)\b/.test(m) || (m.match(/\band\b/g) || []).length >= 2;
+}
+
+async function planMission(goal: string, toolNames: string[]): Promise<string> {
+  const out = await quickComplete(
+    `Goal from Ray: "${goal.slice(0, 1500)}"\nTools available: ${toolNames.slice(0, 40).join(', ')}\n\nWrite the plan: 2-7 numbered steps, each one line naming the tool to use, then a line "Done when: <how to tell the goal is fully met>". Include a fallback in brackets for risky steps. No other text.`,
+    'You are the planner for a personal assistant agent. Short, concrete, executable plans.',
+    'reasoning',
+    { maxTokens: 400, timeoutMs: 15000 }
+  );
+  return out.replace(/```[a-z]*\n?|```/g, '').trim().slice(0, 1600);
+}
+
+function ledgerText(plan: string, toolLogs: Array<Record<string, unknown>>): string {
+  const steps = toolLogs
+    .slice(-14)
+    .map((t, i) => `${i + 1}. ${t.name} → ${t.status === 'error' || /^(Could not|Failed|Error|No online|No RAY bridge)/i.test(String(t.result || '')) ? 'FAILED: ' : ''}${String(t.result || t.status || '').replace(/\s+/g, ' ').slice(0, 140)}`)
+    .join('\n');
+  return `[Mission ledger — keep to the plan, do the next unfinished step, never redo finished ones]\nPlan:\n${plan}\n\nProgress so far:\n${steps || '(nothing yet)'}`;
+}
+
+/** Shrinks older tool results so small free models keep the goal in context. */
+function compactMessages(messages: ChatMessage[], keepLast = 4) {
+  const toolIdx = messages.map((m, i) => (m.role === 'tool' ? i : -1)).filter((i) => i >= 0);
+  for (const i of toolIdx.slice(0, Math.max(0, toolIdx.length - keepLast))) {
+    const c = String(messages[i].content || '');
+    if (c.length > 700) messages[i] = { ...messages[i], content: `${c.slice(0, 600)} …[trimmed]` };
+  }
+}
+
+async function verifyMission(goal: string, toolLogs: Array<Record<string, unknown>>, answer: string): Promise<string | null> {
+  try {
+    const out = await quickComplete(
+      `Ray asked: "${goal.slice(0, 1200)}"\nSteps done:\n${toolLogs.map((t) => `- ${t.name}: ${String(t.result || t.status).replace(/\s+/g, ' ').slice(0, 200)}`).join('\n')}\nDraft answer: "${answer.slice(0, 800)}"\n\nIs every part of the request actually done according to the step results (not just claimed)? Reply ONLY JSON {"complete":true|false,"missing":"what is still missing, or empty"}. Count parts needing Ray's approval as complete.`,
+      'You verify an assistant agent’s work strictly against evidence.',
+      'quick',
+      { maxTokens: 150, timeoutMs: 10000 }
+    );
+    const j = JSON.parse(out.match(/\{[\s\S]*\}/)?.[0] || '{}') as { complete?: boolean; missing?: string };
+    return j.complete === false && j.missing ? String(j.missing).slice(0, 400) : null;
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -477,6 +539,17 @@ export async function runAutoChatTurn(input: RouterChatInput): Promise<{ handled
 
   const toolLogs: Array<Record<string, unknown>> = [];
   let lastProvider = '';
+  // Long goals get a written plan that is re-shown every round, so free models never lose the thread.
+  let plan = '';
+  if (tools.length && looksLikeMission(input.message)) {
+    plan = await planMission(input.message, tools.map((t) => t.function.name)).catch(() => '');
+    if (plan) {
+      emitEngine({ phase: 'plan', reason: plan.split('\n')[0].slice(0, 120) });
+      messages.splice(1, 0, { role: 'system', content: ledgerText(plan, toolLogs) });
+    }
+  }
+  let verified = false;
+  let escalated = false;
   // MISSION CLAUSE: up to 12 rounds; when steps fail, RAY reflects and tries alternatives
   // (twice) instead of stopping at the first error.
   const MAX_ROUNDS = 12;
@@ -486,6 +559,15 @@ export async function runAutoChatTurn(input: RouterChatInput): Promise<{ handled
       input.onEvent({ type: 'text', data: 'Standing down, Ray.' });
       input.onEvent({ type: 'done', data: { toolCalls: toolLogs, sources: [] } });
       return { handled: true };
+    }
+    if (plan) messages[1] = { role: 'system', content: ledgerText(plan, toolLogs) };
+    if (round >= 2) compactMessages(messages);
+    // Long or struggling missions move to the strongest free models first.
+    if (!escalated && !pinned && (round >= 3 || reflections > 0)) {
+      escalated = true;
+      const before = all[0]?.model;
+      all = strongFirst(all);
+      if (all[0]?.model !== before) emitEngine({ phase: 'escalate', reason: `long mission → ${all[0]?.model}` });
     }
     const out = await completeWithFailover(all, messages, tools, (info) => {
       if (info.provider !== lastProvider) {
@@ -512,6 +594,17 @@ export async function runAutoChatTurn(input: RouterChatInput): Promise<{ handled
           content: `[RAY self-check] These steps failed:\n${retryable.map((t) => `- ${t.name}: ${String(t.result || t.status).slice(0, 220)}`).join('\n')}\nThink about every other way to still finish Ray's goal (another device, wake the device first, a different tool, browse_web, operate_computer, a different app or query). If one exists, call the tools now. If it is truly impossible, give the final answer saying exactly what is blocked and why.`,
         });
         continue;
+      }
+      // Final check against the evidence before saying "done" (once, only for real multi-step work).
+      if (!verified && toolLogs.length >= 2 && round < MAX_ROUNDS - 2 && tools.length && (plan || toolLogs.length >= 3)) {
+        verified = true;
+        const missing = await verifyMission(input.message, toolLogs, out.content || '');
+        if (missing) {
+          emitEngine({ phase: 'verify', reason: `not finished: ${missing.slice(0, 100)}` });
+          messages.push({ role: 'assistant', content: out.content || '' });
+          messages.push({ role: 'user', content: `[RAY verify] Not finished yet: ${missing}\nDo the remaining part now with the tools. If it truly cannot be done, say exactly what is left and why.` });
+          continue;
+        }
       }
       // A failed step RAY recovered from (a later step succeeded) is noted, not reported as unfinished.
       const recovered = failed.filter((t) => t.reflected && toolLogs.slice(toolLogs.indexOf(t) + 1).some((x) => !failed.includes(x) && x.status === 'completed'));

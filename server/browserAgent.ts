@@ -13,7 +13,7 @@
 import crypto from 'crypto';
 import { Type } from '@google/genai';
 import type { FunctionDeclaration } from '@google/genai';
-import { createConfirmationRequest } from './capabilities.ts';
+import { createConfirmationRequest, newSecretSlot, putSecret, takeSecret } from './capabilities.ts';
 import { broadcastHudSound, broadcastRoomEvent, dispatchBridgeProxyCall, getRoomDevices, isRoomInterrupted, setRoomInterrupted } from './hub.ts';
 import { quickComplete } from './engines/router.ts';
 import { webSearch } from './deviceTools.ts';
@@ -58,8 +58,9 @@ Actions:
  {"action":"note","note":"<facts worth keeping, with the page URL>"}
  {"action":"done","answer":"<final answer / what was done, cite URLs>"}   {"action":"ask_user","text":"<question>"}
 Rules: one action per reply. Prefer opening a precise URL when you know it. Use "note" to save facts as you research,
-then "done" with a complete answer. Never type passwords, OTPs or card numbers; never confirm payments, purchases,
-posts or messages — use ask_user for that. Dismiss cookie banners. If stuck on a page, go back or search differently.`;
+then "done" with a complete answer. When the next step is a password / OTP field or a Pay / Place order button, still
+choose that action ("type" with empty text, or "click") — RAY pauses and asks Ray before it happens. Never make up a
+password or code. Don't post or send messages unless the goal says so. Dismiss cookie banners. If stuck, go back or search differently.`;
 
 function parseStep(text: string): BrowseStep | null {
   const m = text.match(/\{[\s\S]*\}/);
@@ -79,6 +80,35 @@ function describePage(p: PageView): string {
     .join('\n');
   return `URL: ${p.url}\nTitle: ${p.title}\nScroll: ${p.scrollY ?? 0}/${p.scrollMax ?? 0}\n\nPage text (start):\n${p.text.slice(0, 4500)}\n\nElements:\n${els}`;
 }
+
+interface HardStop {
+  kind: 'secret' | 'pay';
+  i: number;
+  label: string;
+  url: string;
+  amount?: string;
+}
+const SECRET_FIELD = /\b(password|passcode|otp|one[- ]time|verification code|security code|pin|cvv|cvc|2fa|auth(entication)? code)\b/i;
+const PAY_BUTTON = /\b(pay( now)?|place (your )?order|buy now|confirm (purchase|payment|order|booking)|complete (purchase|payment|order|booking)|submit payment|proceed to pay|make payment|book now|subscribe)\b/i;
+const CAPTCHA = /captcha|i'?m not a robot|verify (that )?you are (a )?human|are you a robot|press (and|&) hold|unusual traffic|security check to continue/i;
+const host = (u: string) => {
+  try {
+    return new URL(u).hostname.replace(/^www\./, '');
+  } catch {
+    return u.slice(0, 40);
+  }
+};
+function findAmount(text: string): string | undefined {
+  const re = /(₹|rs\.?|inr|\$|usd|€|eur|£|gbp)\s?[\d,]+(\.\d{1,2})?/gi;
+  const t = text.slice(0, 12000);
+  const totalIdx = t.search(/\b(order total|grand total|total amount|amount payable|total|you pay)\b/i);
+  if (totalIdx >= 0) {
+    const m = t.slice(totalIdx, totalIdx + 160).match(re);
+    if (m) return m[0];
+  }
+  return t.match(re)?.[0];
+}
+const isCaptcha = (p: PageView) => CAPTCHA.test(`${p.title} ${p.text.slice(0, 4000)} ${p.elements.map((e) => e.label).join(' ')}`);
 
 /** Server-side fallback: fetch a page and strip it to text. */
 export async function fetchPageText(url: string, max = 7000): Promise<string> {
@@ -139,7 +169,7 @@ export async function serverResearch(goal: string, maxPages = 4): Promise<{ answ
   return { answer, sources: (pages.length ? pages : results).map((p) => p.url) };
 }
 
-async function runBrowse(roomId: string, taskId: string, goal: string, mode: 'do' | 'research', bridgeId: string, startUrl?: string): Promise<string> {
+async function runBrowse(roomId: string, taskId: string, goal: string, mode: 'do' | 'research', bridgeId: string, startUrl?: string, resume = false): Promise<string | HardStop> {
   const emit = (data: Record<string, unknown>) => broadcastRoomEvent(roomId, 'agent:update', { taskId, task: goal, target: 'browser', mode, ...data });
   const background = mode === 'research';
   const history: string[] = [];
@@ -150,7 +180,9 @@ async function runBrowse(roomId: string, taskId: string, goal: string, mode: 'do
   let page: PageView | null = null;
   const first = await dispatchBridgeProxyCall(
     roomId,
-    { action: 'browser', op: 'open', newTab: true, url: startUrl || `https://www.google.com/search?q=${encodeURIComponent(goal)}`, background, screenshot: !background },
+    resume
+      ? { action: 'browser', op: 'read', background, screenshot: !background }
+      : { action: 'browser', op: 'open', newTab: true, url: startUrl || `https://www.google.com/search?q=${encodeURIComponent(goal)}`, background, screenshot: !background },
     45000,
     bridgeId
   );
@@ -173,6 +205,18 @@ async function runBrowse(roomId: string, taskId: string, goal: string, mode: 'do
     if (!plan) {
       history.push(`${step}. (unreadable reply)`);
       continue;
+    }
+    // HARD STOPS — passwords/OTPs and Pay buttons pause for Ray's approval (handled by the caller).
+    if (mode === 'do' && (plan.action === 'type' || plan.action === 'click') && plan.i != null) {
+      const el = page.elements.find((e) => e.i === Number(plan!.i));
+      if (el && plan.action === 'type' && (el.type === 'password' || SECRET_FIELD.test(el.label))) {
+        emit({ status: 'waiting', step, say: `Needs your ${el.type === 'password' ? 'password' : el.label || 'code'}` });
+        return { kind: 'secret', i: el.i, label: el.type === 'password' ? 'password' : el.label || 'code', url: page.url };
+      }
+      if (el && plan.action === 'click' && PAY_BUTTON.test(el.label)) {
+        emit({ status: 'waiting', step, say: `Waiting for your OK to press “${el.label}”` });
+        return { kind: 'pay', i: el.i, label: el.label.slice(0, 80), url: page.url, amount: findAmount(page.text) };
+      }
     }
     emit({ status: 'running', step, thought: plan.thought, action: { action: plan.action, x: undefined, text: plan.text || plan.url || plan.query }, screenshot: page.screenshot, say: `${page.title}` });
     if (plan.action === 'done') {
@@ -198,8 +242,39 @@ async function runBrowse(roomId: string, taskId: string, goal: string, mode: 'do
     else if (plan.action === 'back') Object.assign(req, { op: 'back' });
     else Object.assign(req, { op: 'read' });
     const out = await dispatchBridgeProxyCall(roomId, req, 45000, bridgeId);
+    if (!out.ok && /PASSWORD_FIELD/.test(out.error || '') && plan.i != null) {
+      return { kind: 'secret', i: Number(plan.i), label: 'password', url: page.url };
+    }
     history.push(`${step}. ${plan.action} ${plan.i ?? ''} ${plan.url || plan.query || plan.text || ''}`.trim().slice(0, 160) + ` → ${out.ok ? 'ok' : `failed: ${out.error}`}`);
     if (out.ok) page = out.data as PageView;
+    // CAPTCHA: RAY never solves it — it brings the browser in front of Ray and waits, then carries on.
+    if (out.ok && page && isCaptcha(page)) {
+      if (mode !== 'do') {
+        history.push(`${step}. CAPTCHA on ${host(page.url)} — skipped this site`);
+        const back = await dispatchBridgeProxyCall(roomId, { action: 'browser', op: 'back', background }, 20000, bridgeId);
+        if (back.ok) page = back.data as PageView;
+        continue;
+      }
+      await dispatchBridgeProxyCall(roomId, { action: 'browser', op: 'front' }, 15000, bridgeId);
+      broadcastHudSound(roomId, 'alert');
+      emit({ status: 'waiting', step, say: 'Please solve the CAPTCHA in the browser — I’ll continue right after.', screenshot: page.screenshot });
+      const until = Date.now() + 4 * 60_000;
+      let solved = false;
+      while (Date.now() < until && !isRoomInterrupted(roomId)) {
+        await new Promise((r) => setTimeout(r, 4000));
+        const chk = await dispatchBridgeProxyCall(roomId, { action: 'browser', op: 'read', screenshot: true }, 20000, bridgeId);
+        if (chk.ok && !isCaptcha(chk.data as PageView)) {
+          page = chk.data as PageView;
+          solved = true;
+          break;
+        }
+      }
+      if (!solved) {
+        final = 'I need you: the CAPTCHA was not solved within 4 minutes. Solve it in the browser and tell me to continue.';
+        break;
+      }
+      history.push(`${step}. Ray solved the CAPTCHA`);
+    }
   }
   if (!final) {
     final = notes.length
@@ -257,6 +332,21 @@ export async function executeBrowserTool(
     return { result: `${r.answer}\n\n(Researched from the cloud — the PC browser is offline.)` };
   }
   if (running.has(roomId)) return { result: `Browser is busy with: ${running.get(roomId)}. Say "stop" to cancel.` };
+  // Approved hard stop: type the secret / press Pay, then carry on with the same goal.
+  let resume = Boolean(args.resume);
+  if (opts.confirmed && (args.hardStop === 'secret' || args.hardStop === 'pay')) {
+    const i = Number(args.i);
+    if (args.hardStop === 'secret') {
+      const value = takeSecret(String(args.secretSlot || ''));
+      if (!value) return { result: `No ${args.label || 'password'} was entered, so I stopped. Ask me again when you're ready.` };
+      const typed = await dispatchBridgeProxyCall(roomId, { action: 'browser', op: 'type', i, value, allowSecret: true }, 30000, pc.id);
+      if (!typed.ok) return { result: `Could not type into that field: ${typed.error}` };
+    } else {
+      const clicked = await dispatchBridgeProxyCall(roomId, { action: 'browser', op: 'click', i }, 45000, pc.id);
+      if (!clicked.ok) return { result: `Could not press “${args.label}”: ${clicked.error}` };
+    }
+    resume = true;
+  }
   if (mode === 'do' && !opts.confirmed) {
     const req = createConfirmationRequest({
       roomId,
@@ -272,8 +362,9 @@ export async function executeBrowserTool(
   const taskId = crypto.randomUUID().slice(0, 8);
   running.set(roomId, goal);
   try {
-    const answer = await runBrowse(roomId, taskId, goal, mode, pc.id, startUrl);
-    return { result: answer };
+    const answer = await runBrowse(roomId, taskId, goal, mode, pc.id, startUrl, resume);
+    if (typeof answer === 'string') return { result: answer };
+    return await hardStopConfirmation(roomId, pc, goal, answer);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     broadcastRoomEvent(roomId, 'agent:update', { taskId, task: goal, target: 'browser', status: 'stopped', result: msg });
@@ -285,4 +376,57 @@ export async function executeBrowserTool(
   } finally {
     running.delete(roomId);
   }
+}
+
+/** Turns a hard stop into Ray's approval card (with a secure input for passwords / codes). */
+async function hardStopConfirmation(roomId: string, pc: DeviceInfo, goal: string, hs: HardStop): Promise<{ result: string; confirmation: ConfirmationRequest }> {
+  const site = host(hs.url);
+  let req: ConfirmationRequest;
+  if (hs.kind === 'secret') {
+    const slot = newSecretSlot();
+    let found = '';
+    if (!/password/i.test(hs.label)) found = await otpFromPhone(roomId).catch(() => '');
+    if (found) putSecret(slot, found);
+    req = createConfirmationRequest({
+      roomId,
+      toolName: 'browse_web',
+      safetyLevel: 'sensitive',
+      summary: found
+        ? `Enter the code from your phone (${found.slice(0, 2)}••••) into “${hs.label}” on ${site}, then continue: "${goal}". Type a different code below to override.`
+        : `Type your ${hs.label} into ${site} so I can continue: "${goal}". It is used once and never saved or shown to the AI.`,
+      targetDevice: pc.name,
+      args: { goal, mode: 'do', hardStop: 'secret', i: hs.i, label: hs.label, secretSlot: slot, site },
+      secretPrompt: `Your ${hs.label} for ${site}`,
+    });
+  } else {
+    req = createConfirmationRequest({
+      roomId,
+      toolName: 'browse_web',
+      safetyLevel: 'sensitive',
+      summary: `Press “${hs.label}” on ${site}${hs.amount ? ` — amount on the page: ${hs.amount}` : ''}, then finish: "${goal}".`,
+      targetDevice: pc.name,
+      args: { goal, mode: 'do', hardStop: 'pay', i: hs.i, label: hs.label, site },
+    });
+  }
+  broadcastHudSound(roomId, 'alert');
+  return {
+    result: `REQUIRES_CONFIRMATION: paused at ${hs.kind === 'secret' ? `the ${hs.label} field` : `“${hs.label}”`} on ${site} — waiting for Ray (confirmationId=${req.id}).`,
+    confirmation: req,
+  };
+}
+
+/** Looks for a fresh one-time code in the phone's notifications (SMS / authenticator apps). */
+async function otpFromPhone(roomId: string): Promise<string> {
+  const phone = getRoomDevices(roomId).find((d) => d.online && d.type === 'bridge' && /android/i.test(d.os || ''));
+  if (!phone) return '';
+  const out = await dispatchBridgeProxyCall(roomId, { action: 'read_notifications' }, 10000, phone.id);
+  if (!out.ok) return '';
+  const items = (Array.isArray(out.data) ? out.data : (out.data as { notifications?: unknown[] })?.notifications || []) as Array<Record<string, unknown>>;
+  for (const n of items.slice(0, 15)) {
+    const text = `${n.title || ''} ${n.content || n.text || ''}`;
+    if (!/\b(otp|code|verification|one[- ]time|passcode|login)\b/i.test(text)) continue;
+    const m = text.match(/\b(\d{4,8})\b/);
+    if (m) return m[1];
+  }
+  return '';
 }

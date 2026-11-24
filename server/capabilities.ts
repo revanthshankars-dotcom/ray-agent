@@ -315,6 +315,7 @@ export function createConfirmationRequest(params: {
   summary: string;
   targetDevice: string;
   args: Record<string, unknown>;
+  secretPrompt?: string;
 }): ConfirmationRequest {
   purgeExpiredConfirmations();
   const now = Date.now();
@@ -335,6 +336,7 @@ export function createConfirmationRequest(params: {
     args: params.args,
     createdAt: now,
     expiresAt: now + CONFIRMATION_TTL_MS,
+    ...(params.secretPrompt ? { secretPrompt: params.secretPrompt } : {}),
   };
   pendingConfirmations.set(req.id, req);
   return req;
@@ -531,4 +533,20 @@ export async function executeProtocol(
         executedAt: now,
       };
   }
+}
+
+// --- one-time secrets (passwords / OTP codes Ray types into an approval card) ---------------
+// Kept in memory only for a few minutes, read once, never logged, never sent to a model.
+const secretSlots = new Map<string, { value: string; exp: number }>();
+export function newSecretSlot(): string {
+  return crypto.randomUUID();
+}
+export function putSecret(slot: string, value: string): void {
+  if (!slot || !value) return;
+  secretSlots.set(slot, { value: value.slice(0, 512), exp: Date.now() + 3 * 60_000 });
+}
+export function takeSecret(slot: string): string | null {
+  const s = secretSlots.get(slot);
+  secretSlots.delete(slot);
+  return s && s.exp > Date.now() ? s.value : null;
 }

@@ -33,7 +33,7 @@ import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import WebSocket, { WebSocketServer } from 'ws';
 
-const BRIDGE_VERSION = '3.1';
+const BRIDGE_VERSION = '3.2';
 const IS_TERMUX = Boolean(process.env.PREFIX && process.env.PREFIX.includes('com.termux')) || fs.existsSync('/data/data/com.termux');
 const PLATFORM = IS_TERMUX ? 'android' : os.platform();
 const WS_URL = process.env.RELAY_WS_URL || "__RAY_WS_URL__";
@@ -134,18 +134,52 @@ function runSyncExec(cmd, args, cwd) {
   });
 }
 
+/** Termux:Widget home-screen buttons: "Ask RAY" (one question) and "Talk to RAY" (a voice conversation). */
+function writePhoneShortcuts(nodeBin, scriptPath) {
+  const loc = { scriptTarget: scriptPath };
+  const process = { execPath: nodeBin };
+  // "Ask RAY" button for the home screen (Termux:Widget): speak → RAY answers, online or offline.
+  const shortcutsDir = path.join(os.homedir(), '.shortcuts');
+  fs.mkdirSync(shortcutsDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(shortcutsDir, 'Ask RAY'),
+    '#!/data/data/com.termux/files/usr/bin/sh\n' +
+      'TEXT=$(termux-speech-to-text)\n' +
+      '[ -n "$TEXT" ] && "' + process.execPath + '" "' + loc.scriptTarget + '" --ask "$TEXT"\n',
+    { mode: 0o755 }
+  );
+  // "Talk to RAY": a back-and-forth voice conversation (listen → answer aloud → listen) until silence or "stop".
+  fs.writeFileSync(
+    path.join(shortcutsDir, 'Talk to RAY'),
+    '#!/data/data/com.termux/files/usr/bin/sh\n' +
+      'termux-notification --id ray-talk --title "RAY is listening" --content "Speak now · say stop to end" --priority max --ongoing\n' +
+      'n=0\n' +
+      'while [ $n -lt 12 ]; do\n' +
+      '  n=$((n+1))\n' +
+      '  TEXT=$(termux-speech-to-text)\n' +
+      '  [ -z "$TEXT" ] && break\n' +
+      '  case "$(echo "$TEXT" | tr A-Z a-z)" in *stop*|*"that\'s all"*|*goodbye*|*"bye ray"*|*"thank you"*) termux-tts-speak "Okay."; break;; esac\n' +
+      '  ANS=$("' + process.execPath + '" "' + loc.scriptTarget + '" --ask "$TEXT" --quiet)\n' +
+      '  termux-notification --id ray-talk --title "RAY" --content "$ANS" --priority max --ongoing\n' +
+      '  termux-tts-speak "$ANS"\n' +
+      'done\n' +
+      'termux-notification-remove ray-talk\n',
+    { mode: 0o755 }
+  );
+}
+
 async function handleCliFlags() {
   const args = process.argv.slice(2);
   const askIdx = args.indexOf('--ask');
   if (askIdx >= 0) {
     // Used by the "Ask RAY" home-screen button: hand the question to the running bridge.
-    const question = args.slice(askIdx + 1).join(' ').trim();
+    const question = args.slice(askIdx + 1).filter((a) => a !== '--quiet').join(' ').trim();
     if (!question) process.exit(0);
     try {
       const r = await fetch('http://127.0.0.1:' + LOCAL_PORT + '/ask', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Relay-Room-Token': String(process.env.RELAY_ROOM_TOKEN || loadSavedBridgeConfig().roomToken || DEFAULT_ROOM_TOKEN) },
-        body: JSON.stringify({ text: question, speak: true }),
+        body: JSON.stringify({ text: question.replace(/\s*--quiet\b/, ''), speak: !args.includes('--quiet') }),
         signal: AbortSignal.timeout(120000),
       });
       const j = await r.json();
@@ -206,17 +240,11 @@ async function handleCliFlags() {
         'termux-wake-lock\n' +
         'while true; do "' + process.execPath + '" "' + loc.scriptTarget + '" --foreground >> "' + loc.logFile + '" 2>&1; sleep 5; done\n';
       fs.writeFileSync(loc.startupFile, sh, { mode: 0o755 });
-      // "Ask RAY" button for the home screen (Termux:Widget): speak → RAY answers, online or offline.
-      const shortcutsDir = path.join(os.homedir(), '.shortcuts');
-      fs.mkdirSync(shortcutsDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(shortcutsDir, 'Ask RAY'),
-        '#!/data/data/com.termux/files/usr/bin/sh\n' +
-          'TEXT=$(termux-speech-to-text)\n' +
-          '[ -n "$TEXT" ] && "' + process.execPath + '" "' + loc.scriptTarget + '" --ask "$TEXT"\n',
-        { mode: 0o755 }
-      );
-      console.log('[RAY Bridge] Added "Ask RAY" shortcut — add the Termux:Widget widget to your home screen.');
+      writePhoneShortcuts(process.execPath, loc.scriptTarget);
+      console.log('[RAY Bridge] Added "Ask RAY" and "Talk to RAY" shortcuts — add the Termux:Widget widget to your home screen.');
+      // Lets RAY open its window over other apps from the background (pop-ups and calls).
+      spawn('am', ['start', '-a', 'android.settings.action.MANAGE_OVERLAY_PERMISSION', '-d', 'package:com.termux'], { detached: true, stdio: 'ignore' }).unref();
+      console.log('[RAY Bridge] IMPORTANT: turn ON "Display over other apps" for Termux (the screen that just opened), and allow Termux to ignore battery optimisation when asked.');
       spawn('sh', [loc.startupFile], { detached: true, stdio: 'ignore' }).unref();
       console.log('[RAY Bridge] Installed Termux:Boot launcher:', loc.startupFile);
       console.log('[RAY Bridge] Running in background now. Open the Termux:Boot app once so Android allows it to start on boot.');
@@ -1208,9 +1236,10 @@ function ringThisDevice(call, cb) {
     return cb('Ringing ' + DEVICE_NAME, true);
   }
   showNativeNotification('📞 Incoming call — ' + who, String(call.message || 'Opening RAY to answer…'), () => {});
-  launchUrlSafely(answerUrl, () => {});
-  speakNative(line, () => {});
-  cb('Ringing ' + DEVICE_NAME, true);
+  playRingtone(25);
+  openRayWindow(answerUrl + '&room=' + encodeURIComponent(ROOM_ID), 'RAY Call', 20, () => {});
+  setTimeout(() => speakNative(line, () => {}), 1500);
+  cb('Ringing ' + DEVICE_NAME + ' (window in front)', true);
 }
 
 function lookupContactNumber(name, cb) {
@@ -1544,6 +1573,89 @@ function findChromeBinary() {
 }
 
 // --- RAY pop-up ------------------------------------------------------------
+// Windows stops background programs from stealing focus, so a freshly opened window lands behind
+// whatever Ray is using. raiseWindow() finds RAY's window by its title and forces it to the front
+// (Alt-key trick + briefly always-on-top) so pop-ups and calls appear over every app.
+const WIN_RAISE_CS = [
+  'using System; using System.Text; using System.Runtime.InteropServices;',
+  'public class RayWin {',
+  ' public delegate bool EnumProc(IntPtr h, IntPtr l);',
+  ' [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc p, IntPtr l);',
+  ' [DllImport("user32.dll")] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);',
+  ' [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);',
+  ' [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);',
+  ' [DllImport("user32.dll")] static extern bool ShowWindowAsync(IntPtr h, int n);',
+  ' [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int cx, int cy, uint f);',
+  ' [DllImport("user32.dll")] static extern void keybd_event(byte k, byte s, uint f, UIntPtr e);',
+  ' public static IntPtr Find(string prefix) { IntPtr found = IntPtr.Zero; EnumWindows((h, l) => { if (!IsWindowVisible(h)) return true; var sb = new StringBuilder(256); GetWindowText(h, sb, 256); if (sb.ToString().StartsWith(prefix)) { found = h; return false; } return true; }, IntPtr.Zero); return found; }',
+  ' public static void Front(IntPtr h) { ShowWindowAsync(h, 9); keybd_event(0x12, 0, 0, UIntPtr.Zero); SetForegroundWindow(h); keybd_event(0x12, 0, 2, UIntPtr.Zero); SetWindowPos(h, new IntPtr(-1), 0, 0, 0, 0, 0x43); }',
+  ' public static void Release(IntPtr h) { SetWindowPos(h, new IntPtr(-2), 0, 0, 0, 0, 0x43); }',
+  '}',
+].join('\n');
+
+function raiseWindow(titlePrefix, holdSeconds) {
+  const hold = Math.max(1, Math.min(60, Number(holdSeconds) || 4));
+  const t = String(titlePrefix).replace(/[^\w .-]/g, '');
+  if (os.platform() === 'win32') {
+    const ps =
+      'Add-Type -TypeDefinition @"\n' + WIN_RAISE_CS + '\n"@;' +
+      '$h=[IntPtr]::Zero;$d=(Get-Date).AddSeconds(15);' +
+      "while($h -eq [IntPtr]::Zero -and (Get-Date) -lt $d){$h=[RayWin]::Find('" + t + "');if($h -eq [IntPtr]::Zero){Start-Sleep -Milliseconds 300}}" +
+      'if($h -ne [IntPtr]::Zero){[RayWin]::Front($h);Start-Sleep -Seconds ' + hold + ';[RayWin]::Front($h);[RayWin]::Release($h)}';
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', ps], { timeout: (hold + 25) * 1000, windowsHide: true }, () => {});
+  } else if (os.platform() === 'darwin') {
+    setTimeout(() => {
+      for (const app of ['Google Chrome', 'Microsoft Edge', 'Brave Browser', 'Chromium']) {
+        execFile('osascript', ['-e', 'if application "' + app + '" is running then tell application "' + app + '" to activate'], { timeout: 5000 }, () => {});
+      }
+    }, 2500);
+  } else if (!IS_TERMUX) {
+    let tries = 0;
+    const tick = () => execFile('wmctrl', ['-a', t], { timeout: 4000 }, (err) => { if (err && ++tries < 10) setTimeout(tick, 1000); });
+    setTimeout(tick, 1500);
+  }
+}
+
+/** Opens a RAY page as its own app window (not a tab) and brings it in front of everything. */
+function openRayWindow(url, titlePrefix, holdSeconds, cb) {
+  const done = cb || (() => {});
+  if (IS_TERMUX) {
+    // Needs "Display over other apps" for Termux, otherwise Android blocks opening from the background —
+    // the heads-up notification is the backup the user can tap from any app or the lock screen.
+    execFile('termux-notification', ['--id', 'ray-popup', '--title', titlePrefix === 'RAY Call' ? 'RAY is calling' : 'RAY wants you', '--content', 'Tap to open RAY', '--priority', 'max', '--sound', '--vibrate', '300,200,300', '--action', 'termux-open-url "' + url + '"'], { timeout: 10000 }, () => {});
+    return runSafeCommand('termux-open-url', [url], (m, ok) => done(ok ? 'RAY opened on the phone' : m, ok));
+  }
+  const chrome = findChromeBinary();
+  if (chrome) {
+    try {
+      spawn(chrome, ['--app=' + url, '--window-size=470,780', '--window-position=40,40'], { detached: true, stdio: 'ignore', windowsHide: false }).unref();
+      raiseWindow(titlePrefix, holdSeconds);
+      return done('RAY window opened in front', true);
+    } catch (e) {}
+  }
+  launchUrlSafely(url, (m, ok) => {
+    if (ok) raiseWindow(titlePrefix, holdSeconds);
+    done(ok ? 'RAY opened in the browser' : m, ok);
+  });
+}
+
+let ringProc = null;
+/** PC ringtone that plays even when no browser is open (stops after ~25 s or the next call). */
+function playRingtone(seconds) {
+  try { if (ringProc) ringProc.kill(); } catch {}
+  ringProc = null;
+  const secs = Math.max(3, Math.min(45, seconds || 25));
+  if (os.platform() === 'win32') {
+    const wav = ['Ring06.wav', 'Ring01.wav', 'Alarm01.wav'].map((f) => path.join(process.env.WINDIR || 'C:\\Windows', 'Media', f)).find((f) => fs.existsSync(f));
+    if (!wav) return;
+    ringProc = execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', "$p=New-Object Media.SoundPlayer '" + wav.replace(/'/g, "''") + "';$p.PlayLooping();Start-Sleep -Seconds " + secs + ';$p.Stop()'], { timeout: (secs + 10) * 1000, windowsHide: true }, () => {});
+  } else if (os.platform() === 'darwin') {
+    ringProc = execFile('sh', ['-c', 'end=$(($(date +%s)+' + secs + ')); while [ $(date +%s) -lt $end ]; do afplay /System/Library/Sounds/Glass.aiff; sleep 0.6; done'], { timeout: (secs + 5) * 1000 }, () => {});
+  } else if (!IS_TERMUX) {
+    ringProc = execFile('sh', ['-c', 'end=$(($(date +%s)+' + secs + ')); while [ $(date +%s) -lt $end ]; do paplay /usr/share/sounds/freedesktop/stereo/phone-incoming-call.oga 2>/dev/null || sleep 1; done'], { timeout: (secs + 5) * 1000 }, () => {});
+  }
+}
+
 let lastPopupAt = 0;
 function openRayPopup(reason, cb) {
   const done = cb || (() => {});
@@ -1551,16 +1663,7 @@ function openRayPopup(reason, cb) {
   lastPopupAt = Date.now();
   const url = rayAppUrl({ popup: 1, listen: 1 });
   if (!url) return done('RAY URL unknown', false);
-  if (IS_TERMUX) return runSafeCommand('termux-open-url', [url], (m, ok) => done(ok ? 'RAY opened on the phone' : m, ok));
-  const chrome = findChromeBinary();
-  if (chrome) {
-    try {
-      const w = 470, h = 780;
-      spawn(chrome, ['--app=' + url, '--window-size=' + w + ',' + h, '--window-position=40,40'], { detached: true, stdio: 'ignore', windowsHide: false }).unref();
-      return done('RAY window opened' + (reason ? ' (' + reason + ')' : ''), true);
-    } catch (e) {}
-  }
-  launchUrlSafely(url, (m, ok) => done(ok ? 'RAY opened in the browser' : m, ok));
+  openRayWindow(url, 'RAY Assistant', 4, (m, ok) => done(m + (reason ? ' (' + reason + ')' : ''), ok));
 }
 
 /** Windows: Start-menu shortcut "RAY" with the global hotkey Ctrl+Alt+R that pops RAY up. */
@@ -1582,13 +1685,15 @@ function installPopupShortcuts() {
 function showPersistentPhoneNotification() {
   if (!IS_TERMUX) return;
   const url = rayAppUrl({ popup: 1, listen: 1 });
+  const talk = path.join(os.homedir(), '.shortcuts', 'Talk to RAY');
   const ask = path.join(os.homedir(), '.shortcuts', 'Ask RAY');
+  const voice = fs.existsSync(talk) ? talk : ask;
   execFile('termux-notification', [
     '--id', 'ray-persistent', '--ongoing', '--priority', 'low', '--alert-once',
-    '--title', 'RAY is running', '--content', 'Tap to open RAY · Ask by voice',
-    '--action', 'termux-open-url "' + url + '"',
-    '--button1', 'Open RAY', '--button1-action', 'termux-open-url "' + url + '"',
-    '--button2', 'Ask RAY', '--button2-action', 'sh "' + ask + '"',
+    '--title', 'RAY is running', '--content', 'Tap Talk to speak to RAY from anywhere',
+    '--action', 'sh "' + voice + '"',
+    '--button1', 'Talk', '--button1-action', 'sh "' + voice + '"',
+    '--button2', 'Open RAY', '--button2-action', 'termux-open-url "' + url + '"',
   ], { timeout: 10000 }, () => {});
 }
 
@@ -1609,7 +1714,8 @@ async function ensureCdpBrowser(background) {
   const profile = path.join(CONFIG_DIR, background ? 'browser-profile-bg' : 'browser-profile');
   fs.mkdirSync(profile, { recursive: true });
   const args = ['--remote-debugging-port=' + st.port, '--user-data-dir=' + profile, '--no-first-run', '--no-default-browser-check', '--disable-features=Translate'];
-  if (background) args.push('--headless=new', '--window-size=1280,900');
+  const noScreen = os.platform() === 'linux' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY;
+  if (background || noScreen) args.push('--headless=new', '--window-size=1280,900');
   if (process.getuid && process.getuid() === 0) args.push('--no-sandbox');
   args.push('about:blank');
   spawn(chrome, args, { detached: true, stdio: 'ignore', windowsHide: !!background }).unref();
@@ -1755,13 +1861,20 @@ async function browserAction(req) {
     if (op === 'type') {
       const loc = await cdpEval(s, pageLocateScript, { i: req.i, text: req.label });
       if (!loc) return { ok: false, error: 'Field not found: ' + (req.i || req.label) };
-      if (loc.password) return { ok: false, error: 'RAY never types into password fields — Ray must type it.' };
+      // Password fields only take a secret Ray typed into RAY's secure approval prompt (one-time, never stored).
+      if (loc.password && req.allowSecret !== true) return { ok: false, error: 'PASSWORD_FIELD: needs Ray’s approval and his password.' };
       await cdpClickAt(s, loc.x, loc.y);
       if (req.clear !== false) {
         await cdpEval(s, () => { const e = document.activeElement; if (e && 'value' in e) { e.value = ''; e.dispatchEvent(new Event('input', { bubbles: true })); } else if (e && e.isContentEditable) e.textContent = ''; });
       }
       await s.send('Input.insertText', { text: String(req.value || req.textToType || '') });
       if (req.submit) { await cdpKey(s, 'enter'); await cdpWaitLoad(s, 12000); }
+    }
+    if (op === 'front') {
+      // Bring this browser window over every app so Ray can solve a CAPTCHA / take over.
+      await s.send('Page.bringToFront').catch(() => {});
+      const title = await cdpEval(s, () => document.title).catch(() => '');
+      if (title) raiseWindow(String(title).slice(0, 24), 6);
     }
     if (op === 'key') { await cdpKey(s, req.key); await cdpWaitLoad(s, 8000); }
     if (op === 'scroll') { await cdpEval(s, (dy) => scrollBy(0, dy), Number(req.dy || 700)); await new Promise((r) => setTimeout(r, 500)); }
@@ -1987,7 +2100,46 @@ function restoreFileVersion(p, version) {
   return { ok: true, data: { restored: target, from: new Date(Number(pick.replace('.bak', ''))).toISOString() } };
 }
 
+// --- Home Assistant (free smart-home hub) on the home network ------------------
+// The cloud can't reach a LAN Home Assistant, so the PC bridge relays calls to it. Only local
+// addresses and Home Assistant's /api/ paths are allowed, so this can't be used as an open proxy.
+function isLocalHaUrl(raw) {
+  try {
+    const u = new URL(raw);
+    if (!/^https?:$/.test(u.protocol)) return false;
+    const h = u.hostname.toLowerCase();
+    return h === 'localhost' || h === 'homeassistant' || h.endsWith('.local') || h.endsWith('.lan') || h.endsWith('.home') ||
+      /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(h);
+  } catch { return false; }
+}
+async function homeAssistantAction(req) {
+  const method = String(req.method || 'GET').toUpperCase();
+  const pathPart = String(req.path || '/api/');
+  if (!['GET', 'POST'].includes(method) || !/^\/api\/[\w./-]*$/.test(pathPart)) return { ok: false, error: 'Only Home Assistant /api/ GET/POST calls are allowed.' };
+  const candidates = req.url ? [String(req.url)] : ['http://homeassistant.local:8123', 'http://homeassistant:8123', 'http://localhost:8123'];
+  for (const base of candidates) {
+    if (!isLocalHaUrl(base)) return { ok: false, error: 'Home Assistant URL must be on your home network (e.g. http://homeassistant.local:8123).' };
+    try {
+      const r = await fetch(base.replace(/\/+$/, '') + pathPart, {
+        method,
+        headers: { Authorization: 'Bearer ' + String(req.token || ''), 'Content-Type': 'application/json' },
+        body: method === 'POST' ? JSON.stringify(req.body || {}) : undefined,
+        signal: AbortSignal.timeout(12000),
+      });
+      const text = await r.text();
+      if (r.status === 401) return { ok: false, error: 'Home Assistant refused the token (401).' };
+      if (!r.ok) return { ok: false, error: 'Home Assistant answered ' + r.status + ': ' + text.slice(0, 160) };
+      let data; try { data = JSON.parse(text); } catch { data = text.slice(0, 4000); }
+      return { ok: true, data: { base, result: data } };
+    } catch (e) {
+      if (req.url) return { ok: false, error: 'Could not reach Home Assistant at ' + base + ': ' + e.message };
+    }
+  }
+  return { ok: false, error: 'Home Assistant not found on this network (tried homeassistant.local:8123). Enter its address in JARVIS Core → Home.' };
+}
+
 async function jarvisAction(action, req) {
+  if (action === 'home_assistant') return await homeAssistantAction(req);
   if (action === 'browser') return await browserAction(req);
   if (action === 'diagnose') return { ok: true, data: await diagnoseDevice() };
   if (action === 'repair') return await repairAction(req);
@@ -2778,6 +2930,7 @@ function connect() {
           'adjust_volume', 'obsidian-vault', 'ollama-proxy', 'fs-sandbox', 'wake-on-lan', 'chat-compose', 'calls', 'coding-agents',
         ];
         caps.push('diagnose', 'repair', 'popup', 'file-versions');
+        if (!IS_TERMUX) caps.push('home-assistant');
         if (IS_TERMUX) caps.push('notifications-relay');
         else caps.push('screen-control', 'clean_slate', 'optimize_system', 'computer-use', 'browser-agent');
         ws.send(JSON.stringify({
@@ -2856,6 +3009,9 @@ connect();
 
 // Always there: phone keeps a "RAY is running" notification; PC gets Ctrl+Alt+R and pops RAY up
 // after boot so "Hey Ray" works right away (set RAY_POPUP_ON_BOOT=0 to turn that off).
+if (IS_TERMUX) {
+  try { writePhoneShortcuts(process.execPath, process.argv[1]); } catch {}
+}
 showPersistentPhoneNotification();
 setInterval(showPersistentPhoneNotification, 30 * 60_000).unref?.();
 installPopupShortcuts();

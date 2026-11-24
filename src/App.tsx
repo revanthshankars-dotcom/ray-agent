@@ -134,6 +134,17 @@ export default function App() {
     const q = new URLSearchParams(window.location.search);
     return q.has('popup') ? 'assistant' : q.has('connect') ? 'connect' : 'dashboard';
   });
+  // Distinct window titles let the PC bridge find these windows and raise them above other apps.
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    const t = q.has('answer') ? 'RAY Call' : q.has('popup') ? 'RAY Assistant' : '';
+    if (!t) return;
+    document.title = t;
+    const keep = window.setInterval(() => {
+      if (document.title !== t) document.title = t;
+    }, 1500);
+    return () => window.clearInterval(keep);
+  }, []);
   const [pairModalOpen, setPairModalOpen] = useState(false);
   const [manualCameraOpen, setManualCameraOpen] = useState(false);
   const [darkMode, setDarkMode] = useState<boolean>(() => {
@@ -798,7 +809,7 @@ export default function App() {
   );
 
   const handleResolveConfirmation = useCallback(
-    async (id: string, approved: boolean) => {
+    async (id: string, approved: boolean, secret?: string) => {
       setPendingConfirmations((prev) => prev.filter((c) => c.id !== id));
       try {
         const res = await authFetch(
@@ -810,6 +821,7 @@ export default function App() {
               roomId,
               confirmationId: id,
               approved,
+              ...(approved && secret ? { secret } : {}),
               sourceDeviceName: identity.name,
               preferredVoice: voice,
               customConnectors: effectiveConnectors,

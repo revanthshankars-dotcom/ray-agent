@@ -14,6 +14,7 @@ import {
   MousePointer2,
   Phone,
   Plug,
+  Home as HomeIcon,
   Plus,
   RefreshCw,
   ShieldCheck,
@@ -38,6 +39,7 @@ interface BridgeRow {
   capabilities: string[];
 }
 interface JarvisStatus {
+  memoryIndex?: { provider: string | null; indexed: number; building: boolean } | null;
   learning: {
     enabled: boolean;
     dailyAt: string;
@@ -84,7 +86,7 @@ function SectionTitle({ icon: Icon, title, hint, tone = 'text-blue-500' }: { ico
   return (
     <div className="flex items-center gap-2 min-w-0">
       <Icon className={`w-4 h-4 shrink-0 ${tone}`} />
-      <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{title}</h2>
+      <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100 whitespace-nowrap">{title}</h2>
       {hint && <span className="text-xs text-slate-500 dark:text-slate-400 truncate">{hint}</span>}
     </div>
   );
@@ -172,6 +174,12 @@ export function JarvisView({
   const [inbox, setInbox] = useState<InboxRoutine | null>(null);
   const [inboxBusy, setInboxBusy] = useState<string | null>(null);
   const [inboxMsg, setInboxMsg] = useState('');
+  const [home, setHome] = useState<{ connected: boolean; url: string | null } | null>(null);
+  const [haUrl, setHaUrl] = useState('');
+  const [haToken, setHaToken] = useState('');
+  const [haBusy, setHaBusy] = useState(false);
+  const [haMsg, setHaMsg] = useState('');
+  const [aware, setAware] = useState<boolean | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -186,6 +194,10 @@ export function JarvisView({
       if (p.ok) setPhone((await p.json()) as PhoneLine);
       const ir = await authFetch(`/api/inbox-routine?room=${encodeURIComponent(roomId)}`, roomId);
       if (ir.ok) setInbox((await ir.json()) as InboxRoutine);
+      const hr = await authFetch(`/api/home?room=${encodeURIComponent(roomId)}`, roomId);
+      if (hr.ok) setHome((await hr.json()) as { connected: boolean; url: string | null });
+      const ar = await authFetch(`/api/awareness?room=${encodeURIComponent(roomId)}`, roomId);
+      if (ar.ok) setAware(((await ar.json()) as { on: boolean }).on);
     } catch {
       /* offline */
     } finally {
@@ -323,6 +335,31 @@ export function JarvisView({
     } finally {
       setInboxBusy(null);
     }
+  };
+  const connectHome = async () => {
+    setHaBusy(true);
+    setHaMsg('');
+    try {
+      const r = await authFetch('/api/home/connect', roomId, { method: 'POST', body: JSON.stringify({ roomId, url: haUrl, token: haToken }) });
+      const j = (await r.json()) as { ok: boolean; error?: string; devices?: number };
+      setHaMsg(j.ok ? `Connected · ${j.devices} devices` : j.error || 'Could not connect.');
+      if (j.ok) {
+        setHaToken('');
+        await load();
+      }
+    } catch {
+      setHaMsg('Network error.');
+    } finally {
+      setHaBusy(false);
+    }
+  };
+  const disconnectHome = async () => {
+    await authFetch('/api/home/disconnect', roomId, { method: 'POST', body: JSON.stringify({ roomId }) });
+    await load();
+  };
+  const toggleAware = async () => {
+    const r = await authFetch('/api/awareness', roomId, { method: 'POST', body: JSON.stringify({ roomId, on: !aware }) });
+    if (r.ok) setAware(((await r.json()) as { on: boolean }).on);
   };
   const removeConnector = async (id: string) => {
     await authFetch('/api/mcp/remove', roomId, { method: 'POST', body: JSON.stringify({ roomId, id }) });
@@ -591,6 +628,80 @@ export function JarvisView({
         </div>
       </section>
 
+      {/* Home + always on */}
+      <section className={`${card} p-4 sm:p-5`}>
+        <SectionTitle icon={HomeIcon} title="Home & always on" hint="Smart home, awareness, phone and server" tone="text-emerald-500" />
+        <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-3.5 space-y-2 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-sm font-semibold text-slate-900 dark:text-slate-100">Smart home</span>
+              <span className="text-xs text-slate-500">Home Assistant (free) · lights, AC, plugs, TV, locks</span>
+            </div>
+            {home?.connected ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400 inline-flex items-center gap-1">
+                  <CheckCircle2 className="w-3.5 h-3.5" /> Connected · {home.url}
+                </span>
+                <button type="button" className={btnGhost} onClick={() => onAskRay('What smart-home devices do I have, and which are on?')}>
+                  Try it
+                </button>
+                <button type="button" className={`${btnGhost} text-rose-600 dark:text-rose-400`} onClick={() => void disconnectHome()}>
+                  Disconnect
+                </button>
+              </div>
+            ) : (
+              <>
+                <input className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent px-2.5 py-1.5 text-xs font-mono" placeholder="http://homeassistant.local:8123 (blank = find it)" value={haUrl} onChange={(e) => setHaUrl(e.target.value)} />
+                <input
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent px-2.5 py-1.5 text-xs font-mono"
+                  placeholder="Long-lived access token (profile → Security)"
+                  type="password"
+                  autoComplete="off"
+                  value={haToken}
+                  onChange={(e) => setHaToken(e.target.value)}
+                />
+                <div className="flex items-center gap-2">
+                  <button type="button" className={btnPrimary} disabled={haBusy || !haToken.trim()} onClick={() => void connectHome()}>
+                    {haBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />} Connect
+                  </button>
+                  {haMsg && <span className="text-xs text-slate-600 dark:text-slate-300 min-w-0 break-words">{haMsg}</span>}
+                </div>
+                <p className="text-[11px] text-slate-500">Home Assistant on your home Wi-Fi is reached through your PC bridge, so keep the PC on. Locks, garage and alarm always ask you first.</p>
+              </>
+            )}
+          </div>
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-3.5 space-y-3 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-slate-900 dark:text-slate-100">Awareness</span>
+              <span className="text-xs text-slate-500 min-w-0 truncate">RAY knows which app and window you are in</span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={Boolean(aware)}
+                aria-label="Awareness"
+                onClick={() => void toggleAware()}
+                className={`ml-auto shrink-0 relative w-10 h-6 rounded-full transition-colors ${aware ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-700'}`}
+              >
+                <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${aware ? 'translate-x-4' : ''}`} />
+              </button>
+            </div>
+            <p className="text-[11px] text-slate-500 -mt-2">Off by default. Window titles stay in memory only and are cleared when you turn it off.</p>
+            <div>
+              <div className="text-xs font-medium text-slate-700 dark:text-slate-200">Phone: always on, in front of every app</div>
+              <ol className="mt-1 text-[11px] text-slate-600 dark:text-slate-300 list-decimal pl-4 space-y-0.5">
+                <li>Android Settings → Apps → Termux → <b>Display over other apps</b>: on</li>
+                <li>Termux → Battery → <b>Unrestricted</b> (allow when RAY asks)</li>
+                <li>Install <b>Termux:Boot</b> and open it once (RAY starts after a reboot)</li>
+                <li>Add the <b>Termux:Widget</b> → “Talk to RAY” to your home screen, or tap <b>Talk</b> on the RAY notification</li>
+              </ol>
+            </div>
+            <p className="text-[11px] text-slate-500">
+              Server always on for free: Oracle Cloud Always Free — guide in <code className="font-mono">deploy/oracle/README.md</code>.
+            </p>
+          </div>
+        </div>
+      </section>
+
       {/* Connectors + phone line */}
       <section className={`${card} p-4 sm:p-5`}>
         <SectionTitle icon={Plug} title="Connectors" hint="Plug MCP servers into RAY — their tools work from one command" tone="text-violet-500" />
@@ -803,6 +914,11 @@ export function JarvisView({
         {/* Lessons & memory */}
         <section className={`${card} p-4 sm:p-5 lg:col-span-2 space-y-4`}>
           <SectionTitle icon={Sparkles} title="Lessons & memory" hint="RAY follows these" tone="text-amber-500" />
+          <p className="text-[11px] text-slate-500 -mt-2">
+            {st?.memoryIndex?.provider
+              ? `Meaning-based recall on (${st.memoryIndex.provider === 'gemini' ? 'Gemini' : 'Cloudflare'} embeddings, free) · ${st.memoryIndex.indexed} things indexed${st.memoryIndex.building ? ' · updating…' : ''}`
+              : 'Recall by keywords — add GEMINI_API_KEY in Render for meaning-based memory (free).'}
+          </p>
           <div>
             <p className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5">Lessons from its mistakes</p>
             {st?.lessons.length ? (

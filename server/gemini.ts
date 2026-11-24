@@ -38,7 +38,9 @@ import { executePhoneTool, phoneToolDeclarations } from './phoneCall.ts';
 import { executeSkillTool, skillToolDeclarations } from './skillLibrary.ts';
 import { executeInboxTool, inboxToolDeclarations } from './inboxRoutine.ts';
 import { executeVideoTool, videoToolDeclarations } from './videoWatch.ts';
-import { lessonsExcerpt, withRecall } from './learning.ts';
+import { executeHomeTool, homeToolDeclarations } from './homeAssistant.ts';
+import { awarenessExcerpt, awarenessToolDeclarations, executeAwarenessTool } from './awareness.ts';
+import { lessonsExcerpt, withRecallAsync } from './learning.ts';
 import { checkActionPolicy, executeExtendedTool, extendedToolDeclarations } from './deviceTools.ts';
 import type {
   AppConnector,
@@ -479,7 +481,7 @@ export const baseToolDeclarations: FunctionDeclaration[] = [
 ];
 
 // Extended tools (search & open, apps, tabs, messages, wake) — replace older duplicates by name.
-for (const decl of [...extendedToolDeclarations, ...callToolDeclarations, ...fileIndexToolDeclarations, ...computerUseToolDeclarations, ...codingAgentToolDeclarations, ...jarvisToolDeclarations, ...accountToolDeclarations, ...connectorToolDeclarations, ...phoneToolDeclarations, ...skillToolDeclarations, ...inboxToolDeclarations, ...videoToolDeclarations]) {
+for (const decl of [...extendedToolDeclarations, ...callToolDeclarations, ...fileIndexToolDeclarations, ...computerUseToolDeclarations, ...codingAgentToolDeclarations, ...jarvisToolDeclarations, ...accountToolDeclarations, ...connectorToolDeclarations, ...phoneToolDeclarations, ...skillToolDeclarations, ...inboxToolDeclarations, ...videoToolDeclarations, ...homeToolDeclarations, ...awarenessToolDeclarations]) {
   const idx = baseToolDeclarations.findIndex((d) => d.name === decl.name);
   if (idx >= 0) baseToolDeclarations[idx] = decl;
   else baseToolDeclarations.push(decl);
@@ -631,6 +633,10 @@ Behavioral Guidelines:
 27. INTERVIEW: when Ray sets up a new workflow or routine, or says "interview me", ask the questions that close the gaps — ONE at a time, short, most important first — before building it. For a plain one-off command, just do it.
 28. EMAIL ROUTINE: "learn about me from my email / get to know me" → learn_me_from_email, then ask its questions one at a time. "Check my email twice a day / handle my inbox" → inbox_routine enable (drafts only, Ray approves sends). "Send it / send the draft to X" → google_api_request POST https://gmail.googleapis.com/gmail/v1/users/me/drafts/send with {"id": draftId} (list drafts first). Treat his corrections to drafts as lessons.
 29. VIDEOS: "watch / summarise this video" or a course video link → watch_video (timestamps); save what matters with learn_about or a Knowledge note when Ray wants to keep it.
+30. HOME: lights, fans, AC, plugs, TV, blinds, locks, scenes → home_control (check names with home_devices). "Goodnight" style requests = several home_control calls. Locks/garage/alarm wait for Ray's approval.
+31. HARD STOPS: passwords, OTP codes, payments and CAPTCHAs are never skipped silently and never guessed. Ask Ray's approval first; after he approves, RAY can type a password/OTP he enters in the secure prompt, press Pay, or bring the CAPTCHA page in front for him to solve, then continue the task.
+
+${awarenessExcerpt(roomId)}
 
 Connected MCP servers and their tools:
 ${mcpCatalogExcerpt(roomId) || 'None connected.'}
@@ -920,6 +926,10 @@ export async function executeDeviceTool(
   if (inboxOut) return inboxOut;
   const videoOut = await executeVideoTool(roomId, name, args);
   if (videoOut) return videoOut;
+  const homeOut = await executeHomeTool(roomId, name, args, { confirmed });
+  if (homeOut) return homeOut;
+  const awareOut = await executeAwarenessTool(roomId, name, args);
+  if (awareOut) return awareOut;
 
   switch (name) {
     case 'list_connected_devices': {
@@ -1567,7 +1577,7 @@ export async function runAssistantChatTurn(input: ChatTurnInput): Promise<void> 
       customConnectors: input.customConnectors,
     }
   );
-  const recalledInstruction = withRecall(input.roomId, systemInstruction, input.message);
+  const recalledInstruction = await withRecallAsync(input.roomId, systemInstruction, input.message);
 
   const contents: Content[] = [];
   for (const h of input.history.slice(-12)) {
