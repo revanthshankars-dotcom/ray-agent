@@ -25,6 +25,8 @@ export interface Meter {
   resetsAt?: number;
   currency?: string;
   source: 'provider' | 'estimate';
+  rolling?: boolean; // refills gradually (Groq), no single reset time
+  since?: number; // estimates: RAY started counting at this time
   at: number;
 }
 export interface Block {
@@ -41,6 +43,7 @@ interface ProviderState {
   requestsByModel: Record<string, number>;
   probedAt?: number;
   probeNote?: string;
+  countSince?: number;
 }
 interface Saved {
   day: string;
@@ -72,6 +75,7 @@ function roll() {
     for (const p of Object.values(state.providers)) {
       p.tokensByModel = {};
       p.requestsByModel = {};
+      p.countSince = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate());
     }
   }
   for (const p of Object.values(state.providers)) {
@@ -83,7 +87,7 @@ function roll() {
 }
 function prov(id: string): ProviderState {
   roll();
-  return (state.providers[id] ||= { meters: {}, blocks: [], tokensByModel: {}, requestsByModel: {} });
+  return (state.providers[id] ||= { meters: {}, blocks: [], tokensByModel: {}, requestsByModel: {}, countSince: Date.now() });
 }
 const save = () => scheduleSave('engine-balance', () => state as unknown as Record<string, unknown>, 60_000);
 
@@ -139,7 +143,9 @@ export function noteHeaders(id: string, model: string, headers: Headers) {
     let window: Window = /day/.test(suffix) ? 'day' : /month/.test(suffix) ? 'month' : /min/.test(suffix) ? 'minute' : DEFAULT_WINDOW[id]?.[unit] || 'window';
     // OpenRouter's plain x-ratelimit-* with a reset hours away is its free-models-per-day cap.
     if (window === 'window' && g.reset && g.reset - Date.now() > 3600_000) window = 'day';
-    setMeter(id, { scope: scopeOf(id, model), unit, window, limit: g.limit, remaining: g.remaining, resetsAt: g.reset, source: 'provider' });
+    // A "per day" header whose reset is minutes away is a rolling window (Groq refills request by request).
+    const rolling = window === 'day' && Boolean(g.reset && g.reset - Date.now() < 3 * 3600_000);
+    setMeter(id, { scope: scopeOf(id, model), unit, window, limit: g.limit, remaining: g.remaining, resetsAt: rolling ? undefined : g.reset, rolling, source: 'provider' });
   }
   save();
 }
@@ -221,6 +227,7 @@ export interface ProbeTarget {
   id: string;
   baseUrl: string;
   apiKey: string;
+  requestsToday?: number; // RAY's older per-provider counter (survives restarts)
 }
 
 async function getJson(url: string, key: string): Promise<Record<string, unknown> | null> {
@@ -246,11 +253,12 @@ export async function probeBalances(targets: ProbeTarget[], force = false) {
         if (!j) return;
         const freeTier = Boolean(j.is_free_tier);
         const cap = freeTier ? 50 : 1000;
-        const usedFree = Object.entries(p.requestsByModel).filter(([m]) => /:free$/.test(m)).reduce((a, [, n]) => a + n, 0);
+        const usedFree = Math.max(t.requestsToday || 0, Object.entries(p.requestsByModel).filter(([m]) => /:free$/.test(m)).reduce((a, [, n]) => a + n, 0));
         const exhausted = blockedReason('openrouter', 'x');
         // OpenRouter doesn't return the free-request count, so this one is RAY's count against its published cap,
         // corrected to 0 the moment OpenRouter says the cap is reached.
-        if (!exhausted) setMeter(t.id, { scope: '', unit: 'requests', window: 'day', limit: cap, remaining: Math.max(0, cap - usedFree), resetsAt: nextUtcMidnight(), source: 'estimate' });
+        const known = Object.values(p.meters).some((m) => m.source === 'provider' && m.unit === 'requests' && m.window === 'day');
+        if (!exhausted && !known) setMeter(t.id, { scope: '', unit: 'requests', window: 'day', limit: cap, remaining: Math.max(0, cap - usedFree), resetsAt: nextUtcMidnight(), source: 'estimate', since: p.countSince });
         if (j.limit_remaining !== null && j.limit_remaining !== undefined) {
           setMeter(t.id, { scope: 'credits', unit: 'credit', window: 'balance', limit: Number(j.limit) || undefined, remaining: Number(j.limit_remaining), currency: 'USD', source: 'provider' });
         }
@@ -309,23 +317,24 @@ export async function balanceView(id: string): Promise<BalanceView> {
     for (const [model, used] of Object.entries(p.tokensByModel)) {
       if (meters.some((m) => m.scope === model && m.unit === 'tokens' && m.window === 'day')) continue;
       const lim = GROQ_TPD.find(([re]) => re.test(model))?.[1];
-      if (lim) meters.push({ key: `${model}|tokens|day|est`, scope: model, unit: 'tokens', window: 'day', limit: lim, remaining: Math.max(0, lim - used), resetsAt: nextUtcMidnight(), source: 'estimate', at: Date.now() });
+      if (lim) meters.push({ key: `${model}|tokens|day|est`, scope: model, unit: 'tokens', window: 'day', limit: lim, remaining: Math.max(0, lim - used), rolling: true, source: 'estimate', since: p.countSince, at: Date.now() });
     }
   }
   const blocks = p.blocks.filter((b) => (!b.until || b.until > Date.now()) && !b.skip);
   const long = meters.filter((m) => m.window !== 'minute');
   const frac = (m: Meter) => (m.limit ? m.remaining / m.limit : m.remaining > 0 ? 1 : 0);
-  const worst = [...long].sort((a, b) => frac(a) - frac(b))[0];
+  const firm = long.filter((m) => m.source === 'provider');
+  const worst = [...(firm.length ? firm : long)].sort((a, b) => frac(a) - frac(b))[0];
   let status: BalanceView['status'] = 'unknown';
   if (blocks.some((b) => b.scope === '*')) status = 'empty';
   else if (blocks.length) status = 'partial';
-  else if (worst) status = frac(worst) <= 0 ? 'empty' : frac(worst) < 0.15 ? 'low' : 'ok';
+  else if (worst) status = frac(worst) <= 0 ? 'empty' : frac(worst) < 0.15 ? 'low' : worst.source === 'estimate' && !firm.length ? 'unknown' : 'ok';
   else if (meters.length) status = 'ok';
 
   let headline = 'No numbers from this provider yet — they appear after its next reply (or press Check now).';
   const wholeBlock = blocks.find((b) => b.scope === '*');
   if (wholeBlock) headline = wholeBlock.reason;
-  else if (worst) headline = `${worst.unit === 'credit' ? `${worst.currency || ''} ${worst.remaining.toFixed(2)}`.trim() : fmt(worst.remaining)}${worst.limit ? ` of ${fmt(worst.limit)}` : ''} ${unitLabel(worst)} left${worst.scope && worst.scope !== 'credits' ? ` · ${worst.scope}` : ''}`;
+  else if (worst) headline = `${worst.source === 'estimate' ? '≈ ' : ''}${worst.unit === 'credit' ? `${worst.currency || ''} ${worst.remaining.toFixed(2)}`.trim() : fmt(worst.remaining)}${worst.limit ? ` of ${fmt(worst.limit)}` : ''} ${unitLabel(worst)} left${worst.scope && worst.scope !== 'credits' ? ` · ${worst.scope}` : ''}`;
   else if (meters.length) headline = 'Within limits right now (provider reports per-minute limits only).';
   if (!wholeBlock && blocks.length) headline = `${blocks.length} model${blocks.length > 1 ? 's' : ''} used up — ${headline}`;
   return { id, status, headline, meters: meters.sort((a, b) => a.scope.localeCompare(b.scope) || a.window.localeCompare(b.window)), blocks, usedToday, note: p.probeNote, probedAt: p.probedAt };

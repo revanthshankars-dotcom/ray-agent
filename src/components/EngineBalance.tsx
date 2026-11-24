@@ -12,6 +12,8 @@ interface Meter {
   resetsAt?: number;
   currency?: string;
   source: 'provider' | 'estimate';
+  rolling?: boolean;
+  since?: number;
   at: number;
 }
 interface Block {
@@ -61,11 +63,13 @@ const what = (m: Meter) =>
 
 function MeterRow({ m, provider }: { m: Meter; provider: string }) {
   const pct = m.limit ? Math.max(0, Math.min(100, (m.remaining / m.limit) * 100)) : m.remaining > 0 ? 100 : 0;
-  const bar = pct <= 0 ? 'bg-red-500' : pct < 15 ? 'bg-red-500' : pct < 40 ? 'bg-amber-500' : 'bg-emerald-500';
+  const est = m.source === 'estimate';
+  // Estimates get a neutral bar so they never look like a confirmed "plenty left".
+  const bar = est ? 'bg-slate-400 dark:bg-slate-500' : pct <= 0 ? 'bg-red-500' : pct < 15 ? 'bg-red-500' : pct < 40 ? 'bg-amber-500' : 'bg-emerald-500';
   const amount =
     m.unit === 'credit'
       ? `${m.currency ? `${m.currency} ` : ''}${m.remaining.toFixed(2)} left`
-      : `${n(m.remaining)}${m.limit ? ` / ${n(m.limit)}` : ''} left`;
+      : `${est ? '≈ ' : ''}${n(m.remaining)}${m.limit ? ` / ${n(m.limit)}` : ''} left`;
   return (
     <div className="mt-2">
       <div className="flex items-baseline justify-between gap-2 text-[11px]">
@@ -82,8 +86,10 @@ function MeterRow({ m, provider }: { m: Meter; provider: string }) {
         </div>
       )}
       <p className="mt-0.5 text-[10px] text-slate-500">
-        {m.source === 'provider' ? `from ${provider}` : `RAY estimate — ${provider} doesn't report this`}
-        {m.resetsAt ? ` · resets in ${inTime(m.resetsAt)}` : ''}
+        {m.source === 'provider'
+          ? `from ${provider}`
+          : `RAY estimate — ${provider} doesn't report this${m.since ? `; counted since ${new Date(m.since).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}`}
+        {m.rolling ? ' · refills gradually' : m.resetsAt ? ` · resets in ${inTime(m.resetsAt)}` : ''}
       </p>
     </div>
   );

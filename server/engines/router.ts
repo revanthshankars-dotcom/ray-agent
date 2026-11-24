@@ -43,6 +43,7 @@ import {
   dailyBudget,
   isAvailable,
   isModelAvailable,
+  getEngineStatus,
   listProviderModels,
   NON_CHAT_MODEL,
   isProviderConfigured,
@@ -763,17 +764,20 @@ const lastPing = new Map<string, number>();
 export async function getEngineBalances(refresh = false) {
   const configured = PROVIDERS.filter((p) => isProviderConfigured(p));
   await probeBalances(
-    configured.filter((p) => ['openrouter', 'siliconflow', 'deepseek'].includes(p.id)).map((p) => ({ id: p.id, baseUrl: p.baseUrl() || '', apiKey: p.apiKey() || '' })),
+    configured
+      .filter((p) => ['openrouter', 'siliconflow', 'deepseek'].includes(p.id))
+      .map((p) => ({ id: p.id, baseUrl: p.baseUrl() || '', apiKey: p.apiKey() || '', requestsToday: getEngineStatus().find((e) => e.id === p.id)?.requestsToday })),
     refresh
   );
   if (refresh) {
-    // One 1-token request per engine so it reports its current limits (at most every 10 minutes).
+    // One 1-token request per engine (at most every 10 minutes): providers answer with their limit
+    // headers, or with the exact "used up / no balance" error — the only way to know for most of them.
     await Promise.all(
       configured
-        .filter((p) => HEADER_PROVIDERS.has(p.id) && !blockedReason(p.id) && Date.now() - (lastPing.get(p.id) || 0) > 10 * 60_000)
+        .filter((p) => p.id !== 'custom' && !blockedReason(p.id) && Date.now() - (lastPing.get(p.id) || 0) > 10 * 60_000)
         .map(async (p) => {
           lastPing.set(p.id, Date.now());
-          const model = await resolveModel(p, 'large').catch(() => null);
+          const model = await resolveModel(p, HEADER_PROVIDERS.has(p.id) ? 'large' : 'fast').catch(() => null);
           if (!model || blockedReason(p.id, model)) return;
           await callCompletion(p, model, [{ role: 'user', content: 'hi' }], undefined, { maxTokens: 1, timeoutMs: 12000 }).catch(() => undefined);
         })
