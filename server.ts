@@ -95,6 +95,8 @@ import { getLearning, getTopics, observeTurn, runLearningCycle, saveTopics, setL
 import { getLatestBridgeVersion } from './server/repair.ts';
 import { registerAccountRoutes } from './server/accounts.ts';
 import { registerConnectorRoutes } from './server/mcpConnectors.ts';
+import { registerSkillRoutes } from './server/skillLibrary.ts';
+import { registerInboxRoutes, startInboxScheduler } from './server/inboxRoutine.ts';
 import { phoneLineStatus, recentPhoneCalls, registerPhoneRoutes } from './server/phoneCall.ts';
 import { getIceServers, listScheduledCalls, cancelScheduledCall, startCallScheduler } from './server/calls.ts';
 import { checkFishKey, fishUsable, getFishKey, getFishStatus } from './server/fishAudio.ts';
@@ -190,6 +192,7 @@ async function startServer() {
   startFileIndexScheduler();
   startAutonomy();
   startLearningScheduler();
+  startInboxScheduler();
   if (getFishKey()) setInterval(() => void checkFishKey(), 6 * 3600_000).unref();
   if (getFishKey()) {
     const fish = await checkFishKey();
@@ -382,6 +385,8 @@ async function startServer() {
   // Google / Meta accounts (server-side OAuth so RAY works from any device).
   registerAccountRoutes(app, requireRoomAuth as never);
   registerConnectorRoutes(app, requireRoomAuth as never);
+  registerSkillRoutes(app, requireRoomAuth as never);
+  registerInboxRoutes(app, requireRoomAuth as never);
   registerPhoneRoutes(app);
   app.get('/api/phone', requireRoomAuth, (req, res) => {
     res.setHeader('Cache-Control', 'no-store');

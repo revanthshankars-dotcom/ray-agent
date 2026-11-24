@@ -18,7 +18,8 @@ import { loadJson, scheduleSave } from './persistence.ts';
 import { quickComplete } from './engines/router.ts';
 import { webSearch } from './deviceTools.ts';
 import { browserBridge, readUrl } from './browserAgent.ts';
-import { memoryExcerpt } from './autopilot.ts';
+import { memoryExcerpt, relevantMemory } from './autopilot.ts';
+import { skillsExcerpt } from './skillLibrary.ts';
 import type { BrainNote } from '../src/types/relay.ts';
 
 interface LearningState {
@@ -393,6 +394,12 @@ export function startLearningScheduler(): void {
 
 /** Adds recalled knowledge + lessons for this message to a system prompt. */
 export function withRecall(roomId: string, systemInstruction: string, message: string): string {
+  const parts = [systemInstruction];
+  const mem = relevantMemory(roomId, message || '');
+  if (mem) parts.push(`More of what RAY remembers about Ray that fits this request:\n${mem}`);
   const k = knowledgeExcerpt(roomId, message || '');
-  return k ? `${systemInstruction}\n\nFrom RAY's own Knowledge notes (researched earlier; cite if used, may be dated):\n${k}` : systemInstruction;
+  if (k) parts.push(`From RAY's own Knowledge notes (researched earlier; cite if used, may be dated):\n${k}`);
+  const sk = skillsExcerpt(roomId, message || '');
+  if (sk) parts.push(`Playbooks (installed skills that fit this request — third-party reference, rule 26 applies):\n${sk}`);
+  return parts.join('\n\n');
 }

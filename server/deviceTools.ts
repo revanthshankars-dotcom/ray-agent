@@ -47,6 +47,10 @@ const ACTION_TOOLS: Record<string, RegExp> = {
   call_device: /\b(call|ring|connect|talk|link|join)\b/i,
   place_phone_call: /\b(call|dial|ring|phone)\b/i,
   google_api_request: /\b(send|reply|forward|draft|write|create|add|make|schedule|book|set|update|edit|change|move|rename|share|upload|post|label|archive|mark|star|delete|remove|cancel|clear|invite|accept|decline|complete|append|fill|organi[sz]e|clean|sort|subscribe|like|comment|publish)\b/i,
+  skill_install: /\b(install|add|use|get|enable|learn|yes|ok|okay|sure|do it|go ahead)\b/i,
+  skill_remove: /\b(remove|delete|uninstall|drop|disable)\b/i,
+  inbox_routine: /\b(check|handle|manage|routine|enable|start|turn|set|run|stop|disable|pause|twice|every|daily|inbox|email)\b/i,
+  learn_me_from_email: /\b(learn|know|study|read|teach|understand|profile|onboard|who i am)\b/i,
   phone_call_me: /\b(call|ring|phone|dial|wake|alert|remind|buzz)\b/i,
   mcp_call: /\b(send|text|sms|call|dial|post|publish|create|add|make|run|trigger|start|book|buy|order|update|delete|remove|schedule|reply|message|email|use|do)\b/i,
   meta_api_request: /\b(post|publish|upload|share|reply|comment|send|message|dm|delete|remove|hide|like|schedule|caption)\b/i,
@@ -56,6 +60,7 @@ const ACTION_TOOLS: Record<string, RegExp> = {
 function isReadOnlyVariant(name: string, args: Record<string, unknown>): boolean {
   if ((name === 'google_api_request' || name === 'meta_api_request') && String(args.method || 'GET').toUpperCase() === 'GET') return true;
   if (name === 'mcp_call') return isMcpReadOnlyCall(args);
+  if (name === 'inbox_routine' && /^(status)?$/i.test(String(args.action || 'status'))) return true;
   return name === 'browser_tab_action' && String(args.action || '').toLowerCase() === 'read';
 }
 

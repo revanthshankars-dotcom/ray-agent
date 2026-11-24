@@ -119,6 +119,18 @@ Like `call-me`: `phone_call_me` dials your phone, says the message, listens, ans
 
 Webhooks (`/api/phone/voice`, `/api/phone/status`) are verified with Twilio's signature. Cost is roughly Twilio's per-minute rate; speech recognition is included in `<Gather>`.
 
+## Skills from Orbit
+
+JARVIS Core → **Skills** installs playbooks from [Orbit](https://orbitskills.app) (skills taken from AI creators' posts, credited to them). Installed skills are Second Brain notes under *Skills*; on every request RAY adds the 1–2 that fit (e.g. "my app keeps crashing" → *Investigate*). RAY can also `skill_search` / `skill_install` by chat. The **Recommended for RAY** pack is hand-picked and every pick is rated "nothing risky" by Orbit; skills Orbit flags "use with care" need your approval. Skill text is treated as reference only — it never overrides your instructions or the approval flow.
+
+## From Luke's 3-Day AI Agent Build
+
+- **Learn me** (Day 1): Google card → *Learn me from my email* reads your recent sent mail, saves facts to *Memory/About Ray* and your writing style to *Memory/Email Style*, then asks clarifying questions (no codes, numbers or passwords are stored).
+- **Inbox routine** (Day 1): *Check twice a day* (08:00 & 16:00 local by default, max 4/day). RAY writes reply drafts in Gmail in your style and messages you a summary; nothing is sent until you say "send it". Your corrections become Lessons.
+- **"Interview me"** (Day 1): for new workflows RAY asks the gap-closing questions one at a time before building.
+- **Small memory, recalled on demand** (Day 2): the prompt carries only the core of *About Ray*; older facts, Knowledge and playbooks are pulled in only when they match the request. Plug an external memory (Supermemory, Honcho) in through Connectors → *Memory* if you use one.
+- **Watch videos**: `watch_video` watches YouTube links with Gemini (picture + sound, timestamps); other hosts fall back to the page text. Needs `GEMINI_API_KEY`.
+
 ## JARVIS layer (bridge 3.1)
 
 - **Browser hands** — RAY drives a real Chrome/Edge on your PC (its own "RAY" profile — sign in there once). `browse_web` reads pages as text + numbered buttons/fields and a free model picks one step at a time (open, click, type, scroll, note, done). *Research* mode runs hidden and returns an answer with sources; *Do* mode (forms, bookings, settings) needs one Approve. It never types into password fields and never pays or posts on its own. With the PC offline, research falls back to the cloud.

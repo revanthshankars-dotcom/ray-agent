@@ -109,8 +109,29 @@ const PRESETS: Array<{ label: string; name: string; url: string; hint: string }>
   { label: 'CallForMe', name: 'callforme', url: 'https://callforme.tel/mcp', hint: 'RAY calls businesses for you' },
   { label: 'n8n', name: 'n8n', url: '', hint: 'Your n8n: Settings → Instance-level MCP → copy URL + token' },
   { label: 'Course / challenge', name: 'challenge', url: '', hint: 'Paste the MCP link from the course page (RAY also tries /mcp on that site)' },
+  { label: 'Memory', name: 'memory', url: '', hint: 'External memory (Supermemory, Honcho…): paste its MCP URL + key so RAY recalls only what matters' },
   { label: 'Custom', name: '', url: '', hint: 'Any Streamable-HTTP MCP server (https)' },
 ];
+
+interface SkillItem {
+  slug: string;
+  title: string;
+  summary: string;
+  creator?: string;
+  why?: string;
+}
+interface SkillsState {
+  installed: Array<{ id: string; slug: string; title: string; summary: string }>;
+  recommended: SkillItem[];
+  results: SkillItem[];
+  catalogError: string | null;
+}
+interface InboxRoutine {
+  enabled: boolean;
+  times: string[];
+  lastRunAt: number | null;
+  lastSummary: string;
+}
 
 interface Accounts {
   google: { configured: boolean; connected: boolean; email: string | null };
@@ -144,6 +165,13 @@ export function JarvisView({
   const [cBusy, setCBusy] = useState(false);
   const [cMsg, setCMsg] = useState('');
   const [openConn, setOpenConn] = useState<string | null>(null);
+  const [skills, setSkills] = useState<SkillsState | null>(null);
+  const [skillQ, setSkillQ] = useState('');
+  const [skillBusy, setSkillBusy] = useState<string | null>(null);
+  const [skillMsg, setSkillMsg] = useState('');
+  const [inbox, setInbox] = useState<InboxRoutine | null>(null);
+  const [inboxBusy, setInboxBusy] = useState<string | null>(null);
+  const [inboxMsg, setInboxMsg] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -156,6 +184,8 @@ export function JarvisView({
       if (m.ok) setConnectors(((await m.json()) as { connectors: ConnectorRow[] }).connectors);
       const p = await authFetch(`/api/phone?room=${encodeURIComponent(roomId)}`, roomId);
       if (p.ok) setPhone((await p.json()) as PhoneLine);
+      const ir = await authFetch(`/api/inbox-routine?room=${encodeURIComponent(roomId)}`, roomId);
+      if (ir.ok) setInbox((await ir.json()) as InboxRoutine);
     } catch {
       /* offline */
     } finally {
@@ -242,6 +272,56 @@ export function JarvisView({
       setCMsg('Network error.');
     } finally {
       setCBusy(false);
+    }
+  };
+  const loadSkills = useCallback(
+    async (q = '') => {
+      const r = await authFetch(`/api/skills?room=${encodeURIComponent(roomId)}${q ? `&q=${encodeURIComponent(q)}` : ''}`, roomId);
+      if (r.ok) setSkills((await r.json()) as SkillsState);
+    },
+    [roomId]
+  );
+  useEffect(() => {
+    void loadSkills();
+  }, [loadSkills]);
+  const installSkills = async (slugs: string[], confirmed = false) => {
+    setSkillBusy(slugs.length > 1 ? 'all' : slugs[0]);
+    setSkillMsg('');
+    try {
+      const r = await authFetch('/api/skills/install', roomId, { method: 'POST', body: JSON.stringify({ roomId, slugs, confirmed }) });
+      const j = (await r.json()) as { results: Array<{ slug: string; ok: boolean; message: string; careful: boolean }> };
+      const careful = j.results.filter((x) => x.careful);
+      const ok = j.results.filter((x) => x.ok).length;
+      setSkillMsg(
+        careful.length && slugs.length === 1
+          ? `${careful[0].message} Press Install again to accept.`
+          : `${ok} installed${careful.length ? ` · ${careful.length} skipped (Orbit flags them “use with care”)` : ''}${j.results.some((x) => !x.ok && !x.careful) ? ' · some failed' : ''}`
+      );
+      if (careful.length && slugs.length === 1) setPendingCareful(slugs[0]);
+      else setPendingCareful(null);
+      await loadSkills(skillQ);
+    } finally {
+      setSkillBusy(null);
+    }
+  };
+  const [pendingCareful, setPendingCareful] = useState<string | null>(null);
+  const removeSkill = async (id: string) => {
+    await authFetch('/api/skills/remove', roomId, { method: 'POST', body: JSON.stringify({ roomId, id }) });
+    await loadSkills(skillQ);
+  };
+  const inboxAction = async (body: Record<string, unknown>, label: string) => {
+    setInboxBusy(label);
+    setInboxMsg('');
+    try {
+      const r = await authFetch('/api/inbox-routine', roomId, { method: 'POST', body: JSON.stringify({ roomId, ...body }) });
+      const j = (await r.json()) as InboxRoutine & { result?: string; status?: InboxRoutine };
+      if (j.result) setInboxMsg(j.result);
+      if (j.status) setInbox(j.status);
+      else if (typeof j.enabled === 'boolean') setInbox(j);
+    } catch {
+      setInboxMsg('Network error.');
+    } finally {
+      setInboxBusy(null);
     }
   };
   const removeConnector = async (id: string) => {
@@ -363,6 +443,28 @@ export function JarvisView({
                 </p>
               )}
             </div>
+            {accounts?.google.connected && (
+              <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-medium text-slate-700 dark:text-slate-200">Inbox routine</span>
+                  <span className="text-[11px] text-slate-500">{inbox?.enabled ? `on · ${inbox.times.join(' & ')}` : 'off'} · drafts only, you say “send”</span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  <button type="button" className={inbox?.enabled ? btnGhost : btnPrimary} disabled={Boolean(inboxBusy)} onClick={() => void inboxAction({ enabled: !inbox?.enabled }, 'toggle')}>
+                    {inbox?.enabled ? 'Turn off' : 'Check twice a day'}
+                  </button>
+                  <button type="button" className={btnGhost} disabled={Boolean(inboxBusy)} onClick={() => void inboxAction({ action: 'run' }, 'run')}>
+                    {inboxBusy === 'run' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null} Check now
+                  </button>
+                  <button type="button" className={btnGhost} disabled={Boolean(inboxBusy)} onClick={() => void inboxAction({ action: 'learn' }, 'learn')}>
+                    {inboxBusy === 'learn' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <GraduationCap className="w-3.5 h-3.5" />} Learn me from my email
+                  </button>
+                </div>
+                {(inboxMsg || inbox?.lastSummary) && (
+                  <p className="text-xs text-slate-600 dark:text-slate-300 whitespace-pre-line break-words">{inboxMsg || `Last check ${ago(inbox?.lastRunAt)}: ${inbox?.lastSummary}`}</p>
+                )}
+              </div>
+            )}
           </div>
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-3.5">
             <div className="flex items-center gap-2">
@@ -388,6 +490,103 @@ export function JarvisView({
             <p className="mt-2 text-xs text-slate-500">
               Personal Instagram/WhatsApp have no API: RAY uses them through the browser on your PC and the apps on your phone. Business/creator accounts get full API access with a token in Render.
             </p>
+          </div>
+        </div>
+      </section>
+
+      {/* Skills */}
+      <section className={`${card} p-4 sm:p-5`}>
+        <SectionTitle icon={BookOpenCheck} title="Skills" hint="Playbooks from Orbit, credited to their creators — RAY uses the right one automatically" tone="text-amber-500" />
+        <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-slate-700 dark:text-slate-200">Recommended for RAY</span>
+              <button
+                type="button"
+                className={`${btnGhost} ml-auto`}
+                disabled={Boolean(skillBusy) || !skills?.recommended.length}
+                onClick={() => void installSkills((skills?.recommended || []).filter((r) => !skills?.installed.some((i) => i.slug === r.slug)).map((r) => r.slug))}
+              >
+                {skillBusy === 'all' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />} Install all
+              </button>
+            </div>
+            <ul className="mt-2 space-y-1.5 max-h-80 overflow-auto pr-1">
+              {(skills?.recommended || []).map((r) => {
+                const has = skills?.installed.some((i) => i.slug === r.slug);
+                return (
+                  <li key={r.slug} className="flex items-start gap-2 rounded-lg border border-slate-200 dark:border-slate-800 px-2.5 py-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-medium text-slate-900 dark:text-slate-100 truncate">{r.title}</div>
+                      <div className="text-[11px] text-slate-500">{r.why}</div>
+                    </div>
+                    {has ? (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
+                    ) : (
+                      <button type="button" className={btnGhost} disabled={Boolean(skillBusy)} onClick={() => void installSkills([r.slug])}>
+                        {skillBusy === r.slug ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
+              {skills?.catalogError && <li className="text-xs text-amber-600">Orbit unreachable: {skills.catalogError}</li>}
+            </ul>
+          </div>
+          <div className="min-w-0 space-y-2">
+            <form
+              className="flex gap-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void loadSkills(skillQ.trim());
+              }}
+            >
+              <input
+                className="flex-1 min-w-0 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent px-2.5 py-1.5 text-xs"
+                placeholder="Search Orbit: sort my inbox, debug, study, instagram…"
+                value={skillQ}
+                onChange={(e) => setSkillQ(e.target.value)}
+              />
+              <button type="submit" className={btnGhost}>
+                Search
+              </button>
+            </form>
+            {skillMsg && <p className="text-xs text-slate-600 dark:text-slate-300">{skillMsg}</p>}
+            {(skills?.results || []).length > 0 && (
+              <ul className="space-y-1.5 max-h-56 overflow-auto pr-1">
+                {skills!.results.map((r) => {
+                  const has = skills!.installed.some((i) => i.slug === r.slug);
+                  return (
+                    <li key={r.slug} className="flex items-start gap-2 rounded-lg border border-slate-200 dark:border-slate-800 px-2.5 py-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-medium text-slate-900 dark:text-slate-100 truncate">{r.title}</div>
+                        <div className="text-[11px] text-slate-500">{r.summary}{r.creator ? ` · @${r.creator}` : ''}</div>
+                      </div>
+                      {has ? (
+                        <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
+                      ) : (
+                        <button type="button" className={btnGhost} disabled={Boolean(skillBusy)} onClick={() => void installSkills([r.slug], pendingCareful === r.slug)}>
+                          {skillBusy === r.slug ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />} {pendingCareful === r.slug ? 'Install anyway' : 'Install'}
+                        </button>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            <div>
+              <div className="text-xs font-medium text-slate-700 dark:text-slate-200">Installed ({skills?.installed.length || 0})</div>
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {(skills?.installed || []).map((i) => (
+                  <span key={i.id} className="inline-flex items-center gap-1 text-[11px] pl-2 pr-1 py-0.5 rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-300 max-w-full">
+                    <span className="truncate">{i.title}</span>
+                    <button type="button" aria-label={`Remove ${i.title}`} className="p-0.5 rounded-full hover:bg-amber-500/20" onClick={() => void removeSkill(i.id)}>
+                      <X className="w-3 h-3" />
+                    </button>
+                  </span>
+                ))}
+                {!skills?.installed.length && <span className="text-[11px] text-slate-500">None yet — install the recommended pack.</span>}
+              </div>
+            </div>
           </div>
         </div>
       </section>

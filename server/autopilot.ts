@@ -204,6 +204,38 @@ export async function runAutopilot(roomId: string, opts: { force?: boolean } = {
 const LEARN_HINT = /\b(i|i'm|im|my|me|mine|remember|prefer|always|never|call me|mom|dad|mother|father|wife|husband|brother|sister|friend|boss|birthday|work|office|college|live|favou?rite|allergic|usually)\b/i;
 const lastLearnAt = new Map<string, number>();
 
+/** Adds new facts (newest first, de-duplicated) to the Memory/About Ray note. Returns how many were new. */
+export function addMemoryFacts(roomId: string, facts: string[]): number {
+  const note = getRoomBrainNotes(roomId).find((n) => n.folder === 'Memory' && /about ray/i.test(n.title));
+  const existing = note ? note.content.split('\n').filter((l) => l.startsWith('- ')) : [];
+  const lower = new Set(existing.map((l) => l.toLowerCase()));
+  const fresh = facts.map((f) => `- ${f.trim()}`).filter((l) => l.length > 4 && !lower.has(l.toLowerCase()));
+  if (!fresh.length) return 0;
+  const lines = [...fresh, ...existing].slice(0, 150);
+  upsertRoomBrainNote(roomId, {
+    title: 'About Ray',
+    folder: 'Memory',
+    content: `# About Ray\n\nWhat RAY has learned from conversations (newest first). Edit or delete any line — RAY follows this note.\n\n${lines.join('\n')}\n\n#memory`,
+    source: 'jarvis',
+  });
+  return fresh.length;
+}
+
+/** Day-2 memory: the core lines always, plus older lines that match this message (keeps the prompt small). */
+export function relevantMemory(roomId: string, message: string, coreLines = 12, maxChars = 1500): string {
+  const mem = getRoomBrainNotes(roomId).find((n) => n.folder === 'Memory' && /about ray/i.test(n.title));
+  if (!mem) return '';
+  const rest = mem.content.split('\n').filter((l) => l.startsWith('- ')).slice(coreLines);
+  const q = Array.from(new Set((message || '').toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 3)));
+  if (!q.length || !rest.length) return '';
+  let out = '';
+  for (const l of rest.map((l) => ({ l, s: q.filter((w) => l.toLowerCase().includes(w)).length })).filter((x) => x.s > 0).sort((a, b) => b.s - a.s)) {
+    if (out.length + l.l.length > maxChars) break;
+    out += `${l.l}\n`;
+  }
+  return out.trim();
+}
+
 export function learnFromTurn(roomId: string, userText: string, reply: string): void {
   if (!userText || userText.length < 12 || !LEARN_HINT.test(userText)) return;
   const now = Date.now();
@@ -217,19 +249,7 @@ export function learnFromTurn(roomId: string, userText: string, reply: string): 
         'quick'
       );
       const facts = (JSON.parse(out.match(/\[[\s\S]*\]/)?.[0] || '[]') as unknown[]).map(String).filter((f) => f.length > 3 && f.length < 200).slice(0, 5);
-      if (!facts.length) return;
-      const note = getRoomBrainNotes(roomId).find((n) => n.folder === 'Memory' && /about ray/i.test(n.title));
-      const existing = note ? note.content.split('\n').filter((l) => l.startsWith('- ')) : [];
-      const lower = new Set(existing.map((l) => l.toLowerCase()));
-      const fresh = facts.map((f) => `- ${f}`).filter((l) => !lower.has(l.toLowerCase()));
-      if (!fresh.length) return;
-      const lines = [...fresh, ...existing].slice(0, 150);
-      upsertRoomBrainNote(roomId, {
-        title: 'About Ray',
-        folder: 'Memory',
-        content: `# About Ray\n\nWhat RAY has learned from conversations (newest first). Edit or delete any line — RAY follows this note.\n\n${lines.join('\n')}\n\n#memory`,
-        source: 'jarvis',
-      });
+      addMemoryFacts(roomId, facts);
     } catch {
       // learning is best-effort
     }
