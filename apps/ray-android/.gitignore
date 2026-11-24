@@ -1,0 +1,7 @@
+local.properties
+.gradle/
+build/
+app/build/
+# Signing key stays out of git (kept privately; builds without it use the debug key)
+*.jks
+*.keystore

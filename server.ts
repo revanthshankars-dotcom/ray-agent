@@ -408,6 +408,15 @@ async function startServer() {
     }
   });
 
+  // RAY phone app (Android APK, replaces Termux). Sideloaded; pairing uses a ray://pair link.
+  app.get('/api/android/ray.apk', (_req, res) => {
+    const apk = path.resolve(process.cwd(), 'apps', 'ray-android', 'dist', 'ray-phone.apk');
+    if (!fs.existsSync(apk)) return res.status(404).json({ error: 'The RAY phone app has not been built yet.' });
+    res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+    res.setHeader('Content-Disposition', 'attachment; filename="ray-phone.apk"');
+    res.sendFile(apk);
+  });
+
   // RAY Notch desktop app: the PC bridge downloads these files and installs them (~/.ray-notch/app).
   app.get('/api/notch/app', (_req, res) => {
     try {

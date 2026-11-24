@@ -26,6 +26,7 @@ import { AutopilotCard } from './AutopilotCard';
 import { EngineBalance } from './EngineBalance';
 import { EngineLimits } from './EngineLimits';
 import { LocalBrainCard } from './LocalBrainCard';
+import { PhoneAppCard } from './PhoneAppCard';
 
 interface EngineStatus {
   id: string;
@@ -304,7 +305,11 @@ export function ConnectionsView({
               <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Android phone</h2>
               <span className="ml-auto"><Dot ok={Boolean(phoneBridge)} warn={Boolean(phoneApp && !phoneBridge)} /></span>
             </div>
-            <div className="mt-3 flex items-center gap-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 p-3">
+            <div className="mt-3">
+              <PhoneAppCard roomId={roomId} phoneOnline={phoneBridge && /RAY App/i.test(phoneBridge.os || '') ? phoneBridge.name : undefined} />
+            </div>
+            <p className="mt-4 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Or: browser + Termux (older way)</p>
+            <div className="mt-2 flex items-center gap-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 p-3">
               {qr ? <img src={qr} alt="Scan to connect your phone" className="w-28 h-28 rounded-lg bg-white p-1" /> : <div className="w-28 h-28" />}
               <div className="text-xs text-slate-600 dark:text-slate-300 space-y-1">
                 <p className="font-semibold text-slate-900 dark:text-slate-100">One tap: scan with your phone camera</p>
