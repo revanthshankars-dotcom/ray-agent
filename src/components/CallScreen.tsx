@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Mic, MicOff, Phone, PhoneOff, RefreshCcw, Video, VideoOff } from 'lucide-react';
+import { Mic, MicOff, MonitorUp, MonitorX, Phone, PhoneOff, RefreshCcw, Video, VideoOff } from 'lucide-react';
 import type { CallState } from '../hooks/useDeviceCall';
 
 function useElapsed(startedAt?: number) {
@@ -14,12 +14,25 @@ function useElapsed(startedAt?: number) {
   return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
 }
 
-function StreamVideo({ stream, className, mirrored }: { stream: MediaStream | null; className: string; mirrored?: boolean }) {
+function StreamVideo({ stream, className, mirrored, onFrames }: { stream: MediaStream | null; className: string; mirrored?: boolean; onFrames?: (has: boolean) => void }) {
   const ref = useRef<HTMLVideoElement | null>(null);
   useEffect(() => {
-    if (ref.current && ref.current.srcObject !== stream) ref.current.srcObject = stream;
-  }, [stream]);
-  // Muted: call audio plays through its own audio element.
+    const v = ref.current;
+    if (!v) return;
+    if (v.srcObject !== stream) v.srcObject = stream;
+    v.muted = true; // call audio plays through its own audio element
+    // Mobile browsers sometimes need an explicit play() for a new stream.
+    void v.play().catch(() => undefined);
+    const has = () => onFrames?.(v.videoWidth > 0 && v.videoHeight > 0);
+    v.addEventListener('loadeddata', has);
+    v.addEventListener('resize', has);
+    const t = window.setInterval(has, 1000);
+    return () => {
+      v.removeEventListener('loadeddata', has);
+      v.removeEventListener('resize', has);
+      window.clearInterval(t);
+    };
+  }, [stream, onFrames]);
   return <video ref={ref} autoPlay playsInline muted className={`${className} ${mirrored ? '-scale-x-100' : ''}`} />;
 }
 
@@ -37,6 +50,7 @@ export function CallScreen({
   onToggleMute,
   onToggleCamera,
   onFlipCamera,
+  onToggleScreen,
 }: {
   state: CallState;
   localStream?: MediaStream | null;
@@ -47,13 +61,20 @@ export function CallScreen({
   onToggleMute: () => void;
   onToggleCamera?: () => void;
   onFlipCamera?: () => void;
+  onToggleScreen?: () => void;
 }) {
   const elapsed = useElapsed(state.phase === 'connected' ? state.startedAt : undefined);
+  const [remoteFrames, setRemoteFrames] = useState(false);
+  useEffect(() => setRemoteFrames(false), [state.callId]);
   if (state.phase === 'idle') return null;
 
   const name = state.kind === 'ray' ? 'RAY' : state.peerName || 'Your device';
   const isVideo = Boolean(state.video);
-  const showRemote = Boolean(state.remoteCamOn && remoteStream && remoteStream.getVideoTracks().length);
+  // Show the other side's video as soon as real frames arrive (Android can miss "unmute" events),
+  // unless they said their camera is off.
+  const remoteHasVideo = Boolean(remoteStream && remoteStream.getVideoTracks().some((t) => t.readyState === 'live'));
+  const showRemote = remoteHasVideo && (state.remoteCamOn !== false || state.remoteSharing) && (remoteFrames || Boolean(state.remoteCamOn));
+  const canShare = typeof navigator !== 'undefined' && Boolean(navigator.mediaDevices && 'getDisplayMedia' in navigator.mediaDevices);
   const showLocal = Boolean(state.camOn && localStream && localStream.getVideoTracks().length);
   const live = state.phase === 'connected' || state.phase === 'connecting' || state.phase === 'calling-out';
   const subtitle =
@@ -73,7 +94,13 @@ export function CallScreen({
 
   return (
     <div className="fixed inset-0 z-[100] flex flex-col items-center justify-between overflow-hidden bg-gradient-to-b from-slate-950 via-blue-950 to-slate-950 text-white px-6 py-[max(3rem,env(safe-area-inset-top))] pb-[max(3rem,env(safe-area-inset-bottom))]">
-      {showRemote && <StreamVideo stream={remoteStream!} className="absolute inset-0 w-full h-full object-cover" />}
+      {remoteHasVideo && (
+        <StreamVideo
+          stream={remoteStream!}
+          onFrames={setRemoteFrames}
+          className={`absolute inset-0 w-full h-full ${state.remoteSharing ? 'object-contain bg-black' : 'object-cover'} ${showRemote ? '' : 'opacity-0'}`}
+        />
+      )}
       {showRemote && <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-transparent to-black/60 pointer-events-none" />}
       {showLocal && live && (
         <StreamVideo
@@ -85,7 +112,7 @@ export function CallScreen({
 
       <div className={`relative flex flex-col items-center gap-4 text-center ${showRemote ? 'mt-2' : 'mt-8'}`}>
         <p className="text-xs uppercase tracking-[0.3em] text-cyan-300/80">
-          {state.phase === 'ringing-in' ? (isVideo ? 'Incoming video call' : 'Incoming call') : state.phase === 'connected' ? (isVideo || showRemote || showLocal ? 'Video call' : 'On call') : 'RAY call'}
+          {state.phase === 'ringing-in' ? (isVideo ? 'Incoming video call' : 'Incoming call') : state.phase === 'connected' ? (state.remoteSharing ? `${name} is sharing their screen` : state.sharing ? 'You are sharing your screen' : isVideo || showRemote || showLocal ? 'Video call' : 'On call') : 'RAY call'}
         </p>
         {!showRemote && (
           <div className="relative">
@@ -138,7 +165,13 @@ export function CallScreen({
               <span className="text-xs text-slate-200">Camera</span>
             </button>
           )}
-          {onFlipCamera && state.camOn && (
+          {onToggleScreen && canShare && state.kind === 'peer' && (
+            <button type="button" onClick={onToggleScreen} disabled={state.phase !== 'connected'} className={ctrl} aria-label={state.sharing ? 'Stop sharing screen' : 'Share screen'}>
+              <span className={`${round} ${state.sharing ? 'bg-white text-slate-900' : 'bg-white/15'}`}>{state.sharing ? <MonitorX className="w-6 h-6" /> : <MonitorUp className="w-6 h-6" />}</span>
+              <span className="text-xs text-slate-200">{state.sharing ? 'Stop share' : 'Screen'}</span>
+            </button>
+          )}
+          {onFlipCamera && state.camOn && !state.sharing && (
             <button type="button" onClick={onFlipCamera} className={ctrl} aria-label="Switch camera">
               <span className={`${round} bg-white/15`}>
                 <RefreshCcw className="w-6 h-6" />

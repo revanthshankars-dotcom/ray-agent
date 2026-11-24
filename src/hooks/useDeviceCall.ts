@@ -22,6 +22,10 @@ export interface CallState {
   /** The other side is sending camera video. */
   remoteCamOn?: boolean;
   facing?: 'user' | 'environment';
+  /** This device is sharing its screen instead of the camera. */
+  sharing?: boolean;
+  /** The other side is sharing its screen. */
+  remoteSharing?: boolean;
   /** A RAY ring that carries a question: answering opens it. */
   askId?: string;
 }
@@ -94,6 +98,9 @@ export function useDeviceCall(params: {
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  // One stream for everything the other side sends (audio + camera/screen), however the tracks arrive.
+  const remoteMediaRef = useRef<MediaStream | null>(null);
+  const screenTrackRef = useRef<MediaStreamTrack | null>(null);
   const ringRef = useRef(createRingtone());
   const pendingIceRef = useRef<RTCIceCandidateInit[]>([]);
   const paramsRef = useRef(params);
@@ -121,11 +128,14 @@ export function useDeviceCall(params: {
     pcRef.current = null;
     localStreamRef.current?.getTracks().forEach((t) => t.stop());
     localStreamRef.current = null;
+    screenTrackRef.current?.stop();
+    screenTrackRef.current = null;
+    remoteMediaRef.current = null;
     setLocalStream(null);
     setRemoteStream(null);
     if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
     pendingIceRef.current = [];
-    setState((s) => ({ ...s, phase, error, muted: false, camOn: false, remoteCamOn: false }));
+    setState((s) => ({ ...s, phase, error, muted: false, camOn: false, remoteCamOn: false, sharing: false, remoteSharing: false }));
     if (phase === 'ended') window.setTimeout(() => setState({ phase: 'idle', muted: false }), 1800);
   }, []);
 
@@ -141,11 +151,22 @@ export function useDeviceCall(params: {
       }
       const audio = { echoCancellation: true, noiseSuppression: true };
       let stream: MediaStream;
+      let camError = '';
       try {
         stream = await navigator.mediaDevices.getUserMedia({ audio, video: withVideo ? VIDEO_CONSTRAINTS('user') : false });
-      } catch {
-        stream = await navigator.mediaDevices.getUserMedia({ audio }); // no camera / camera refused → voice only
+      } catch (err) {
+        if (!withVideo) throw err;
+        // Camera refused or busy → keep the call going with voice, and say why there is no video.
+        const name = err instanceof Error ? err.name : '';
+        camError =
+          name === 'NotAllowedError'
+            ? 'Camera blocked — allow it for RAY (tap the lock icon by the address → Camera), then tap Camera.'
+            : name === 'NotReadableError'
+            ? 'Camera is busy in another app — close it, then tap Camera.'
+            : 'No camera available — voice only.';
+        stream = await navigator.mediaDevices.getUserMedia({ audio });
       }
+      if (camError) setState((s) => ({ ...s, error: camError }));
       localStreamRef.current = stream;
       setLocalStream(stream);
       const camOn = stream.getVideoTracks().length > 0;
@@ -159,12 +180,13 @@ export function useDeviceCall(params: {
         if (e.candidate) signal(peerId, { type: 'ice', callId, candidate: e.candidate.toJSON() });
       };
       pc.ontrack = (e) => {
-        const remote = e.streams[0] || new MediaStream([e.track]);
+        const remote = remoteMediaRef.current || (remoteMediaRef.current = new MediaStream());
+        if (!remote.getTracks().includes(e.track)) remote.addTrack(e.track);
         if (!remoteAudioRef.current) remoteAudioRef.current = new Audio();
         remoteAudioRef.current.autoplay = true;
         remoteAudioRef.current.srcObject = remote;
         void remoteAudioRef.current.play().catch(() => {});
-        setRemoteStream(remote);
+        setRemoteStream(new MediaStream(remote.getTracks()));
         if (e.track.kind === 'video') {
           const upd = () => setState((s) => ({ ...s, remoteCamOn: !e.track.muted && e.track.readyState === 'live' }));
           e.track.onmute = upd;
@@ -174,7 +196,11 @@ export function useDeviceCall(params: {
         }
       };
       pc.onconnectionstatechange = () => {
-        if (pc.connectionState === 'connected') setState((s) => ({ ...s, phase: 'connected', startedAt: Date.now() }));
+        if (pc.connectionState === 'connected') {
+          setState((s) => ({ ...s, phase: 'connected', startedAt: Date.now() }));
+          // Tell the other side whether our camera is on (don't rely on mute events, flaky on Android).
+          window.setTimeout(() => signal(peerId, { type: 'cam', callId, on: Boolean(stateRef.current.camOn || stateRef.current.sharing) }), 300);
+        }
         if (pc.connectionState === 'failed') cleanup('ended', 'Connection failed (network blocked a direct link).');
       };
       return pc;
@@ -224,6 +250,8 @@ export function useDeviceCall(params: {
           else pendingIceRef.current.push(sig.candidate);
         } else if (sig.type === 'cam') {
           setState((s) => ({ ...s, remoteCamOn: Boolean(sig.on) }));
+        } else if (sig.type === 'screen') {
+          setState((s) => ({ ...s, remoteSharing: Boolean(sig.on), remoteCamOn: Boolean(sig.on) || s.remoteCamOn }));
         } else if (sig.type === 'hangup' || sig.type === 'decline' || sig.type === 'unavailable') {
           if (st.phase !== 'idle') cleanup('ended', sig.type === 'decline' ? 'Declined' : sig.type === 'unavailable' ? 'Device is offline' : undefined);
         }
@@ -305,10 +333,10 @@ export function useDeviceCall(params: {
         t.stop();
         local.removeTrack(t);
       });
-      await videoSender()?.replaceTrack(null);
+      if (!st.sharing) await videoSender()?.replaceTrack(null); // while sharing, the screen keeps going
       setLocalStream(new MediaStream(local.getTracks()));
       setState((s) => ({ ...s, camOn: false }));
-      if (peer) signal(peer, { type: 'cam', callId: st.callId, on: false });
+      if (peer && !st.sharing) signal(peer, { type: 'cam', callId: st.callId, on: false });
       return;
     }
     try {
@@ -320,11 +348,11 @@ export function useDeviceCall(params: {
         setState((s) => ({ ...s, error: 'This call can’t carry video — call again as a video call.' }));
         return;
       }
-      await sender.replaceTrack(track);
+      if (!st.sharing) await sender.replaceTrack(track);
       local.addTrack(track);
       setLocalStream(new MediaStream(local.getTracks()));
       setState((s) => ({ ...s, camOn: true, error: undefined }));
-      if (peer) signal(peer, { type: 'cam', callId: st.callId, on: true });
+      if (peer && !st.sharing) signal(peer, { type: 'cam', callId: st.callId, on: true });
     } catch {
       setState((s) => ({ ...s, error: 'Camera unavailable' }));
     }
@@ -352,6 +380,49 @@ export function useDeviceCall(params: {
     }
   }, []);
 
+  /** Share this screen into the call (PCs; Android browsers can't capture the screen). */
+  const toggleScreenShare = useCallback(async () => {
+    const st = stateRef.current;
+    const peer = st.peerDeviceId;
+    const sender = videoSender();
+    if (!sender) {
+      setState((s) => ({ ...s, error: 'This call can’t carry video — call again.' }));
+      return;
+    }
+    if (st.sharing) {
+      screenTrackRef.current?.stop();
+      screenTrackRef.current = null;
+      const cam = localStreamRef.current?.getVideoTracks()[0] || null;
+      await sender.replaceTrack(cam);
+      setState((s) => ({ ...s, sharing: false }));
+      if (peer) {
+        signal(peer, { type: 'screen', callId: st.callId, on: false });
+        signal(peer, { type: 'cam', callId: st.callId, on: Boolean(cam) });
+      }
+      return;
+    }
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      setState((s) => ({ ...s, error: 'This device can’t share its screen from the browser.' }));
+      return;
+    }
+    try {
+      const display = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 15 } }, audio: false });
+      const track = display.getVideoTracks()[0];
+      screenTrackRef.current = track;
+      await sender.replaceTrack(track);
+      // Stopping from the browser's own "Stop sharing" bar goes back to the camera.
+      track.onended = () => {
+        if (screenTrackRef.current === track) void toggleScreenShareRef.current?.();
+      };
+      setState((s) => ({ ...s, sharing: true, error: undefined }));
+      if (peer) signal(peer, { type: 'screen', callId: st.callId, on: true });
+    } catch {
+      // cancelled the picker
+    }
+  }, [signal]);
+  const toggleScreenShareRef = useRef<(() => Promise<void>) | null>(null);
+  toggleScreenShareRef.current = toggleScreenShare;
+
   /** Ring another of Ray's devices from this one. */
   const callDevice = useCallback(async (targetDeviceId: string, targetName: string, video = false) => {
     const callId = crypto.randomUUID();
@@ -371,5 +442,5 @@ export function useDeviceCall(params: {
     }
   }, [cleanup]);
 
-  return { state, accept, decline, hangup, toggleMute, toggleCamera, flipCamera, callDevice, localStream, remoteStream };
+  return { state, accept, decline, hangup, toggleMute, toggleCamera, flipCamera, toggleScreenShare, callDevice, localStream, remoteStream };
 }

@@ -1367,6 +1367,7 @@ export default function App() {
         onToggleMute={deviceCall.toggleMute}
         onToggleCamera={() => void deviceCall.toggleCamera()}
         onFlipCamera={() => void deviceCall.flipCamera()}
+        onToggleScreen={() => void deviceCall.toggleScreenShare()}
       />
 
       {!popupMode && (<>
