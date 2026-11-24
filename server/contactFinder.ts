@@ -71,7 +71,8 @@ export async function rememberContact(roomId: string, said: string, c: { name: s
 const phoneCache = new Map<string, { at: number; list: Array<{ name: string; number: string }> }>();
 async function phoneContacts(roomId: string): Promise<Array<{ name: string; number: string }>> {
   const c = phoneCache.get(roomId);
-  if (c && Date.now() - c.at < 6 * 3600_000) return c.list;
+  // A full list is good for 6 h; an empty one (permission just granted, contacts just synced) only for a minute.
+  if (c && Date.now() - c.at < (c.list.length ? 6 * 3600_000 : 60_000)) return c.list;
   const phone = getRoomDevices(roomId).find((d) => d.online && d.type === 'bridge' && /android/i.test(d.os || ''));
   if (!phone) return c?.list || [];
   const out = await dispatchBridgeProxyCall(roomId, { action: 'list_contacts' }, 15000, phone.id).catch(() => ({ ok: false, data: undefined }));
