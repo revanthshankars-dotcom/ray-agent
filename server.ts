@@ -4,6 +4,7 @@ import type { NextFunction, Request, Response } from 'express';
 import http from 'http';
 import { execSync } from 'child_process';
 import path from 'path';
+import fs from 'fs';
 import { WebSocketServer } from 'ws';
 import {
   CAPABILITIES_CATALOG,
@@ -405,6 +406,40 @@ async function startServer() {
     } catch (err) {
       res.status(500).json({ error: sanitizeErrorMessage(err, 'Extension package unavailable') });
     }
+  });
+
+  // RAY Notch desktop app: the PC bridge downloads these files and installs them (~/.ray-notch/app).
+  app.get('/api/notch/app', (_req, res) => {
+    try {
+      const root = path.resolve(process.cwd(), 'apps', 'ray-notch');
+      const files: Record<string, string> = {};
+      const walk = (dir: string, rel: string) => {
+        for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+          if (['node_modules', 'models', 'test', '.gitignore'].includes(e.name)) continue;
+          const full = path.join(dir, e.name);
+          const r = rel ? `${rel}/${e.name}` : e.name;
+          if (e.isDirectory()) walk(full, r);
+          else if (/\.(js|json|html|css|md|svg)$/.test(e.name)) files[r] = fs.readFileSync(full, 'utf8');
+        }
+      };
+      walk(root, '');
+      const version = JSON.parse(files['package.json'] || '{}').version || '0';
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ version, files });
+    } catch (err) {
+      res.status(500).json({ error: sanitizeErrorMessage(err, 'RAY Notch package unavailable') });
+    }
+  });
+  // Ask the PC bridge to install / start / stop RAY Notch, or report its status.
+  app.post('/api/notch/:op', requireRoomAuth, async (req, res) => {
+    const op = String(req.params.op);
+    if (!['install', 'start', 'stop', 'status'].includes(op)) return res.status(400).json({ error: 'Unknown operation' });
+    const roomId = normalizeRoomId(String((req.body as { roomId?: string }).roomId || ''));
+    const pc = getRoomDevices(roomId).find((d) => d.online && d.type === 'bridge' && !/android/i.test(d.os || ''));
+    if (!pc) return res.status(409).json({ error: 'Your PC bridge is offline. Turn on the PC (or start the RAY bridge) and try again.' });
+    const out = await dispatchBridgeProxyCall(roomId, { action: 'notch', op }, 20000, pc.id);
+    if (!out.ok) return res.status(502).json({ error: out.error || 'The bridge did not answer.' });
+    res.json({ ok: true, device: pc.name, ...(out.data as Record<string, unknown>) });
   });
 
   // Autopilot (self-thinking) settings + manual run.

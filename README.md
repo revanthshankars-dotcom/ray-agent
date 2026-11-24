@@ -138,6 +138,20 @@ Webhooks (`/api/phone/voice`, `/api/phone/status`) are verified with Twilio's si
 - **On top of every app (PC)** — **Float** in the top bar (or Alt+O, or JARVIS Core → *Float RAY now*) opens a small RAY window that stays above every app on Windows, Mac and Linux (Chrome/Edge 116+): mic, live captions, a quick ask box and RAY's questions. JARVIS Core → *Keep RAY's pop-ups pinned on top* keeps pop-ups from "Hey Ray", questions and other devices above other windows until you close them (Windows & Linux PC bridge; on Mac use Float).
 - **Free 24/7 server** — Oracle Cloud Always Free: [`deploy/oracle/README.md`](deploy/oracle/README.md), one command (`deploy/oracle/setup.sh`).
 
+## RAY Notch — RAY at the top of your PC screen
+
+A small black notch that stays above every app (Windows 10/11, macOS, Linux), inspired by how Nixi lives in a notch — built from scratch for RAY (Nixi itself is closed-source).
+
+- **Talk** — say your wake phrase (default "Hey Ray"; any phrase, several at once, changes apply instantly) or **hold Right Ctrl**. Your words appear live in the notch.
+- **Hybrid brain** — timers, focus, stopwatch, list, volume, media keys, lock, dark mode, brightness, open apps and "what time is it" run instantly on the PC, even offline. Everything else goes to RAY (free cloud engines, tools, memory); with no internet the PC bridge answers (offline commands, local Ollama).
+- **Asks first** — anything RAY needs approval for shows **Not now / Yes** in the notch; RAY's questions (ask_user) show there too.
+- **Dictate anywhere** — **hold Right Alt** and talk; RAY removes "um"s, applies "actually, make that…" / "scratch that", turns "bullet point" / "number one" into lists, and types into the app you're in.
+- **Write** — "write a reply to Sam saying I'm running late" drafts in your voice and types it in (copy kept on the Shelf).
+- **Screen** — "where's the Export button?", "summarise this page" send a screenshot with the question.
+- **Widgets** — timers (also from RAY: `set_device_timer` to "RAY Notch"), focus/break, stopwatch, to-do list, now playing (Spotify, browsers, apps) with **synced lyrics** (LRCLIB), volume/brightness/Wi-Fi/Bluetooth/night light/dark mode/lock, keep-awake, water reminder, up to 8 apps, a **Shelf** of recent copies and dropped files (pictures: "make it smaller", "convert to PNG").
+- **Offline voice** (sherpa-onnx, CPU): open-vocabulary wake phrase (gigaspeech KWS, 17 MB), Silero VAD, Moonshine speech-to-text (fast/accurate English) or Whisper (99 languages incl. Hindi & Tamil), Piper voices (Alan / Jenny / Amy). Downloaded once (~200 MB), then nothing leaves the PC.
+- **Install** — JARVIS Core → **RAY Notch → Install on my PC** (needs PC bridge 3.11+ and Node.js). The bridge downloads the app from RAY into `~/.ray-notch/app`, runs `npm install` (Electron + voice engine), links your room and starts it with the PC. Or run `node relay-bridge-<room>.mjs --install-notch`. Look (eyes / arc ring / sound bars), colour, wake phrase, voice and speech model are set there or in the notch's own settings, and stay in sync. macOS: allow Microphone and Accessibility once.
+
 ## WhatsApp & Instagram (free)
 
 - **Finding people** — say the name the way you would ("Arun", "priya s", "amma"). RAY looks in people you've confirmed before, the linked WhatsApp's contacts and chats (including hidden-number contacts), and your Android phone's contacts, with fuzzy matching for typos and voice mis-hearings. If two people fit, it asks you which one (card / phone dialog) and remembers your answer (stored encrypted). Instagram DMs and calls find the person in your DM list or the New-message box — never the main search — and RAY learns their @username.

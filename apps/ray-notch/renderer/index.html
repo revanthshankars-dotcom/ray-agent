@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob: data:; script-src 'self' blob:; worker-src blob:; connect-src 'self'" />
+    <title>RAY Notch</title>
+    <link rel="stylesheet" href="notch.css" />
+  </head>
+  <body>
+    <div id="root">
+      <!-- The notch: always visible, top-centre -->
+      <div id="notch" class="notch" role="button" tabindex="0" aria-label="RAY. Click to open, or say Hey Ray.">
+        <div class="face" aria-hidden="true">
+          <span class="eye l"></span><span class="eye r"></span>
+          <span class="ring"></span>
+          <span class="bars"><i></i><i></i><i></i><i></i></span>
+        </div>
+        <div class="line" id="line" aria-live="polite"></div>
+        <div class="side" id="side"></div>
+      </div>
+
+      <!-- Cards that grow out of the notch -->
+      <div id="card" class="card hidden" role="dialog" aria-live="polite"></div>
+
+      <!-- Full panel (click the notch) -->
+      <div id="panel" class="panel hidden" role="dialog" aria-label="RAY">
+        <div class="bar">
+          <div class="modes" role="tablist" aria-label="Mode">
+            <button class="mode on" data-mode="command" title="Command (hold Right Ctrl)" aria-label="Command">
+              <svg viewBox="0 0 24 24"><path d="M5 3l14 8-6 2-2 6z" /></svg>
+            </button>
+            <button class="mode" data-mode="dictate" title="Dictate into any app (hold Right Alt)" aria-label="Dictate">
+              <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" /></svg>
+            </button>
+            <button class="mode" data-mode="write" title="Write a draft" aria-label="Write">
+              <svg viewBox="0 0 24 24"><path d="M4 20l4-1 11-11-3-3L5 16z" /></svg>
+            </button>
+          </div>
+          <div class="clock" id="clock"></div>
+          <div class="tabs" role="tablist">
+            <button class="tab on" data-tab="home" title="Home" aria-label="Home"><svg viewBox="0 0 24 24"><path d="M3 11l9-7 9 7v9H3z" /></svg></button>
+            <button class="tab" data-tab="list" title="To-do" aria-label="To-do list"><svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2" /></svg></button>
+            <button class="tab" data-tab="shelf" title="Shelf" aria-label="Shelf"><svg viewBox="0 0 24 24"><path d="M4 7h16v12H4zM8 7V4h8v3" /></svg></button>
+            <button class="tab" data-tab="settings" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8M14 4v6M8 14v6" /></svg></button>
+          </div>
+        </div>
+
+        <form id="ask" class="ask" autocomplete="off">
+          <input id="askInput" placeholder="Ask RAY, or say “Hey Ray”…" aria-label="Ask RAY" />
+          <button type="button" id="micBtn" class="round" title="Talk" aria-label="Talk">
+            <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" /></svg>
+          </button>
+        </form>
+
+        <section class="view" data-view="home">
+          <div class="grid">
+            <div class="tile" id="timersTile"></div>
+            <div class="tile music" id="musicTile"></div>
+            <div class="tile" id="controlsTile"></div>
+            <div class="tile" id="statusTile"></div>
+          </div>
+          <div class="apps" id="apps"></div>
+        </section>
+        <section class="view hidden" data-view="list">
+          <form id="todoForm" class="row"><input id="todoInput" placeholder="Add to your list…" aria-label="Add to list" /><button class="pill">Add</button></form>
+          <ul id="todos" class="todos"></ul>
+        </section>
+        <section class="view hidden" data-view="shelf">
+          <p class="hint">Copy anything, or drop files on the notch — they wait here. Drop a picture and say “make it smaller” or “convert it to PNG”.</p>
+          <ul id="shelf" class="shelf"></ul>
+        </section>
+        <section class="view hidden" data-view="settings" id="settingsView"></section>
+      </div>
+    </div>
+    <script src="notch.js"></script>
+  </body>
+</html>

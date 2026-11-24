@@ -33,7 +33,7 @@ import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import WebSocket, { WebSocketServer } from 'ws';
 
-const BRIDGE_VERSION = '3.10';
+const BRIDGE_VERSION = '3.11';
 const IS_TERMUX = Boolean(process.env.PREFIX && process.env.PREFIX.includes('com.termux')) || fs.existsSync('/data/data/com.termux');
 const PLATFORM = IS_TERMUX ? 'android' : os.platform();
 const WS_URL = process.env.RELAY_WS_URL || "__RAY_WS_URL__";
@@ -2287,6 +2287,7 @@ async function homeAssistantAction(req) {
 async function jarvisAction(action, req) {
   if (action === 'home_assistant') return await homeAssistantAction(req);
   if (action === 'list_contacts') return await listPhoneContacts();
+  if (action === 'notch') return await notchAction(req);
   if (action === 'lookup_contact') return await new Promise((res) => lookupContactNumber(String(req.name || ''), (number, label) => res(number ? { ok: true, data: { number, name: label } } : { ok: false, error: label })));
   if (action === 'browser') return await browserAction(req);
   if (action === 'diagnose') return { ok: true, data: await diagnoseDevice() };
@@ -3159,12 +3160,131 @@ function connect() {
   });
 }
 
+// ---------------------------------------------------------------------------
+// RAY Notch: RAY's always-on notch at the top of the screen (desktop app). The bridge installs it
+// from RAY (~/.ray-notch/app), links it to this room, and starts it whenever the bridge starts.
+// ---------------------------------------------------------------------------
+const NOTCH_DIR = path.join(os.homedir(), '.ray-notch', 'app');
+const NOTCH_LINK = path.join(CONFIG_DIR, 'notch.json');
+const notchState = { installing: false, step: '', error: '', pid: 0 };
+
+function writeNotchLink(extra = {}) {
+  let prev = {};
+  try { prev = JSON.parse(fs.readFileSync(NOTCH_LINK, 'utf8')); } catch {}
+  fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  fs.writeFileSync(NOTCH_LINK, JSON.stringify({ autostart: true, ...prev, ...extra, hub: RAY_WEB_ORIGIN, roomId: ROOM_ID, token: ROOM_TOKEN, localPort: LOCAL_PORT }, null, 2), { mode: 0o600 });
+}
+function notchInstalled() {
+  return fs.existsSync(path.join(NOTCH_DIR, 'main.js')) && fs.existsSync(path.join(NOTCH_DIR, 'node_modules', 'electron', 'path.txt'));
+}
+function notchElectronBin() {
+  try {
+    const rel = fs.readFileSync(path.join(NOTCH_DIR, 'node_modules', 'electron', 'path.txt'), 'utf8').trim();
+    return path.join(NOTCH_DIR, 'node_modules', 'electron', 'dist', rel);
+  } catch { return null; }
+}
+function runNpm(args, cwd) {
+  return new Promise((resolve) => {
+    const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    const child = spawn(npm, args, { cwd, shell: process.platform === 'win32', windowsHide: true, env: { ...process.env, npm_config_loglevel: 'error' } });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { out += d; });
+    child.on('error', (e) => resolve({ ok: false, out: e.message }));
+    child.on('close', (code) => resolve({ ok: code === 0, out: out.slice(-1500) }));
+  });
+}
+async function installNotch() {
+  if (IS_TERMUX) return { ok: false, error: 'RAY Notch is for Windows, Mac and Linux PCs.' };
+  if (notchState.installing) return { ok: true, status: 'installing', step: notchState.step };
+  notchState.installing = true;
+  notchState.error = '';
+  try {
+    notchState.step = 'Downloading RAY Notch from RAY';
+    const r = await fetch(RAY_WEB_ORIGIN + '/api/notch/app', { signal: AbortSignal.timeout(60000) });
+    if (!r.ok) throw new Error('RAY answered ' + r.status);
+    const pkg = await r.json();
+    const before = fs.existsSync(path.join(NOTCH_DIR, 'package.json')) ? fs.readFileSync(path.join(NOTCH_DIR, 'package.json'), 'utf8') : '';
+    for (const [rel, content] of Object.entries(pkg.files || {})) {
+      if (rel.includes('..') || path.isAbsolute(rel)) continue;
+      const dest = path.join(NOTCH_DIR, rel);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, String(content));
+    }
+    writeNotchLink();
+    if (!notchInstalled() || before !== String(pkg.files['package.json'] || '')) {
+      notchState.step = 'Installing (Electron + offline voice engine, ~150 MB, a few minutes)';
+      const res = await runNpm(['install', '--no-audit', '--no-fund', '--omit=dev'], NOTCH_DIR);
+      if (!res.ok) throw new Error('npm install failed: ' + res.out);
+    }
+    // Some setups skip install scripts, which leaves Electron without its app: fetch it directly.
+    if (!notchInstalled() && fs.existsSync(path.join(NOTCH_DIR, 'node_modules', 'electron', 'install.js'))) {
+      notchState.step = 'Downloading Electron';
+      await new Promise((resolve) => execFile(process.execPath, [path.join(NOTCH_DIR, 'node_modules', 'electron', 'install.js')], { cwd: path.join(NOTCH_DIR, 'node_modules', 'electron'), timeout: 15 * 60_000, windowsHide: true }, () => resolve()));
+    }
+    if (!notchInstalled()) throw new Error('Electron did not install. Check the internet connection, then press Install again.');
+    notchState.step = 'Starting';
+    stopNotch();
+    const started = startNotch();
+    notchState.step = started ? 'Running' : 'Installed';
+    return { ok: true, status: 'installed', version: pkg.version };
+  } catch (e) {
+    notchState.error = e && e.message ? e.message : String(e);
+    return { ok: false, error: notchState.error };
+  } finally {
+    notchState.installing = false;
+  }
+}
+function startNotch() {
+  const bin = notchElectronBin();
+  if (!bin || !fs.existsSync(bin)) return false;
+  writeNotchLink(); // keeps the token fresh if the room token changed
+  // Linux: Chromium's setuid sandbox is often not set up (and refuses root); the notch only loads its
+  // own local files, so it runs without it there.
+  const args = [NOTCH_DIR, ...(process.platform === 'linux' ? ['--no-sandbox'] : [])];
+  let logFd = 'ignore';
+  try { logFd = fs.openSync(path.join(path.dirname(NOTCH_DIR), 'notch.log'), 'a'); } catch {}
+  const env = { ...process.env };
+  delete env.ELECTRON_RUN_AS_NODE;
+  delete env.NODE_OPTIONS; // e.g. --use-openssl-ca is not allowed in Electron
+  const child = spawn(bin, args, { detached: true, stdio: ['ignore', logFd, logFd], windowsHide: false, env });
+  child.on('error', () => {});
+  child.unref();
+  notchState.pid = child.pid || 0;
+  return true;
+}
+function stopNotch() {
+  if (!notchState.pid) return;
+  try { process.kill(notchState.pid); } catch {}
+  notchState.pid = 0;
+}
+async function notchAction(req) {
+  const op = String(req.op || 'status');
+  if (op === 'install') {
+    // npm install can take minutes: start it and answer at once; RAY polls status.
+    void installNotch();
+    return { ok: true, data: { status: 'installing', step: 'Starting install' } };
+  }
+  if (op === 'start') return startNotch() ? { ok: true, data: { status: 'running' } } : { ok: false, error: 'RAY Notch is not installed on this PC yet.' };
+  if (op === 'stop') { stopNotch(); return { ok: true, data: { status: 'stopped' } }; }
+  return { ok: true, data: { status: notchState.installing ? 'installing' : notchInstalled() ? (notchState.pid ? 'running' : 'installed') : 'not-installed', step: notchState.step, error: notchState.error, dir: NOTCH_DIR } };
+}
+
 void ensureOllamaRunning(true);
 setInterval(() => {
   void ensureOllamaRunning(true);
 }, 20000);
 
 startLocalDirectBridge();
+// Bring RAY Notch up with the bridge (it is single-instance, so a second start is harmless).
+if (!IS_TERMUX && notchInstalled()) {
+  let auto = true;
+  try { auto = JSON.parse(fs.readFileSync(NOTCH_LINK, 'utf8')).autostart !== false; } catch {}
+  if (auto) setTimeout(() => startNotch(), 4000);
+}
+if (process.argv.includes('--install-notch')) {
+  void installNotch().then((r) => { console.log('[RAY Notch]', r.ok ? 'Installed and started.' : 'Install failed: ' + r.error); });
+}
 startLanHub();
 startLanClient();
 startNotificationRelay();

@@ -1,0 +1,18 @@
+{
+  "name": "ray-notch",
+  "productName": "RAY Notch",
+  "version": "0.1.0",
+  "description": "RAY's always-on notch: wake word, offline speech, commands, dictation, approvals and widgets at the top of your screen.",
+  "main": "main.js",
+  "type": "commonjs",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node test/voice-roundtrip.js"
+  },
+  "dependencies": {
+    "sherpa-onnx-node": "1.12.40",
+    "uiohook-napi": "1.5.5",
+    "electron": "45.4.1"
+  }
+}

@@ -1,3 +1,4 @@
+import { NotchCard } from './NotchCard';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Activity,
@@ -859,6 +860,7 @@ export function JarvisView({
                 <span>Saying “in Chrome” / “in Brave” still picks that one. RAY reuses open tabs in browsers that have the RAY Tabs extension.</span>
               </label>
             </div>
+            <NotchCard roomId={roomId} />
             <div>
               <div className="text-xs font-medium text-slate-700 dark:text-slate-200">Phone: always on, in front of every app</div>
               <ol className="mt-1 text-[11px] text-slate-600 dark:text-slate-300 list-decimal pl-4 space-y-0.5">
