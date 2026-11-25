@@ -72,7 +72,7 @@
     hoverCard = false;
     if (card.dataset.auto) cardTimer = setTimeout(idle, 2500);
   });
-  const faceHtml = () => `<div class="face" style="width:44px;height:36px;border-radius:14px;background:#000;flex:none" aria-hidden="true"><span class="eye"></span><span class="eye"></span><span class="ring"></span><span class="bars"><i></i><i></i><i></i><i></i></span></div>`;
+  const faceHtml = () => `<div class="face card-face" aria-hidden="true"><span class="eye"></span><span class="eye"></span><span class="ring"></span><span class="bars"><i></i><i></i><i></i><i></i></span></div>`;
 
   // ---------------- states from the app ----------------
   N.on.state((st) => {
