@@ -84,8 +84,8 @@ function parseIntent(raw) {
   if (/\b(volume down|quieter|turn it down|turn down the volume)\b/.test(low)) return { kind: 'volume-step', dir: -1 };
   if (/^(mute|unmute)( the)?( (sound|volume|audio|pc))?$/.test(low)) return { kind: 'mute' };
 
-  if (/^(pause|stop)( the)?( music| song| playback| it)?$/.test(low)) return { kind: 'media', action: 'pause' };
-  if (/^(resume|unpause|continue|play)( the)?( music| song| playback)?$/.test(low)) return { kind: 'media', action: 'play' };
+  if (/^(pause|stop)( the| this)?( music| song| playback| it| video| youtube| audio| spotify| track)?$/.test(low)) return { kind: 'media', action: 'pause' };
+  if (/^(resume|unpause|continue|play)( the| this)?( music| song| playback| video| youtube| audio| spotify| track)?$/.test(low)) return { kind: 'media', action: 'play' };
   if (/^(next|skip)( the)?( song| track)?$|^skip (this|it)$/.test(low)) return { kind: 'media', action: 'next' };
   if (/^(previous|go back|last)( the)?( song| track)$/.test(low)) return { kind: 'media', action: 'prev' };
   if (/^play (?:my )?(?:liked|favou?rite) songs$/.test(low)) return { kind: 'liked-songs' };

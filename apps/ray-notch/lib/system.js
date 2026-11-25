@@ -2,6 +2,9 @@
 // brightness, settings pages, what's playing (+ synced lyrics), typing text into the current app.
 'use strict';
 const { execFile, spawn } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { EventEmitter } = require('events');
 
 const P = process.platform;
@@ -37,8 +40,50 @@ public static class RayPc {
   [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
   public static void Key(byte vk) { keybd_event(vk, 0, 1, UIntPtr.Zero); keybd_event(vk, 0, 3, UIntPtr.Zero); }
 }`;
-// Sent as one line: C# needs no newlines, and multi-line input over stdin is unreliable.
-const WIN_PRELUDE = `Add-Type -TypeDefinition '${WIN_CS.replace(/\s*\r?\n\s*/g, ' ').trim()}'`;
+// The worker is a small script file that reads one command per line from stdin and answers with a
+// marker. Media goes through Windows' media session (the same one that shows "now playing", so it
+// reaches YouTube in a browser and Spotify alike), with real media keys as the fallback.
+const WIN_WORKER = [
+  "$ErrorActionPreference = 'Stop'",
+  "$ready = 'ok'",
+  "try {",
+  "Add-Type -TypeDefinition @'",
+  WIN_CS.trim(),
+  "'@",
+  "} catch { $ready = 'audio helper failed: ' + $_.Exception.Message }",
+  "$script:mgr = $null",
+  "$script:asTask = $null",
+  "try {",
+  "  Add-Type -AssemblyName System.Runtime.WindowsRuntime",
+  "  $script:asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -like 'IAsyncOperation*' })[0]",
+  "  [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager,Windows.Media.Control,ContentType=WindowsRuntime] | Out-Null",
+  "} catch { $ready += ' | media session unavailable: ' + $_.Exception.Message }",
+  "function Await($op, $type) { $t = $script:asTask.MakeGenericMethod($type).Invoke($null, @($op)); $t.Wait(5000) | Out-Null; $t.Result }",
+  "function RayMedia([string]$a) {",
+  "  try {",
+  "    if (-not $script:mgr) { $script:mgr = Await ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]::RequestAsync()) ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]) }",
+  "    $s = $script:mgr.GetCurrentSession()",
+  "    if ($s) {",
+  "      $op = switch ($a) { 'play' { $s.TryPlayAsync() } 'pause' { $s.TryPauseAsync() } 'next' { $s.TrySkipNextAsync() } 'prev' { $s.TrySkipPreviousAsync() } default { $s.TryTogglePlayPauseAsync() } }",
+  "      if (Await $op ([bool])) { return 'session' }",
+  "    }",
+  "  } catch { }",
+  "  $vk = @{ next = 176; prev = 177; playpause = 179; play = 179; pause = 179 }[$a]",
+  "  [RayPc]::Key([byte]$vk)",
+  "  return 'key'",
+  "}",
+  "[Console]::Out.WriteLine('__RAY_READY__ ' + $ready); [Console]::Out.Flush()",
+  "while ($true) {",
+  "  $line = [Console]::In.ReadLine()",
+  "  if ($null -eq $line) { break }",
+  "  $i = $line.IndexOf(' ')",
+  "  if ($i -lt 1) { continue }",
+  "  $id = $line.Substring(0, $i)",
+  "  try { $o = (Invoke-Expression $line.Substring($i + 1) | Out-String).Trim(); [Console]::Out.WriteLine($o + '__RAY_OK_' + $id + '__') }",
+  "  catch { [Console]::Out.WriteLine('__RAY_ERR_' + $id + '__' + ($_.Exception.Message -replace '\\r?\\n', ' ')) }",
+  "  [Console]::Out.Flush()",
+  "}",
+].join('\r\n');
 
 class PsWorker {
   constructor() {
@@ -46,19 +91,24 @@ class PsWorker {
     this.queue = new Map();
     this.seq = 0;
     this.buf = '';
+    this.status = 'starting';
   }
   ensure() {
     if (this.proc) return;
-    this.proc = spawn('powershell.exe', ['-NoProfile', '-NoLogo', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', '-'], { windowsHide: true });
+    const file = path.join(os.tmpdir(), 'ray-notch-worker.ps1');
+    fs.writeFileSync(file, WIN_WORKER, 'utf8');
+    this.proc = spawn('powershell.exe', ['-NoProfile', '-NoLogo', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', file], { windowsHide: true });
     this.proc.stdout.setEncoding('utf8');
     this.proc.stdout.on('data', (d) => this.onData(d));
-    this.proc.stderr.on('data', () => {});
-    this.proc.on('exit', () => {
+    this.proc.stderr.setEncoding('utf8');
+    this.proc.stderr.on('data', (d) => console.warn('[RAY Notch] PowerShell:', String(d).trim().slice(0, 300)));
+    this.proc.on('error', (e) => console.warn('[RAY Notch] PowerShell did not start:', e.message));
+    this.proc.on('exit', (code) => {
       this.proc = null;
+      this.status = `exited (${code})`;
       for (const [, q] of this.queue) q.done({ ok: false, out: '', err: 'worker exited' });
       this.queue.clear();
     });
-    this.write(WIN_PRELUDE + '\n');
   }
   write(s) {
     try {
@@ -69,6 +119,12 @@ class PsWorker {
   }
   onData(d) {
     this.buf += d;
+    const r = this.buf.match(/__RAY_READY__ ([^\r\n]*)\r?\n/);
+    if (r) {
+      this.status = r[1];
+      if (r[1] !== 'ok') console.warn('[RAY Notch] PC controls:', r[1]);
+      this.buf = this.buf.slice(r.index + r[0].length);
+    }
     let m;
     while ((m = this.buf.match(/__RAY_(OK|ERR)_(\d+)__([^\r\n]*)\r?\n/))) {
       const before = this.buf.slice(0, m.index);
@@ -88,8 +144,7 @@ class PsWorker {
         res({ ok: false, out: '', err: 'timeout' });
       }, timeout);
       this.queue.set(id, { done: (r) => (clearTimeout(t), res(r)) });
-      const one = script.replace(/\r?\n/g, '; ');
-      this.write(`try { $__o = & { ${one} } | Out-String; [Console]::Out.WriteLine($__o.Trim() + '__RAY_OK_${id}__') } catch { [Console]::Out.WriteLine('__RAY_ERR_${id}__' + ($_.Exception.Message -replace '\r?\n',' ')) }; [Console]::Out.Flush()\n`);
+      this.write(`${id} ${script.replace(/\r?\n/g, '; ')}\n`);
     });
   }
   stop() {
@@ -102,6 +157,8 @@ const ps = (script, timeout) => worker.exec(script, timeout);
 function warmUp() {
   if (worker) void worker.exec('1', 20000);
 }
+/** For "why isn't it working": the worker's start-up result. */
+const controlsStatus = () => (worker ? worker.status : 'ok');
 
 // Windows virtual-key codes for media keys.
 const VK = { next: 176, prev: 177, stop: 178, playpause: 179 };
@@ -148,7 +205,10 @@ async function mute() {
 }
 async function media(action) {
   // action: playpause | next | prev | pause | play
-  if (P === 'win32') await ps(`[RayPc]::Key(${VK[action === 'pause' || action === 'play' ? 'playpause' : action]})`);
+  if (P === 'win32') {
+    const r = await ps(`RayMedia '${['play', 'pause', 'next', 'prev'].includes(action) ? action : 'playpause'}'`);
+    if (!r.ok) return `Couldn’t control the music (${r.err || 'no answer from Windows'}).`;
+  }
   else if (P === 'darwin') {
     const verb = { playpause: 'playpause', play: 'play', pause: 'pause', next: 'next track', prev: 'previous track' }[action];
     await osa(`if application "Spotify" is running then tell application "Spotify" to ${verb}\nif application "Music" is running then tell application "Music" to ${verb}`);
@@ -340,4 +400,4 @@ function stopWorker() {
 
 const runPs = (script, timeout) => (worker ? worker.exec(script, timeout) : Promise.resolve({ ok: false, out: '', err: 'not Windows' }));
 
-module.exports = { warmUp, stopWorker, runPs, closeApp, getVolume, setVolume, volumeStep, mute, media, lock, darkMode, brightness, openSettings, NowPlaying, fetchLyrics, parseLrc, youtubeTop };
+module.exports = { warmUp, stopWorker, runPs, controlsStatus, closeApp, getVolume, setVolume, volumeStep, mute, media, lock, darkMode, brightness, openSettings, NowPlaying, fetchLyrics, parseLrc, youtubeTop };

@@ -442,7 +442,7 @@
           playing = { ...playing, playing: !playing.playing, position: pos, at: Date.now() };
           renderMusic(true);
         }
-        void N.media(m);
+        N.media(m).then((msg) => msg && /couldn/i.test(msg) && toast('RAY', msg));
       }
     };
   }

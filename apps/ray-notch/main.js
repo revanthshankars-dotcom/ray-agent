@@ -885,6 +885,11 @@ app.whenReady().then(async () => {
   createWindow();
   wireIpc();
   sys.warmUp();
+  // If Windows refused the controls helper, say so instead of buttons silently doing nothing.
+  setTimeout(() => {
+    const st = sys.controlsStatus();
+    if (st !== 'ok') ui({ phase: 'idle', note: `PC controls need attention: ${st}` });
+  }, 20000).unref?.();
   fileIndex.start();
   void files.loadStartApps(sys.runPs);
   startRay();
