@@ -48,6 +48,12 @@ function parseIntent(raw) {
   let m;
   if (!low) return null;
 
+  if (/^(cancel|cancel that|never ?mind|forget it|stop that)$/.test(low)) return { kind: 'cancel' };
+  if (/^(what can you do|help|commands|what are your commands|what do you do|how do i use you)$/.test(low)) return { kind: 'help' };
+  if (/^(?:how do i|how can i|can you|can ray)\b.*\b(to-?do|shopping) list\b/.test(low)) return { kind: 'help', topic: 'list' };
+  if (/^(?:can you|can ray|do you)\b.*\blyrics\b/.test(low)) return { kind: 'help', topic: 'lyrics' };
+  if (/^(what(?:'s| is) your version|which version(?: are you)?|what version are you|who (?:made|built|created) you|what are you|what model are you(?: using)?|what(?:'s| is) new)$/.test(low)) return { kind: 'about', what: /new/.test(low) ? 'new' : /made|built|created/.test(low) ? 'maker' : /model/.test(low) ? 'model' : 'version' };
+
   if (/\b(timer|countdown)\b/.test(low) && /\b(set|start|put|make)\b|^timer/.test(low)) {
     const secs = parseDuration(low);
     const lbl = (low.match(/\bfor (?:the )?([a-z ]+?)(?: for| in|$)/) || [])[1] || '';
@@ -68,6 +74,7 @@ function parseIntent(raw) {
   }
   if (/\b(let it sleep|allow sleep|stop keeping (?:it )?awake)\b/.test(low)) return { kind: 'awake-off' };
 
+  if ((m = t.match(/^(?:make|create|start|write)\s+(?:a\s+|my\s+)?(?:new\s+)?(?:shopping|grocery|to-?do|todo)?\s*list\s+(?:with|of|for|:)\s*(.+)$/i))) return { kind: 'todo-add', text: m[1], many: true };
   if ((m = low.match(/^(?:add|put)\s+(.+?)\s+(?:to|on)\s+(?:my\s+|the\s+)?(?:to-?do|todo|shopping|grocery)?\s*list$/))) return { kind: 'todo-add', text: m[1] };
   if ((m = low.match(/^(?:mark|tick|check)\s+(.+?)\s+(?:as\s+)?(?:done|complete|off)$/))) return { kind: 'todo-done', text: m[1] };
   if (/^(?:show|open|what'?s on)\s+(?:me\s+)?(?:my\s+)?(?:to-?do|todo|shopping)?\s*list$/.test(low) || /^my list$/.test(low)) return { kind: 'todo-show' };
@@ -81,6 +88,7 @@ function parseIntent(raw) {
   if (/^(resume|unpause|continue|play)( the)?( music| song| playback)?$/.test(low)) return { kind: 'media', action: 'play' };
   if (/^(next|skip)( the)?( song| track)?$|^skip (this|it)$/.test(low)) return { kind: 'media', action: 'next' };
   if (/^(previous|go back|last)( the)?( song| track)$/.test(low)) return { kind: 'media', action: 'prev' };
+  if (/^play (?:my )?(?:liked|favou?rite) songs$/.test(low)) return { kind: 'liked-songs' };
   if ((m = low.match(/^play\s+(.+?)(?:\s+(?:on|in)\s+(youtube|yt|spotify))?$/)) && !/\bon (my )?(phone|mobile|tv)\b/.test(low)) {
     const query = m[1].replace(/^(?:the\s+)?(?:song|video|track|music)\s+/, '').trim();
     if (query) return { kind: 'play', query, where: m[2] === 'spotify' ? 'spotify' : 'youtube' };
@@ -88,6 +96,18 @@ function parseIntent(raw) {
   if (/\b(show|open)\b.*\blyrics\b|^lyrics$/.test(low)) return { kind: 'lyrics' };
 
   if (/^lock( my| the)?( pc| computer| screen| laptop)?$/.test(low)) return { kind: 'lock' };
+  if (/^(?:take (?:a )?|grab (?:a )?)?screen ?shot$|^capture (?:my |the )?screen$/.test(low)) return { kind: 'screenshot' };
+  if (/\b(power mode|power plan|battery saver|power settings|energy saver)\b/.test(low)) return { kind: 'settings', page: 'power' };
+  if ((m = low.match(/^scroll\s+(?:all the way\s+)?(down|up)(?:\s+all the way)?$/))) return { kind: 'scroll', dir: m[1], all: /all the way/.test(low) };
+  if ((m = low.match(/^(?:go|scroll|jump)\s+to\s+(?:the\s+)?(top|bottom)(?:\s+of the page)?$/))) return { kind: 'scroll', dir: m[1] === 'top' ? 'up' : 'down', all: true };
+  if ((m = low.match(/^(?:close|quit|exit)\s+(?:the\s+)?(?:this\s+)?(tab)$/))) return { kind: 'close-tab' };
+  if ((m = low.match(/^(?:close|quit|exit|kill)\s+(?:the\s+)?([a-z0-9][a-z0-9 .+'&-]{1,40}?)(?:\s+app)?$/)) && !/^(it|this|that|notch|ray|card|panel|menu|timer|timers)$/.test(m[1])) return { kind: 'close-app', app: m[1] };
+  if ((m = low.match(/^(?:what(?:'s| is) the )?time (?:is it )?in ([a-z .'-]+)$/) || low.match(/^what time is it (?:right now |now )?in ([a-z .'-]+)$/))) return { kind: 'world-time', city: m[1].trim() };
+  if (/\bweather\b|\b(?:is it|will it) (?:going to )?rain\b|\b(?:how hot|how cold|temperature) (?:is it )?(?:outside|today)\b/.test(low)) return { kind: 'weather', city: (low.match(/\b(?:in|at|for) ([a-z .'-]+?)(?: today| tomorrow| now)?$/) || [])[1] || '', tomorrow: /\btomorrow\b/.test(low) };
+  if ((m = low.match(/^(?:open |create |make |start )?(?:a )?(?:new|blank) (google doc|google docs|doc|document|google sheet|sheet|spreadsheet|google slides|slides|presentation|word document|word doc|excel sheet|excel file|powerpoint)$/))) {
+    const k = m[1];
+    return { kind: 'new-doc', what: /word/.test(k) ? 'word' : /excel/.test(k) ? 'excel' : /powerpoint/.test(k) ? 'powerpoint' : /sheet/.test(k) ? 'sheet' : /slide|presentation/.test(k) ? 'slides' : 'doc' };
+  }
   if (/\b(dark mode|dark theme)\b/.test(low)) return { kind: 'dark', on: !/\b(off|disable|turn off|light)\b/.test(low) };
   if (/\blight mode\b/.test(low)) return { kind: 'dark', on: false };
   if ((m = low.match(/\bbrightness\b.*?\b(\d{1,3})\b/))) return { kind: 'brightness', level: Number(m[1]) };

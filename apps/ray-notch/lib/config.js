@@ -30,6 +30,7 @@ const DEFAULTS = {
   stt: 'stt-fast', // stt-fast | stt-accurate | stt-multilingual
   voice: 'voice-alan', // voice-alan | voice-jenny | voice-amy
   speakAnswers: true,
+  followUp: true, // keep listening a few seconds after answering, no wake word needed
   hotkeyCommand: 'RightCtrl',
   hotkeyDictate: 'RightAlt',
   apps: ['Chrome', 'Spotify', 'File Explorer', 'Calculator'],

@@ -12,6 +12,7 @@
   --font: -apple-system, 'Segoe UI Variable', 'Segoe UI', BlinkMacSystemFont, 'Inter', system-ui, sans-serif;
   --blur: blur(28px) saturate(200%);
   --spring: cubic-bezier(0.16, 1, 0.3, 1);
+  --bounce: cubic-bezier(0.34, 1.45, 0.55, 1);
   --ease: cubic-bezier(0.3, 0, 0, 1);
   --fast: 0.12s;
   --med: 0.15s;
@@ -745,4 +746,18 @@ body.style-bars .bars { display: flex; gap: 2.5px; align-items: center; }
 .file:hover .pill.tiny,
 .file:focus-visible .pill.tiny {
   opacity: 1;
+}
+
+/* Like Nixi: the notch bounces when it opens and tucks away quickly when it closes. */
+.notch.card-open,
+.notch.panel-open,
+.notch.wide,
+.notch.mid {
+  transition:
+    width 0.32s var(--bounce),
+    height 0.32s var(--bounce),
+    border-radius 0.2s var(--spring),
+    background var(--fast) var(--ease),
+    border-color var(--fast) var(--ease),
+    box-shadow var(--fast) var(--ease);
 }

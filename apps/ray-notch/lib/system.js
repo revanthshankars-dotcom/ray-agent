@@ -183,12 +183,12 @@ async function brightness(level) {
 }
 /** Settings pages for toggles Windows doesn't let apps flip silently. */
 async function openSettings(page) {
-  const win = { wifi: 'ms-settings:network-wifi', bluetooth: 'ms-settings:bluetooth', nightlight: 'ms-settings:nightlight', display: 'ms-settings:display', sound: 'ms-settings:sound' };
-  const mac = { wifi: 'x-apple.systempreferences:com.apple.wifi-settings-extension', bluetooth: 'x-apple.systempreferences:com.apple.BluetoothSettings', nightlight: 'x-apple.systempreferences:com.apple.Displays-Settings.extension', display: 'x-apple.systempreferences:com.apple.Displays-Settings.extension', sound: 'x-apple.systempreferences:com.apple.Sound-Settings.extension' };
+  const win = { wifi: 'ms-settings:network-wifi', bluetooth: 'ms-settings:bluetooth', nightlight: 'ms-settings:nightlight', display: 'ms-settings:display', sound: 'ms-settings:sound', power: 'ms-settings:powersleep' };
+  const mac = { wifi: 'x-apple.systempreferences:com.apple.wifi-settings-extension', bluetooth: 'x-apple.systempreferences:com.apple.BluetoothSettings', nightlight: 'x-apple.systempreferences:com.apple.Displays-Settings.extension', display: 'x-apple.systempreferences:com.apple.Displays-Settings.extension', sound: 'x-apple.systempreferences:com.apple.Sound-Settings.extension', power: 'x-apple.systempreferences:com.apple.Battery-Settings.extension' };
   if (P === 'win32') await run('cmd.exe', ['/c', 'start', '', win[page] || 'ms-settings:']);
   else if (P === 'darwin') await run('open', [mac[page] || 'x-apple.systempreferences:']);
   else await run('gnome-control-center', [page === 'nightlight' ? 'display' : page]);
-  return `Opened ${page === 'nightlight' ? 'Night light' : page === 'wifi' ? 'Wi-Fi' : page} settings.`;
+  return `Opened ${{ nightlight: 'Night light', wifi: 'Wi-Fi', power: 'power mode' }[page] || page} settings.`;
 }
 
 // --- Now playing ---------------------------------------------------------------------------------
@@ -304,6 +304,22 @@ function parseLrc(text) {
   return out.length ? out : null;
 }
 
+/** Closes an app's windows politely (like clicking X). Says "Closed" only when something closed. */
+async function closeApp(name) {
+  const q = String(name || '').replace(/['"`$]/g, '').trim();
+  if (!q) return null;
+  if (P === 'win32') {
+    const r = await ps(`$q='${q}'; $ps = Get-Process | ? { $_.MainWindowHandle -ne 0 -and ($_.ProcessName -like "*$($q -replace ' ','')*" -or $_.MainWindowTitle -like "*$q*" -or $_.Description -like "*$q*") } | ? { $_.ProcessName -notin @('electron','explorer','powershell') }; $n=0; foreach ($p in $ps) { if ($p.CloseMainWindow()) { $n++ } }; $n`);
+    return r.ok ? Number(r.out) || 0 : 0;
+  }
+  if (P === 'darwin') {
+    const r = await osa(`tell application "${q}" to quit`);
+    return r.ok ? 1 : 0;
+  }
+  const r = await run('pkill', ['-f', q]);
+  return r.ok ? 1 : 0;
+}
+
 /** "play believer" -> a YouTube watch link for the top result (so it starts playing), or null. */
 async function youtubeTop(query) {
   try {
@@ -324,4 +340,4 @@ function stopWorker() {
 
 const runPs = (script, timeout) => (worker ? worker.exec(script, timeout) : Promise.resolve({ ok: false, out: '', err: 'not Windows' }));
 
-module.exports = { warmUp, stopWorker, runPs, getVolume, setVolume, volumeStep, mute, media, lock, darkMode, brightness, openSettings, NowPlaying, fetchLyrics, parseLrc, youtubeTop };
+module.exports = { warmUp, stopWorker, runPs, closeApp, getVolume, setVolume, volumeStep, mute, media, lock, darkMode, brightness, openSettings, NowPlaying, fetchLyrics, parseLrc, youtubeTop };

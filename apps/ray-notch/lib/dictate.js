@@ -19,7 +19,8 @@ function applySpokenFormatting(text) {
   let t = text;
   const rules = [
     [/\s*\b(?:new paragraph)\b\s*/gi, '\n\n'],
-    [/\s*\b(?:new line|next line)\b\s*/gi, '\n'],
+    [/\s*\b(?:new ?line|next line|line break)\b\s*/gi, '\n'],
+    [/^\s*enter\s*$/gi, '\n'],
     [/\s*\b(?:full stop|period)\b/gi, '.'],
     [/\s*\bcomma\b/gi, ','],
     [/\s*\bquestion mark\b/gi, '?'],
@@ -38,8 +39,8 @@ function applySpokenFormatting(text) {
     t = (head ? head.replace(/[:,]?$/, ':') + '\n' : '') + parts.filter((p) => p.trim()).map((p) => `• ${p.trim().replace(/[.,;]$/, '')}`).join('\n');
   }
   // "number one X number two Y" -> numbered list
-  if (/\bnumber (?:one|1)\b/i.test(t)) {
-    const parts = t.split(/\s*\bnumber (?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\b[,:]?\s*/i);
+  if (/\b(?:number|step) (?:one|1)\b/i.test(t)) {
+    const parts = t.split(/\s*\b(?:number|step) (?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\b[,:]?\s*/i);
     const head = parts.shift().trim();
     t = (head ? head.replace(/[:,]?$/, ':') + '\n' : '') + parts.filter((p) => p.trim()).map((p, i) => `${i + 1}. ${p.trim().replace(/[.,;]$/, '')}`).join('\n');
   }

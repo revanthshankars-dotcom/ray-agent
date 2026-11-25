@@ -84,9 +84,16 @@ async function startVoice() {
     voice.wakeEnabled = settings.wakeEnabled;
     await voice.init((p) => ui({ phase: 'setup', text: `Setting up RAY's offline voice — ${p.label}`, progress: p.progress }));
     voice.on('wake', () => ui({ phase: 'listening', mode: 'command', text: '' }));
-    voice.on('listening', (mode) => ui({ phase: 'listening', mode, text: '' }));
+    voice.on('listening', (mode) => {
+      ui({ phase: 'listening', mode, text: '' });
+      if (mode === 'command' && !followListening) void duck(true);
+    });
     voice.on('partial', (text, mode) => ui({ phase: 'listening', mode, text }));
-    voice.on('final', (text, mode) => void onUtterance(text, mode));
+    voice.on('final', (text, mode) => {
+      followListening = false;
+      void duck(false);
+      void onUtterance(text, mode);
+    });
     voiceError = '';
     ui({ phase: 'idle' });
   } catch (e) {
@@ -106,13 +113,50 @@ async function onUtterance(text, mode) {
   await handleCommand(text, { spoken: true });
 }
 
+/** Speaks the answer; returns how long it plays (ms) so follow-up listening starts after it. */
 function speak(text) {
-  if (!settings.speakAnswers || !voice || !text) return;
+  if (!settings.speakAnswers || !voice || !text) return 0;
   try {
     const a = voice.speak(text.replace(/[*_#`>]/g, '').slice(0, 600));
     send('play', { samples: Array.from(a.samples), sampleRate: a.sampleRate });
+    return Math.round((a.samples.length / a.sampleRate) * 1000);
   } catch {
-    // voice not ready
+    return 0; // voice not ready
+  }
+}
+
+// Like Nixi: after answering a spoken command, keep listening a few seconds so the next command
+// needs no "Hey Ray". Silence for 5 s and it goes back to waiting for the wake word.
+let followTimer = null;
+let followListening = false;
+function followUp(afterMs) {
+  if (!voice || settings.followUp === false || approvalPending) return;
+  clearTimeout(followTimer);
+  followTimer = setTimeout(() => {
+    if (voice.state === 'idle' && !busy && !approvalPending) {
+      followListening = true;
+      voice.startListening('command', { pushToTalk: false });
+    }
+  }, afterMs + 400);
+}
+
+// Music gets quieter while Ray talks to the notch, then comes back.
+let ducked = null;
+async function duck(on) {
+  try {
+    if (on && ducked === null && nowPlaying.current && nowPlaying.current.playing) {
+      const v = await sys.getVolume();
+      if (typeof v === 'number' && v > 15) {
+        ducked = v;
+        await sys.setVolume(Math.round(v * 0.35));
+      }
+    } else if (!on && ducked !== null) {
+      const v = ducked;
+      ducked = null;
+      await sys.setVolume(v);
+    }
+  } catch {
+    ducked = null;
   }
 }
 
@@ -145,7 +189,7 @@ async function handleCommand(text, { spoken = false } = {}) {
       if (said !== null) {
         if (filesShown) return; // the file list card is the answer
         ui({ phase: 'done', text: said });
-        if (spoken) speak(said);
+        if (spoken) followUp(speak(said));
         return;
       }
     }
@@ -158,7 +202,7 @@ async function handleCommand(text, { spoken = false } = {}) {
     }
     if (answer) {
       ui({ phase: 'answer', text: answer, question: text });
-      if (spoken) speak(answer);
+      if (spoken) followUp(speak(answer));
     }
   } catch (e) {
     const msg = /abort/i.test(String(e && e.name)) ? 'That took too long, so I stopped. Try again.' : `Sorry — ${e.message || e}`;
@@ -194,11 +238,72 @@ async function runIntent(i, text) {
       keepAwake(0);
       return 'Your PC can sleep again.';
     case 'todo-add': {
-      store.get().todos.push({ id: Date.now(), text: i.text, done: false, at: Date.now() });
+      // "eggs, milk and bread" -> three items
+      const items = (i.many || /,/.test(i.text) ? i.text.split(/\s*,\s*(?:and\s+)?|\s+and\s+/) : [i.text]).map((x) => x.trim()).filter(Boolean);
+      items.forEach((text, n) => store.get().todos.push({ id: Date.now() + n, text, done: false, at: Date.now() }));
       store.save();
       send('todos', store.get().todos);
       send('widget', { type: 'show', panel: 'list' });
-      return `Added ${i.text}.`;
+      return items.length > 1 ? `Added ${items.length} things to your list.` : `Added ${items[0]}.`;
+    }
+    case 'cancel':
+      if (busy) busy.abort();
+      return 'Cancelled.';
+    case 'help':
+      if (i.topic === 'list') return 'Say “add milk to my list”, or “make a shopping list with eggs, milk and bread”. Say “show my list” to see it.';
+      if (i.topic === 'lyrics') return 'Yes. Play a song, then say “show lyrics” — they follow the music line by line.';
+      return 'I can open apps, files and folders, find files, play music, show lyrics, set timers and reminders, keep a list, control volume, brightness and dark mode, take screenshots, tell the time anywhere, check the weather, type what you say, and ask RAY anything when you’re online.';
+    case 'about': {
+      const v = require('./package.json').version;
+      if (i.what === 'maker') return 'Ray built me — I’m RAY Notch, part of RAY.';
+      if (i.what === 'model') return ray && ray.online ? 'Quick commands run on this PC. Bigger questions go to RAY’s free cloud models.' : 'Right now I’m answering on this PC, without the internet.';
+      if (i.what === 'new') return `RAY Notch ${v}: files, folders and apps work offline, faster controls, weather, world clock, screenshots and follow-up listening.`;
+      return `RAY Notch version ${v}.`;
+    }
+    case 'liked-songs':
+      await shell.openExternal('spotify:collection:tracks').catch(() => shell.openExternal('https://open.spotify.com/collection/tracks'));
+      return 'Playing your Liked Songs.';
+    case 'screenshot': {
+      const file = await takeScreenshot();
+      if (!file) return 'I couldn’t take a screenshot.';
+      addShelf({ type: 'file', path: file, name: path.basename(file) });
+      return 'Screenshot saved and copied.';
+    }
+    case 'scroll':
+    case 'close-tab': {
+      try {
+        const { uIOhook, UiohookKey } = require('uiohook-napi');
+        if (i.kind === 'close-tab') uIOhook.keyTap(UiohookKey.W, [process.platform === 'darwin' ? UiohookKey.Meta : UiohookKey.Ctrl]);
+        else uIOhook.keyTap(i.all ? (i.dir === 'down' ? UiohookKey.End : UiohookKey.Home) : i.dir === 'down' ? UiohookKey.PageDown : UiohookKey.PageUp);
+        return i.kind === 'close-tab' ? 'Closed the tab.' : '';
+      } catch {
+        return 'I can’t press keys on this PC right now.';
+      }
+    }
+    case 'close-app': {
+      const n = await sys.closeApp(i.app);
+      return n ? `Closed ${titleCase(i.app)}.` : `${titleCase(i.app)} isn’t open.`;
+    }
+    case 'world-time': {
+      const tz = cityTimeZone(i.city);
+      if (!tz) return `I don’t know the time zone for ${titleCase(i.city)}.`;
+      const time = new Date().toLocaleTimeString([], { timeZone: tz, hour: 'numeric', minute: '2-digit' });
+      const day = new Date().toLocaleDateString([], { timeZone: tz, weekday: 'long' });
+      return `It’s ${time} in ${titleCase(i.city)} (${day}).`;
+    }
+    case 'weather': {
+      if (!online()) return 'You’re offline, so I can’t check the weather.';
+      return weather(i.city, i.tomorrow);
+    }
+    case 'new-doc': {
+      const web = { doc: 'https://docs.new', sheet: 'https://sheets.new', slides: 'https://slides.new' }[i.what];
+      if (web) {
+        if (!online()) return 'You’re offline, so I can’t make a Google file.';
+        await shell.openExternal(web);
+        return `Opening a new Google ${i.what === 'doc' ? 'Doc' : i.what === 'sheet' ? 'Sheet' : 'Slides'}.`;
+      }
+      const opened = await files.openApp(i.what, { ps: sys.runPs, openExternal: (u) => shell.openExternal(u) });
+      return opened ? `Opening ${titleCase(opened)}.` : `${titleCase(i.what)} isn’t installed on this PC.`;
     }
     case 'todo-done': {
       const t = store.get().todos.find((x) => !x.done && x.text.toLowerCase().includes(i.text.toLowerCase()));
@@ -341,6 +446,63 @@ async function runIntent(i, text) {
 
 const online = () => net.isOnline();
 
+async function takeScreenshot() {
+  try {
+    const d = screen.getPrimaryDisplay();
+    const size = { width: Math.round(d.size.width * d.scaleFactor), height: Math.round(d.size.height * d.scaleFactor) };
+    win.setOpacity(0); // keep the notch out of the picture
+    await new Promise((r) => setTimeout(r, 120));
+    const [src] = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: size });
+    win.setOpacity(1);
+    if (!src || src.thumbnail.isEmpty()) return null;
+    const dir = path.join(files.knownFolder('pictures') || app.getPath('pictures'), 'Screenshots');
+    fs.mkdirSync(dir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
+    const file = path.join(dir, `RAY-${stamp}.png`);
+    fs.writeFileSync(file, src.thumbnail.toPNG());
+    clipboard.writeImage(src.thumbnail);
+    return file;
+  } catch {
+    win.setOpacity(1);
+    return null;
+  }
+}
+
+const CITY_TZ = { 'new york': 'America/New_York', nyc: 'America/New_York', 'san francisco': 'America/Los_Angeles', 'los angeles': 'America/Los_Angeles', la: 'America/Los_Angeles', seattle: 'America/Los_Angeles', chicago: 'America/Chicago', texas: 'America/Chicago', dallas: 'America/Chicago', houston: 'America/Chicago', toronto: 'America/Toronto', vancouver: 'America/Vancouver', london: 'Europe/London', uk: 'Europe/London', paris: 'Europe/Paris', berlin: 'Europe/Berlin', germany: 'Europe/Berlin', amsterdam: 'Europe/Amsterdam', madrid: 'Europe/Madrid', rome: 'Europe/Rome', moscow: 'Europe/Moscow', dubai: 'Asia/Dubai', uae: 'Asia/Dubai', india: 'Asia/Kolkata', delhi: 'Asia/Kolkata', 'new delhi': 'Asia/Kolkata', mumbai: 'Asia/Kolkata', bangalore: 'Asia/Kolkata', bengaluru: 'Asia/Kolkata', chennai: 'Asia/Kolkata', hyderabad: 'Asia/Kolkata', kolkata: 'Asia/Kolkata', singapore: 'Asia/Singapore', 'hong kong': 'Asia/Hong_Kong', china: 'Asia/Shanghai', beijing: 'Asia/Shanghai', shanghai: 'Asia/Shanghai', tokyo: 'Asia/Tokyo', japan: 'Asia/Tokyo', seoul: 'Asia/Seoul', korea: 'Asia/Seoul', sydney: 'Australia/Sydney', australia: 'Australia/Sydney', melbourne: 'Australia/Melbourne', auckland: 'Pacific/Auckland', 'new zealand': 'Pacific/Auckland', usa: 'America/New_York', america: 'America/New_York', canada: 'America/Toronto', brazil: 'America/Sao_Paulo', 'sao paulo': 'America/Sao_Paulo', mexico: 'America/Mexico_City', 'mexico city': 'America/Mexico_City', 'south africa': 'Africa/Johannesburg', johannesburg: 'Africa/Johannesburg', cairo: 'Africa/Cairo', egypt: 'Africa/Cairo', nairobi: 'Africa/Nairobi', lagos: 'Africa/Lagos', riyadh: 'Asia/Riyadh', 'saudi arabia': 'Asia/Riyadh', doha: 'Asia/Qatar', qatar: 'Asia/Qatar', karachi: 'Asia/Karachi', pakistan: 'Asia/Karachi', dhaka: 'Asia/Dhaka', bangladesh: 'Asia/Dhaka', colombo: 'Asia/Colombo', 'sri lanka': 'Asia/Colombo', kathmandu: 'Asia/Kathmandu', nepal: 'Asia/Kathmandu', bangkok: 'Asia/Bangkok', thailand: 'Asia/Bangkok', jakarta: 'Asia/Jakarta', 'kuala lumpur': 'Asia/Kuala_Lumpur', malaysia: 'Asia/Kuala_Lumpur', manila: 'Asia/Manila', istanbul: 'Europe/Istanbul', turkey: 'Europe/Istanbul' };
+/** "tokyo" -> "Asia/Tokyo" from a short list, else any IANA zone whose city part matches. */
+function cityTimeZone(city) {
+  const c = city.toLowerCase().trim();
+  if (CITY_TZ[c]) return CITY_TZ[c];
+  const want = c.replace(/\s+/g, '_');
+  try {
+    return Intl.supportedValuesOf('timeZone').find((z) => z.toLowerCase().split('/').pop() === want) || null;
+  } catch {
+    return null;
+  }
+}
+
+const WMO = { 0: 'clear', 1: 'mostly clear', 2: 'partly cloudy', 3: 'cloudy', 45: 'foggy', 48: 'foggy', 51: 'light drizzle', 53: 'drizzle', 55: 'heavy drizzle', 61: 'light rain', 63: 'rain', 65: 'heavy rain', 71: 'light snow', 73: 'snow', 75: 'heavy snow', 80: 'showers', 81: 'showers', 82: 'heavy showers', 95: 'thunderstorms', 96: 'thunderstorms with hail', 99: 'thunderstorms with hail' };
+/** Free weather from Open-Meteo (no key). No city: the city of this PC's time zone. */
+async function weather(city, tomorrow) {
+  try {
+    const place = city || settings.city || Intl.DateTimeFormat().resolvedOptions().timeZone.split('/').pop().replace(/_/g, ' ');
+    const g = await (await fetch(`https://geocoding-api.open-meteo.com/v1/search?${new URLSearchParams({ name: place, count: '1' })}`, { signal: AbortSignal.timeout(6000) })).json();
+    const loc = g.results && g.results[0];
+    if (!loc) return `I couldn’t find ${place}.`;
+    const q = new URLSearchParams({ latitude: loc.latitude, longitude: loc.longitude, current: 'temperature_2m,weather_code', daily: 'temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code', timezone: 'auto', forecast_days: '2' });
+    const w = await (await fetch(`https://api.open-meteo.com/v1/forecast?${q}`, { signal: AbortSignal.timeout(6000) })).json();
+    const d = tomorrow ? 1 : 0;
+    const hi = Math.round(w.daily.temperature_2m_max[d]);
+    const lo = Math.round(w.daily.temperature_2m_min[d]);
+    const rain = w.daily.precipitation_probability_max[d];
+    const rainTxt = rain >= 50 ? `, ${rain}% chance of rain` : rain >= 20 ? `, maybe some rain (${rain}%)` : '';
+    if (tomorrow) return `Tomorrow in ${loc.name}: ${WMO[w.daily.weather_code[1]] || 'mixed'}, ${lo}° to ${hi}°${rainTxt}.`;
+    return `${loc.name}: ${Math.round(w.current.temperature_2m)}° and ${WMO[w.current.weather_code] || 'mixed'}. Today ${lo}° to ${hi}°${rainTxt}.`;
+  } catch {
+    return 'I couldn’t get the weather right now.';
+  }
+}
+
 let filesShown = false;
 function showFiles(title, list) {
   filesShown = true;
@@ -365,6 +527,7 @@ async function askRay(text, intent) {
   busy = new AbortController();
   // Like Nixi: a request that runs over ~3 minutes stops instead of hanging the notch.
   const guard = setTimeout(() => busy && busy.abort(), 3 * 60_000);
+  const still = setTimeout(() => busy && ui({ phase: 'working', text, step: 'Still working on it' }), 12_000);
   try {
     if (!ray.online || !online()) {
       ui({ phase: 'working', text, step: 'Offline — answering on this PC' });
@@ -397,6 +560,7 @@ async function askRay(text, intent) {
     return (await ray.askOffline(text)) || OFFLINE_HELP;
   } finally {
     clearTimeout(guard);
+    clearTimeout(still);
     busy = null;
   }
 }
@@ -476,10 +640,19 @@ function addShelf(item) {
   store.save();
   send('shelf', s);
 }
+/** Password managers mark copies as private; those never go on the Shelf. */
+function privateCopy() {
+  try {
+    const f = clipboard.availableFormats().join(' ');
+    return /ExcludeClipboardContentFromMonitorProcessing|CanIncludeInClipboardHistory|Clipboard Viewer Ignore|concealed/i.test(f);
+  } catch {
+    return false;
+  }
+}
 function watchClipboard() {
   setInterval(() => {
     const t = clipboard.readText();
-    if (t && t !== lastClip && t !== shelfSkip && t.length < 8000) addShelf({ type: 'text', text: t });
+    if (t && t !== lastClip && t !== shelfSkip && t.length < 8000 && !privateCopy()) addShelf({ type: 'text', text: t });
     lastClip = t;
   }, 1200).unref?.();
 }
