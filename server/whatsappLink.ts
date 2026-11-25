@@ -296,6 +296,7 @@ export async function linkWhatsApp(roomId: string, opts: { phone?: string } = {}
       if (code === DisconnectReason.loggedOut) {
         const wasLinked = Boolean(s.me) || state.creds.registered;
         s.status = 'off';
+        s.wanted = false; // stop auto-retry — dead credentials must be re-linked manually
         s.me = null;
         s.qr = null;
         s.pairingCode = null;
@@ -315,13 +316,16 @@ export async function linkWhatsApp(roomId: string, opts: { phone?: string } = {}
         s.pairingCode = null;
         s.auth = null;
         s.error = 'The code expired before it was used. Press Link again and enter the new code within 60 seconds.';
+        // Wipe stale half-registered creds so the next attempt starts clean.
+        void saveNow(`wa-auth-${roomId}`, () => ({})).catch(() => undefined);
         emit(s);
         return;
       }
       if (s.wanted) {
         s.status = 'reconnecting';
         emit(s);
-        setTimeout(() => void linkWhatsApp(roomId).catch(() => undefined), code === DisconnectReason.restartRequired ? 500 : 4000).unref?.();
+        // Guard: skip retry if another attempt already started a new socket.
+        setTimeout(() => { if (s.wanted && !s.sock) void linkWhatsApp(roomId).catch(() => undefined); }, code === DisconnectReason.restartRequired ? 500 : 4000).unref?.();
       } else {
         s.status = 'off';
         emit(s);

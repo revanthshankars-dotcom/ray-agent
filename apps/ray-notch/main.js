@@ -173,8 +173,9 @@ async function typeIntoApp(text) {
     if (ray) await ray.action('press_hotkey', { keys: process.platform === 'darwin' ? 'cmd+v' : 'ctrl+v' });
   }
   setTimeout(() => {
-    shelfSkip = before;
-    clipboard.writeText(before);
+    const safe = typeof before === 'string' ? before : '';
+    shelfSkip = safe;
+    if (safe) clipboard.writeText(safe);
   }, 900);
 }
 
