@@ -33,7 +33,7 @@ import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import WebSocket, { WebSocketServer } from 'ws';
 
-const BRIDGE_VERSION = '3.12';
+const BRIDGE_VERSION = '3.13';
 const IS_TERMUX = Boolean(process.env.PREFIX && process.env.PREFIX.includes('com.termux')) || fs.existsSync('/data/data/com.termux');
 const PLATFORM = IS_TERMUX ? 'android' : os.platform();
 const WS_URL = process.env.RELAY_WS_URL || "__RAY_WS_URL__";
@@ -2026,12 +2026,25 @@ async function browserAction(req) {
     if (op === 'scroll') { await cdpEval(s, (dy) => scrollBy(0, dy), Number(req.dy || 700)); await new Promise((r) => setTimeout(r, 500)); }
     if (op === 'back') { await cdpEval(s, () => history.back()); await cdpWaitLoad(s, 10000); }
     let shot;
+    let shotNote;
     if (op === 'screenshot' || req.screenshot) {
-      const r = await s.send('Page.captureScreenshot', { format: 'jpeg', quality: 55 });
-      shot = 'data:image/jpeg;base64,' + r.data;
+      // Chrome can't draw a minimised / hidden window ("Unable to capture screenshot"): bring it
+      // forward once and retry; if it still can't, carry on with the page text instead of failing.
+      const grab = () => s.send('Page.captureScreenshot', { format: 'jpeg', quality: 55, fromSurface: true });
+      try {
+        shot = 'data:image/jpeg;base64,' + (await grab()).data;
+      } catch {
+        try {
+          await s.send('Page.bringToFront').catch(() => {});
+          await new Promise((r) => setTimeout(r, 700));
+          shot = 'data:image/jpeg;base64,' + (await grab()).data;
+        } catch (e) {
+          shotNote = 'No screenshot (the RAY browser window is minimised or hidden) — page text below is current.';
+        }
+      }
     }
     const page = await cdpEval(s, pageReadScript);
-    return { ok: true, data: { ...page, tabId: target.id, screenshot: shot } };
+    return { ok: true, data: { ...page, tabId: target.id, screenshot: shot, ...(shotNote ? { note: shotNote } : {}) } };
   } finally {
     s.close();
   }

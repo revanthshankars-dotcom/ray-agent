@@ -62,13 +62,15 @@ interface Session {
   msgs: Map<string, StoredMsg[]>; // jid → recent messages (memory only)
   wanted: boolean;
   error: string | null;
+  // The login being built: reused across WhatsApp's "restart required" reconnect right after pairing.
+  auth: Awaited<ReturnType<typeof kvAuthState>> | null;
 }
 const sessions = new Map<string, Session>();
 
 function session(roomId: string): Session {
   let s = sessions.get(roomId);
   if (!s) {
-    s = { roomId, sock: null, status: 'off', qr: null, pairingCode: null, me: null, names: new Map(), pn: new Map(), chats: new Map(), msgs: new Map(), wanted: false, error: null };
+    s = { roomId, sock: null, status: 'off', qr: null, pairingCode: null, me: null, names: new Map(), pn: new Map(), chats: new Map(), msgs: new Map(), wanted: false, error: null, auth: null };
     sessions.set(roomId, s);
   }
   return s;
@@ -231,9 +233,24 @@ function storeMessage(s: Session, wm: { key?: { id?: string | null; remoteJid?: 
 export async function linkWhatsApp(roomId: string, opts: { phone?: string } = {}): Promise<ReturnType<typeof publicStatus>> {
   const s = session(roomId);
   s.wanted = true;
-  if (s.sock && (s.status === 'connected' || s.status === 'linking')) return publicStatus(s);
+  if (s.sock && s.status === 'connected') return publicStatus(s);
+  if (s.sock && s.status === 'linking') {
+    // Asking again while a code is waiting means "give me a fresh code": drop the old attempt.
+    if (!opts.phone && s.qr) return publicStatus(s);
+    const old = s.sock;
+    s.sock = null;
+    if (!s.auth?.state.creds.registered) s.auth = null;
+    try {
+      old.end(undefined);
+    } catch {
+      // already closed
+    }
+  }
   const { makeWASocket, makeCacheableSignalKeyStore, Browsers, DisconnectReason, fetchLatestBaileysVersion } = await baileys();
-  const { state, saveCreds, saveNow: saveLoginNow } = await kvAuthState(roomId);
+  // Reuse the login in memory: right after pairing WhatsApp asks for a restart (code 515), and the
+  // new keys may not be in storage yet — reloading from storage would throw the pairing away.
+  s.auth ||= await kvAuthState(roomId);
+  const { state, saveCreds, saveNow: saveLoginNow } = s.auth;
   let version: [number, number, number] | undefined;
   try {
     version = (await fetchLatestBaileysVersion()).version as [number, number, number];
@@ -254,6 +271,7 @@ export async function linkWhatsApp(roomId: string, opts: { phone?: string } = {}
   s.error = null;
   sock.ev.on('creds.update', saveCreds);
   sock.ev.on('connection.update', (u) => {
+    if (s.sock !== sock) return;
     if (u.qr) {
       s.qr = u.qr;
       s.status = 'linking';
@@ -271,14 +289,32 @@ export async function linkWhatsApp(roomId: string, opts: { phone?: string } = {}
       console.log(`[RAY whatsapp] ${roomId} connected`);
     }
     if (u.connection === 'close') {
+      if (s.sock !== sock) return; // an older attempt we replaced
       const code = (u.lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)?.output?.statusCode;
       console.warn(`[RAY whatsapp] ${roomId} connection closed (code ${code ?? 'none'}): ${u.lastDisconnect?.error?.message || 'no reason given'}`);
       s.sock = null;
       if (code === DisconnectReason.loggedOut) {
+        const wasLinked = Boolean(s.me) || state.creds.registered;
         s.status = 'off';
         s.me = null;
-        s.error = 'WhatsApp logged RAY out (removed from Linked devices). Link again to reconnect.';
-        scheduleSave(`wa-auth-${roomId}`, () => ({}), 100);
+        s.qr = null;
+        s.pairingCode = null;
+        s.auth = null;
+        s.error = wasLinked
+          ? 'WhatsApp ended this link (RAY was removed from Linked devices, or the login expired). Link again to reconnect.'
+          : 'WhatsApp refused the link. Wait a minute, then link again — use the newest code or QR and finish within 60 seconds.';
+        // Wipe at once so the next attempt starts clean instead of reusing the refused login.
+        void saveNow(`wa-auth-${roomId}`, () => ({})).catch(() => undefined);
+        emit(s);
+        return;
+      }
+      if (code === 408 && !state.creds.registered) {
+        // The QR / pairing code expired without being used: stop instead of looping.
+        s.status = 'off';
+        s.qr = null;
+        s.pairingCode = null;
+        s.auth = null;
+        s.error = 'The code expired before it was used. Press Link again and enter the new code within 60 seconds.';
         emit(s);
         return;
       }
@@ -343,7 +379,8 @@ export async function unlinkWhatsApp(roomId: string) {
   s.pairingCode = null;
   s.chats.clear();
   s.msgs.clear();
-  scheduleSave(`wa-auth-${roomId}`, () => ({}), 100);
+  s.auth = null;
+  await saveNow(`wa-auth-${roomId}`, () => ({})).catch(() => undefined);
   emit(s);
 }
 
