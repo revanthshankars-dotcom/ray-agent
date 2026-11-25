@@ -58,7 +58,7 @@ const WIN_WORKER = [
   "  $script:asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -like 'IAsyncOperation*' })[0]",
   "  [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager,Windows.Media.Control,ContentType=WindowsRuntime] | Out-Null",
   "} catch { $ready += ' | media session unavailable: ' + $_.Exception.Message }",
-  "function Await($op, $type) { $t = $script:asTask.MakeGenericMethod($type).Invoke($null, @($op)); $t.Wait(5000) | Out-Null; $t.Result }",
+  "function Await($op, $type) { $t = $script:asTask.MakeGenericMethod($type).Invoke($null, @($op)); $t.Wait(1500) | Out-Null; $t.Result }",
   "function RayMedia([string]$a) {",
   "  try {",
   "    if (-not $script:mgr) { $script:mgr = Await ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]::RequestAsync()) ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]) }",
@@ -86,36 +86,33 @@ const WIN_WORKER = [
 ].join('\r\n');
 
 class PsWorker {
-  constructor() {
+  constructor(name) {
+    this.name = name;
     this.proc = null;
-    this.queue = new Map();
+    this.waiting = []; // not yet sent: one command at a time, so a stuck one can't pile up others
+    this.current = null;
     this.seq = 0;
     this.buf = '';
     this.status = 'starting';
   }
   ensure() {
     if (this.proc) return;
-    const file = path.join(os.tmpdir(), 'ray-notch-worker.ps1');
+    const file = path.join(os.tmpdir(), `ray-notch-${this.name}.ps1`);
     fs.writeFileSync(file, WIN_WORKER, 'utf8');
-    this.proc = spawn('powershell.exe', ['-NoProfile', '-NoLogo', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', file], { windowsHide: true });
-    this.proc.stdout.setEncoding('utf8');
-    this.proc.stdout.on('data', (d) => this.onData(d));
-    this.proc.stderr.setEncoding('utf8');
-    this.proc.stderr.on('data', (d) => console.warn('[RAY Notch] PowerShell:', String(d).trim().slice(0, 300)));
-    this.proc.on('error', (e) => console.warn('[RAY Notch] PowerShell did not start:', e.message));
-    this.proc.on('exit', (code) => {
+    const proc = spawn('powershell.exe', ['-NoProfile', '-NoLogo', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', file], { windowsHide: true });
+    this.proc = proc;
+    this.buf = '';
+    proc.stdout.setEncoding('utf8');
+    proc.stdout.on('data', (d) => this.onData(d));
+    proc.stderr.setEncoding('utf8');
+    proc.stderr.on('data', (d) => console.warn(`[RAY Notch] PowerShell (${this.name}):`, String(d).trim().slice(0, 300)));
+    proc.on('error', (e) => console.warn('[RAY Notch] PowerShell did not start:', e.message));
+    proc.on('exit', (code) => {
+      if (this.proc !== proc) return;
       this.proc = null;
       this.status = `exited (${code})`;
-      for (const [, q] of this.queue) q.done({ ok: false, out: '', err: 'worker exited' });
-      this.queue.clear();
+      this.finish({ ok: false, out: '', err: 'PowerShell stopped' });
     });
-  }
-  write(s) {
-    try {
-      this.proc.stdin.write(s);
-    } catch {
-      /* exit handler resolves pending calls */
-    }
   }
   onData(d) {
     this.buf += d;
@@ -125,40 +122,82 @@ class PsWorker {
       if (r[1] !== 'ok') console.warn('[RAY Notch] PC controls:', r[1]);
       this.buf = this.buf.slice(r.index + r[0].length);
     }
-    let m;
-    while ((m = this.buf.match(/__RAY_(OK|ERR)_(\d+)__([^\r\n]*)\r?\n/))) {
-      const before = this.buf.slice(0, m.index);
-      this.buf = this.buf.slice(m.index + m[0].length);
-      const q = this.queue.get(Number(m[2]));
-      if (!q) continue;
-      this.queue.delete(Number(m[2]));
-      q.done({ ok: m[1] === 'OK', out: (before + m[3]).trim(), err: m[1] === 'ERR' ? m[3] : '' });
+    const m = this.buf.match(/__RAY_(OK|ERR)_(\d+)__([^\r\n]*)\r?\n/);
+    if (!m) return;
+    const before = this.buf.slice(0, m.index);
+    this.buf = this.buf.slice(m.index + m[0].length);
+    if (this.current && this.current.id === Number(m[2])) this.finish({ ok: m[1] === 'OK', out: (before + m[3]).trim(), err: m[1] === 'ERR' ? m[3] : '' });
+  }
+  finish(result) {
+    const c = this.current;
+    this.current = null;
+    if (c) {
+      clearTimeout(c.timer);
+      c.resolve(result);
+    }
+    this.pump();
+  }
+  pump() {
+    if (this.current) return;
+    while (this.waiting.length) {
+      const job = this.waiting.shift();
+      // A click that waited too long is dropped, so it can't fire a minute later.
+      if (job.maxWait && Date.now() - job.at > job.maxWait) {
+        job.resolve({ ok: false, out: '', err: 'skipped — the PC was busy' });
+        continue;
+      }
+      this.ensure();
+      job.id = ++this.seq;
+      this.current = job;
+      job.timer = setTimeout(() => {
+        // Stuck: restart PowerShell rather than letting everything queue behind it.
+        console.warn(`[RAY Notch] PowerShell (${this.name}) took over ${job.timeout} ms, restarting it`);
+        const p = this.proc;
+        this.proc = null;
+        try {
+          p && p.kill();
+        } catch {
+          /* gone */
+        }
+        this.finish({ ok: false, out: '', err: 'timeout' });
+      }, job.timeout);
+      try {
+        this.proc.stdin.write(`${job.id} ${job.script.replace(/\r?\n/g, '; ')}\n`);
+      } catch {
+        this.finish({ ok: false, out: '', err: 'PowerShell not reachable' });
+      }
+      return;
     }
   }
-  exec(script, timeout = 8000) {
-    this.ensure();
-    const id = ++this.seq;
-    return new Promise((res) => {
-      const t = setTimeout(() => {
-        this.queue.delete(id);
-        res({ ok: false, out: '', err: 'timeout' });
-      }, timeout);
-      this.queue.set(id, { done: (r) => (clearTimeout(t), res(r)) });
-      this.write(`${id} ${script.replace(/\r?\n/g, '; ')}\n`);
+  /** key: only the latest command with this key runs (volume slider). maxWait: drop if not started by then. */
+  exec(script, timeout = 8000, { key, maxWait } = {}) {
+    return new Promise((resolve) => {
+      if (key) {
+        for (const j of this.waiting.filter((x) => x.key === key)) j.resolve({ ok: true, out: '', err: '' });
+        this.waiting = this.waiting.filter((x) => x.key !== key);
+      }
+      this.waiting.push({ script, timeout, key, maxWait, at: Date.now(), resolve });
+      this.pump();
     });
   }
   stop() {
     if (this.proc) this.proc.kill();
   }
 }
-const worker = P === 'win32' ? new PsWorker() : null;
-const ps = (script, timeout) => worker.exec(script, timeout);
-/** Start the Windows worker early so the first click is instant too. */
+// Two helpers: "fast" only for clicks (volume, mute, media) so slow jobs never block a button,
+// "slow" for app lists, closing apps, brightness and dark mode.
+const fast = P === 'win32' ? new PsWorker('fast') : null;
+const slow = P === 'win32' ? new PsWorker('slow') : null;
+const CLICK = { maxWait: 3000 };
+const ps = (script, timeout = 4000, opts = CLICK) => fast.exec(script, timeout, opts);
+const psSlow = (script, timeout = 15000) => slow.exec(script, timeout);
+/** Start both helpers early so the first click is instant too. */
 function warmUp() {
-  if (worker) void worker.exec('1', 20000);
+  if (fast) void fast.exec('1', 30000);
+  if (slow) void slow.exec('1', 30000);
 }
 /** For "why isn't it working": the worker's start-up result. */
-const controlsStatus = () => (worker ? worker.status : 'ok');
+const controlsStatus = () => (fast ? fast.status : 'ok');
 
 // Windows virtual-key codes for media keys.
 const VK = { next: 176, prev: 177, stop: 178, playpause: 179 };
@@ -179,7 +218,7 @@ async function getVolume() {
 async function setVolume(level) {
   const v = Math.max(0, Math.min(100, Math.round(level)));
   if (P === 'win32') {
-    const r = await ps(`[RayPc]::SetVolume(${v})`);
+    const r = await ps(`[RayPc]::SetVolume(${v})`, 4000, { key: 'volume', maxWait: 3000 });
     if (!r.ok) return 'Could not change the volume.';
   } else if (P === 'darwin') await osa(`set volume output volume ${v}`);
   else await run('pactl', ['set-sink-volume', '@DEFAULT_SINK@', `${v}%`]);
@@ -224,7 +263,7 @@ async function lock() {
 async function darkMode(on) {
   if (P === 'win32') {
     const v = on ? 0 : 1;
-    await ps(`$k='HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize'; Set-ItemProperty $k AppsUseLightTheme ${v}; Set-ItemProperty $k SystemUsesLightTheme ${v}`);
+    await psSlow(`$k='HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize'; Set-ItemProperty $k AppsUseLightTheme ${v}; Set-ItemProperty $k SystemUsesLightTheme ${v}`);
   } else if (P === 'darwin') await osa(`tell application "System Events" to tell appearance preferences to set dark mode to ${on}`);
   else await run('gsettings', ['set', 'org.gnome.desktop.interface', 'color-scheme', on ? 'prefer-dark' : 'default']);
   return on ? 'Dark mode on.' : 'Light mode on.';
@@ -232,7 +271,7 @@ async function darkMode(on) {
 async function brightness(level) {
   const v = Math.max(5, Math.min(100, Math.round(level)));
   if (P === 'win32') {
-    const r = await ps(`$m = Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods -ErrorAction Stop; Invoke-CimMethod -InputObject $m -MethodName WmiSetBrightness -Arguments @{Timeout=1; Brightness=${v}} -ErrorAction Stop | Out-Null`);
+    const r = await psSlow(`$m = Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods -ErrorAction Stop; Invoke-CimMethod -InputObject $m -MethodName WmiSetBrightness -Arguments @{Timeout=1; Brightness=${v}} -ErrorAction Stop | Out-Null`);
     return r.ok ? `Brightness ${v}%.` : 'This screen does not let apps change brightness (external monitors usually don’t).';
   }
   if (P === 'linux') {
@@ -369,7 +408,7 @@ async function closeApp(name) {
   const q = String(name || '').replace(/['"`$]/g, '').trim();
   if (!q) return null;
   if (P === 'win32') {
-    const r = await ps(`$q='${q}'; $ps = Get-Process | ? { $_.MainWindowHandle -ne 0 -and ($_.ProcessName -like "*$($q -replace ' ','')*" -or $_.MainWindowTitle -like "*$q*" -or $_.Description -like "*$q*") } | ? { $_.ProcessName -notin @('electron','explorer','powershell') }; $n=0; foreach ($p in $ps) { if ($p.CloseMainWindow()) { $n++ } }; $n`);
+    const r = await psSlow(`$q='${q}'; $ps = Get-Process | ? { $_.MainWindowHandle -ne 0 -and ($_.ProcessName -like "*$($q -replace ' ','')*" -or $_.MainWindowTitle -like "*$q*") } | ? { $_.ProcessName -notin @('electron','explorer','powershell') }; $n=0; foreach ($p in $ps) { if ($p.CloseMainWindow()) { $n++ } }; $n`);
     return r.ok ? Number(r.out) || 0 : 0;
   }
   if (P === 'darwin') {
@@ -395,9 +434,10 @@ async function youtubeTop(query) {
 }
 
 function stopWorker() {
-  if (worker) worker.stop();
+  if (fast) fast.stop();
+  if (slow) slow.stop();
 }
 
-const runPs = (script, timeout) => (worker ? worker.exec(script, timeout) : Promise.resolve({ ok: false, out: '', err: 'not Windows' }));
+const runPs = (script, timeout) => (slow ? slow.exec(script, timeout) : Promise.resolve({ ok: false, out: '', err: 'not Windows' }));
 
 module.exports = { warmUp, stopWorker, runPs, controlsStatus, closeApp, getVolume, setVolume, volumeStep, mute, media, lock, darkMode, brightness, openSettings, NowPlaying, fetchLyrics, parseLrc, youtubeTop };

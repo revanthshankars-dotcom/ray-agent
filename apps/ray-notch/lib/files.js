@@ -193,14 +193,15 @@ let startApps = null; // [{name, id}] from Windows' own Start menu list (Store a
 async function loadStartApps(ps) {
   if (P !== 'win32' || !ps) return [];
   if (startApps) return startApps;
-  const r = await ps('Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress', 15000);
+  // Windows can take a minute to list apps; it runs on the slow helper, so clicks never wait for it.
+  const r = await ps('Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress', 120000);
   try {
-    const j = JSON.parse(r.out || '[]');
+    const j = JSON.parse(r.out || '');
     startApps = (Array.isArray(j) ? j : [j]).filter((x) => x && x.Name).map((x) => ({ name: String(x.Name), id: String(x.AppID) }));
+    return startApps;
   } catch {
-    startApps = [];
+    return []; // try again next time
   }
-  return startApps;
 }
 
 function findStartApp(apps, name) {

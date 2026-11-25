@@ -841,8 +841,15 @@ function wireIpc() {
     for (const p of (paths || []).slice(0, 10)) if (p && fs.existsSync(p)) addShelf({ type: 'file', path: p, name: path.basename(p) });
   });
   ipcMain.handle('image-op', (_e, { file, op }) => imageOp(file, op));
-  ipcMain.handle('media', (_e, action) => sys.media(action));
-  ipcMain.handle('control', async (_e, { kind, value }) => {
+  const timed = async (label, fn) => {
+    const t0 = Date.now();
+    const out = await fn();
+    console.log(`[RAY Notch] click ${label} -> ${Date.now() - t0} ms ${out ? `(${out})` : ''}`);
+    return out;
+  };
+  ipcMain.handle('media', (_e, action) => timed(`media ${action}`, () => sys.media(action)));
+  ipcMain.handle('control', (_e, { kind, value }) => timed(`${kind}${value !== undefined ? ' ' + value : ''}`, () => control(kind, value)));
+  async function control(kind, value) {
     if (kind === 'get-volume') return sys.getVolume();
     if (kind === 'volume') return sys.setVolume(value);
     if (kind === 'mute') return sys.mute();
@@ -852,7 +859,7 @@ function wireIpc() {
     if (kind === 'awake') return keepAwake(Number(value) || 0);
     if (['wifi', 'bluetooth', 'nightlight'].includes(kind)) return sys.openSettings(kind);
     return '';
-  });
+  }
   ipcMain.handle('open-app', async (_e, name) => {
     const r = ray ? await ray.action('open_app', { target: name }) : { ok: false };
     if (!r.ok && process.platform === 'win32') shell.openPath(name);
