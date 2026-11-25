@@ -670,7 +670,7 @@ export function JarvisView({
                 <span className="text-xs font-semibold text-slate-900 dark:text-slate-100">Instagram (free, personal)</span>
                 <span className="text-[11px] text-slate-500">DMs, feed, stories, post photos & reels — in RAY’s browser on your PC</span>
               </div>
-              {caps.has(‘browser-agent’) ? (
+              {caps.has('browser-agent') ? (
                 <div className="space-y-1.5">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-[11px] text-emerald-600 dark:text-emerald-400 inline-flex items-center gap-1">
@@ -681,7 +681,7 @@ export function JarvisView({
                     <button type="button" className={btnPrimary} onClick={() => void openInstagramLogin()}>
                       Log in once on PC
                     </button>
-                    <button type="button" className={btnGhost} onClick={() => onAskRay(‘Check my Instagram DMs’)}>
+                    <button type="button" className={btnGhost} onClick={() => onAskRay('Check my Instagram DMs')}>
                       Try it
                     </button>
                   </div>
@@ -690,9 +690,9 @@ export function JarvisView({
               ) : (
                 <div className="space-y-1">
                   <p className="text-[11px] text-amber-700 dark:text-amber-400">
-                    {pcAny ? (pcAny.online ? ‘Install bridge v3.1 to unlock browser hands’ : `${pcAny.name} is offline — turn your PC on`) : ‘Connect your PC first — download the installer above’}
+                    {pcAny ? (pcAny.online ? 'Install bridge v3.1 to unlock browser hands' : `${pcAny.name} is offline — turn your PC on`) : 'Connect your PC first — download the installer above'}
                   </p>
-                  <button type="button" className={btnGhost} onClick={() => onAskRay(‘Check my Instagram DMs’)}>
+                  <button type="button" className={btnGhost} onClick={() => onAskRay('Check my Instagram DMs')}>
                     Try it anyway
                   </button>
                 </div>

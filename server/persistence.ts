@@ -160,6 +160,26 @@ let kvHoldUntil = 0;
 const KV_HOLD_MS = 30 * 60_000;
 /** Keys that change constantly but matter little: saved at most every 30 minutes on KV. */
 const SLOW_KEYS = /^(engine-usage|engine-balance|awareness-|files-)/;
+/** Logins and links that must survive a restart: saved sooner, and they get reserved budget. */
+const PRIORITY_KEYS = /^(wa-auth-|google-link-|rooms-index|vapid-keys|mcp-connectors-)/;
+// Free KV allows 1,000 writes a day (resets 00:00 UTC). Ordinary keys stop at NORMAL_BUDGET so the
+// rest stays free for logins; nothing is lost meanwhile — values stay on local disk and pending.
+const DAILY_BUDGET = Number(process.env.RAY_KV_DAILY_WRITES || 950);
+const NORMAL_BUDGET = Math.floor(DAILY_BUDGET * 0.7);
+let kvDay = '';
+let kvWritesToday = 0;
+function kvBudgetAllows(key: string): boolean {
+  const day = new Date().toISOString().slice(0, 10);
+  if (day !== kvDay) {
+    kvDay = day;
+    kvWritesToday = 0;
+  }
+  return kvWritesToday < (PRIORITY_KEYS.test(key) ? DAILY_BUDGET : NORMAL_BUDGET);
+}
+const msToUtcMidnight = () => {
+  const d = new Date();
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1) - d.getTime() + 60_000;
+};
 
 async function writeNow(key: string, value: Json): Promise<void> {
   const k = safeKey(key);
@@ -176,6 +196,12 @@ async function writeNow(key: string, value: Json): Promise<void> {
       scheduleSave(key, () => value, kvHoldUntil - Date.now() + 1000);
       return;
     }
+    if (!kvBudgetAllows(key)) {
+      // Today's share is used up: keep the latest value and write it after the daily reset.
+      scheduleSave(key, () => value, msToUtcMidnight());
+      return;
+    }
+    kvWritesToday++;
     try {
       const r = await fetch(`${kv.base}/${encodeURIComponent(`${PREFIX}/${k}`)}`, {
         method: 'PUT',
@@ -217,7 +243,8 @@ export function scheduleSave(key: string, getValue: () => Json, delayMs = 1500):
       pending.get(key)!.getValue = getValue;
       return;
     }
-    delayMs = Math.max(delayMs, Number(process.env.RAY_KV_WRITE_INTERVAL_MS || 300_000), SLOW_KEYS.test(key) ? 30 * 60_000 : 0);
+    const base = PRIORITY_KEYS.test(key) ? 120_000 : Number(process.env.RAY_KV_WRITE_INTERVAL_MS || 900_000);
+    delayMs = Math.max(delayMs, base, SLOW_KEYS.test(key) ? 30 * 60_000 : 0);
   }
   const existing = pending.get(key);
   if (existing) clearTimeout(existing.timer);
@@ -227,6 +254,14 @@ export function scheduleSave(key: string, getValue: () => Json, delayMs = 1500):
     void writeNow(key, (entry?.getValue || getValue)());
   }, delayMs);
   pending.set(key, { timer, getValue });
+}
+
+/** Write one key now (e.g. a WhatsApp login right after linking), skipping the debounce. */
+export async function saveNow(key: string, getValue: () => Json): Promise<void> {
+  const existing = pending.get(key);
+  if (existing) clearTimeout(existing.timer);
+  pending.delete(key);
+  await writeNow(key, getValue());
 }
 
 export async function flushAll(): Promise<void> {

@@ -13,7 +13,7 @@ import { Type } from '@google/genai';
 import type { FunctionDeclaration } from '@google/genai';
 import { createConfirmationRequest } from './capabilities.ts';
 import { broadcastHudSound, broadcastRoomEvent, listRoomIds, normalizeRoomId, recordIncomingMessage } from './hub.ts';
-import { loadJson, scheduleSave } from './persistence.ts';
+import { loadJson, saveNow, scheduleSave } from './persistence.ts';
 import { seal, unseal } from './accounts.ts';
 import { scoreName } from './nameMatch.ts';
 import { resolveContact } from './contactFinder.ts';
@@ -91,8 +91,10 @@ async function kvAuthState(roomId: string) {
   }
   const creds = (data.creds as ReturnType<typeof initAuthCreds>) || initAuthCreds();
   const keys: Record<string, Record<string, unknown>> = data.keys || {};
-  const save = () => scheduleSave(`wa-auth-${roomId}`, () => ({ blob: seal(JSON.stringify({ creds, keys }, BufferJSON.replacer)) }), 1500);
+  const value = () => ({ blob: seal(JSON.stringify({ creds, keys }, BufferJSON.replacer)) });
+  const save = () => scheduleSave(`wa-auth-${roomId}`, value, 1500);
   return {
+    saveNow: () => saveNow(`wa-auth-${roomId}`, value),
     state: {
       creds,
       keys: {
@@ -231,7 +233,7 @@ export async function linkWhatsApp(roomId: string, opts: { phone?: string } = {}
   s.wanted = true;
   if (s.sock && (s.status === 'connected' || s.status === 'linking')) return publicStatus(s);
   const { makeWASocket, makeCacheableSignalKeyStore, Browsers, DisconnectReason, fetchLatestBaileysVersion } = await baileys();
-  const { state, saveCreds } = await kvAuthState(roomId);
+  const { state, saveCreds, saveNow: saveLoginNow } = await kvAuthState(roomId);
   let version: [number, number, number] | undefined;
   try {
     version = (await fetchLatestBaileysVersion()).version as [number, number, number];
@@ -263,10 +265,14 @@ export async function linkWhatsApp(roomId: string, opts: { phone?: string } = {}
       s.pairingCode = null;
       s.me = sock.user ? { id: sock.user.id, name: sock.user.name || undefined } : null;
       emit(s);
+      // Store the login at once, so a server restart doesn't lose the link.
+      void saveLoginNow().catch(() => undefined);
       broadcastHudSound(roomId, 'affirmative');
+      console.log(`[RAY whatsapp] ${roomId} connected`);
     }
     if (u.connection === 'close') {
       const code = (u.lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)?.output?.statusCode;
+      console.warn(`[RAY whatsapp] ${roomId} connection closed (code ${code ?? 'none'}): ${u.lastDisconnect?.error?.message || 'no reason given'}`);
       s.sock = null;
       if (code === DisconnectReason.loggedOut) {
         s.status = 'off';
