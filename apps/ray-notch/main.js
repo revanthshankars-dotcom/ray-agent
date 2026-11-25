@@ -6,7 +6,8 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { app, BrowserWindow, ipcMain, screen, clipboard, powerSaveBlocker, desktopCapturer, shell, nativeImage, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, clipboard, powerSaveBlocker, desktopCapturer, shell, nativeImage, Menu, net } = require('electron');
+const files = require('./lib/files.js');
 const { loadLink, loadSettings, saveSettings, dataStore } = require('./lib/config.js');
 const { RayLink } = require('./lib/hub.js');
 const { parseIntent, wantsScreen } = require('./lib/brain.js');
@@ -29,6 +30,8 @@ let hook = null;
 let awakeId = null;
 let awakeTimer = null;
 const nowPlaying = new sys.NowPlaying();
+const fileIndex = new files.FileIndex();
+const OFFLINE_HELP = 'I’m offline. I can still open apps, files and folders, find files ("find my resume"), show recent downloads, make folders, and run timers, music and system controls. Answers from RAY need the internet.';
 let lyrics = null;
 let history = [];
 let busy = null; // AbortController of the running request
@@ -137,8 +140,10 @@ async function handleCommand(text, { spoken = false } = {}) {
   const intent = parseIntent(text);
   try {
     if (intent) {
+      filesShown = false;
       const said = await runIntent(intent, text);
       if (said !== null) {
+        if (filesShown) return; // the file list card is the answer
         ui({ phase: 'done', text: said });
         if (spoken) speak(said);
         return;
@@ -216,6 +221,7 @@ async function runIntent(i, text) {
     case 'media':
       return sys.media(i.action);
     case 'play': {
+      if (!online()) return 'You’re offline, so I can’t stream that. Say “play” to resume what’s already on this PC.';
       if (i.where === 'spotify') {
         await shell.openExternal(`spotify:search:${encodeURIComponent(i.query)}`).catch(() => shell.openExternal(`https://open.spotify.com/search/${encodeURIComponent(i.query)}`));
         return `Opening ${i.query} in Spotify.`;
@@ -254,10 +260,66 @@ async function runIntent(i, text) {
       return 'Written. It’s on your Shelf too.';
     }
     case 'open-app': {
-      if (!ray) return null;
-      const r = await ray.action('open_app', { target: i.app });
-      return r.ok ? `Opening ${titleCase(i.app)}.` : null; // bridge missing -> let RAY try
+      // 1) installed app, opened directly on this PC
+      const opened = await files.openApp(i.app, { ps: sys.runPs, openExternal: (u) => shell.openExternal(u) });
+      if (opened) return `Opening ${titleCase(opened)}.`;
+      // 2) a folder or file with that name
+      const [hit] = await fileIndex.search(i.app, { limit: 1 });
+      if (hit && hit.name.toLowerCase().replace(/\.[^.]+$/, '') === i.app.toLowerCase()) {
+        await shell.openPath(hit.path);
+        return `Opening ${hit.name}.`;
+      }
+      // 3) the PC bridge, then RAY
+      if (ray) {
+        const r = await ray.action('open_app', { target: i.app });
+        if (r.ok) return `Opening ${titleCase(i.app)}.`;
+      }
+      return online() ? null : `I couldn’t find an app called ${i.app} on this PC.`;
     }
+    case 'open-folder': {
+      const p = files.knownFolder(i.name);
+      if (!p) return `I couldn’t find your ${i.name} folder.`;
+      await shell.openPath(p);
+      return `Opening ${titleCase(i.name)}.`;
+    }
+    case 'recent': {
+      let list;
+      if (i.where === 'downloads') list = await files.recentFiles(files.knownFolder('downloads'));
+      else {
+        const all = await Promise.all(['desktop', 'downloads', 'documents'].map((k) => files.recentFiles(files.knownFolder(k), 8)));
+        list = all.flat().sort((a, b) => b.mtime - a.mtime).slice(0, 8);
+      }
+      if (!list.length) return 'Nothing there yet.';
+      showFiles(i.where === 'downloads' ? 'Recent downloads' : 'Recent files', list);
+      return '';
+    }
+    case 'find':
+    case 'open-file': {
+      if (!fileIndex.ready && !fileIndex.items.length) ui({ phase: 'working', text, step: 'Indexing your files (first time only)' });
+      const list = await fileIndex.search(i.query, { kind: i.type, limit: 8 });
+      if (!list.length && online() && i.kind === 'find') return null; // maybe RAY knows (phone, cloud files)
+      if (!list.length) return fileIndex.ready ? `I couldn’t find “${i.query}” on this PC.` : `Still indexing your files — I couldn’t find “${i.query}” yet. Try again in a minute.`;
+      const exact = list[0].name.toLowerCase().replace(/\.[^.]+$/, '') === i.query.toLowerCase().replace(/\.[^.]+$/, '');
+      if (i.kind === 'open-file' && (exact || list.length === 1)) {
+        await shell.openPath(list[0].path);
+        return `Opening ${list[0].name}.`;
+      }
+      showFiles(`Found ${list.length === 8 ? 'these' : list.length} for “${i.query}”`, list);
+      return '';
+    }
+    case 'make-folder': {
+      const p = await files.makeFolder(i.name, i.where);
+      shell.showItemInFolder(p);
+      return `Made the folder ${path.basename(p)} in ${path.basename(path.dirname(p))}.`;
+    }
+    case 'web':
+      if (!online()) return 'You’re offline, so I can’t search the web right now.';
+      await shell.openExternal(`https://www.google.com/search?${new URLSearchParams({ q: i.query })}`);
+      return `Searching for ${i.query}.`;
+    case 'url':
+      if (!online()) return 'You’re offline, so I can’t open websites right now.';
+      await shell.openExternal(i.url);
+      return `Opening ${i.url.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '')}.`;
     case 'screen': {
       // Capture screen then send to RAY (online) or the local bridge (offline).
       ui({ phase: 'working', text: i.question, step: 'Taking a screenshot…' });
@@ -277,6 +339,14 @@ async function runIntent(i, text) {
   }
 }
 
+const online = () => net.isOnline();
+
+let filesShown = false;
+function showFiles(title, list) {
+  filesShown = true;
+  ui({ phase: 'files', title, items: list.map((f) => ({ name: f.name, path: f.path, dir: Boolean(f.dir), folder: path.basename(path.dirname(f.path)), mtime: f.mtime })) });
+}
+
 async function writeDraft(what) {
   const prompt = `Write ${what}. Reply with ONLY the text to insert — in Ray's own voice, ready to send, no preamble, no quotes, no sign-off unless asked.`;
   if (ray && ray.online) {
@@ -290,15 +360,15 @@ async function writeDraft(what) {
 }
 
 async function askRay(text, intent) {
-  if (!ray) return 'RAY Notch isn’t linked to your RAY yet — install it from RAY (JARVIS Core → RAY Notch) so it knows your room.';
+  if (!ray) return online() ? 'RAY Notch isn’t linked to your RAY yet — install it from RAY (JARVIS Core → RAY Notch) so it knows your room.' : OFFLINE_HELP;
   if (busy) busy.abort();
   busy = new AbortController();
   // Like Nixi: a request that runs over ~3 minutes stops instead of hanging the notch.
   const guard = setTimeout(() => busy && busy.abort(), 3 * 60_000);
   try {
-    if (!ray.online) {
+    if (!ray.online || !online()) {
       ui({ phase: 'working', text, step: 'Offline — answering on this PC' });
-      return await ray.askOffline(text);
+      return (await ray.askOffline(text)) || OFFLINE_HELP;
     }
     let attachments;
     if (wantsScreen(text)) {
@@ -324,7 +394,7 @@ async function askRay(text, intent) {
   } catch (e) {
     if (/abort/i.test(String(e && e.name))) throw e;
     // RAY unreachable mid-way: answer offline instead.
-    return ray.askOffline(text);
+    return (await ray.askOffline(text)) || OFFLINE_HELP;
   } finally {
     clearTimeout(guard);
     busy = null;
@@ -610,6 +680,15 @@ function wireIpc() {
     if (!r.ok && process.platform === 'win32') shell.openPath(name);
   });
   ipcMain.handle('water', () => logWater());
+  ipcMain.handle('open-path', async (_e, { path: p, reveal }) => {
+    if (typeof p !== 'string' || !path.isAbsolute(p) || !fs.existsSync(p)) return 'That file isn’t there anymore.';
+    if (reveal) shell.showItemInFolder(p);
+    else {
+      const err = await shell.openPath(p);
+      if (err) return err;
+    }
+    return '';
+  });
   ipcMain.handle('lyrics', async () => {
     const c = nowPlaying.current;
     if (!c) return null;
@@ -633,6 +712,8 @@ app.whenReady().then(async () => {
   createWindow();
   wireIpc();
   sys.warmUp();
+  fileIndex.start();
+  void files.loadStartApps(sys.runPs);
   startRay();
   nowPlaying.on('change', (c) => send('playing', c));
   nowPlaying.start();

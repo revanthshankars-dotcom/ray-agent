@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('notch', {
   media: (a) => ipcRenderer.invoke('media', a),
   control: (kind, value) => ipcRenderer.invoke('control', { kind, value }),
   openApp: (name) => ipcRenderer.invoke('open-app', name),
+  openPath: (path, reveal) => ipcRenderer.invoke('open-path', { path, reveal: Boolean(reveal) }),
   water: () => ipcRenderer.invoke('water'),
   lyrics: () => ipcRenderer.invoke('lyrics'),
   downloadModel: (id) => ipcRenderer.invoke('download-model', id),

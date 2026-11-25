@@ -179,12 +179,13 @@ class RayLink extends EventEmitter {
   }
 
   /** Offline answer: the bridge's own quick commands, LAN link to the phone, or local Ollama. */
+  /** '' when the bridge isn't running, so the notch can say what it can still do offline. */
   async askOffline(text) {
     try {
       const j = await this.bridge('/ask', { text });
       return String(j.answer || '');
-    } catch (e) {
-      return `I'm offline and the RAY bridge on this PC isn't running (${e.message}).`;
+    } catch {
+      return '';
     }
   }
 }

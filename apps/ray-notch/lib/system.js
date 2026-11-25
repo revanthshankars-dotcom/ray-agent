@@ -322,4 +322,6 @@ function stopWorker() {
   if (worker) worker.stop();
 }
 
-module.exports = { warmUp, stopWorker, getVolume, setVolume, volumeStep, mute, media, lock, darkMode, brightness, openSettings, NowPlaying, fetchLyrics, parseLrc, youtubeTop };
+const runPs = (script, timeout) => (worker ? worker.exec(script, timeout) : Promise.resolve({ ok: false, out: '', err: 'not Windows' }));
+
+module.exports = { warmUp, stopWorker, runPs, getVolume, setVolume, volumeStep, mute, media, lock, darkMode, brightness, openSettings, NowPlaying, fetchLyrics, parseLrc, youtubeTop };

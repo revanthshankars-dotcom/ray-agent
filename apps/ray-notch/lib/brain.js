@@ -6,6 +6,24 @@
 const NUM = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, fifteen: 15, twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, ninety: 90, half: 0.5 };
 const num = (s) => (s in NUM ? NUM[s] : Number(s));
 const UNIT = { second: 1, sec: 1, minute: 60, min: 60, hour: 3600, hr: 3600 };
+const { FOLDER_NAMES } = require('./files.js');
+const SITES = {
+  youtube: 'https://www.youtube.com',
+  gmail: 'https://mail.google.com',
+  google: 'https://www.google.com',
+  'google drive': 'https://drive.google.com',
+  'google docs': 'https://docs.google.com',
+  chatgpt: 'https://chatgpt.com',
+  github: 'https://github.com',
+  netflix: 'https://www.netflix.com',
+  instagram: 'https://www.instagram.com',
+  'whatsapp web': 'https://web.whatsapp.com',
+  facebook: 'https://www.facebook.com',
+  twitter: 'https://x.com',
+  x: 'https://x.com',
+  linkedin: 'https://www.linkedin.com',
+  amazon: 'https://www.amazon.in',
+};
 
 /** Seconds from "10 minutes", "an hour and a half", "90 seconds", "1 hour 20 minutes". */
 function parseDuration(text) {
@@ -85,8 +103,28 @@ function parseIntent(raw) {
   if ((m = t.match(/^type\s+(.+)$/i))) return { kind: 'type', text: m[1] };
   if ((m = t.match(/^(?:write|draft)\s+(.+)$/i))) return { kind: 'write', what: m[1] };
 
-  // "open spotify" / "launch calculator" — open apps on this PC instantly (websites go to RAY).
-  if ((m = low.match(/^(?:open|launch|start|run)\s+(?:the\s+)?(?:app\s+)?([a-z0-9][a-z0-9 .+-]{1,40})$/)) && !/\b(doc|docs|sheet|website|site|page|tab|\.com|youtube|gmail|google|search|new)\b/.test(m[1]) && !/\bon (my )?(phone|mobile)\b/.test(low)) {
+  // --- this PC's files and folders (no internet needed) ---
+  const onPhone = /\bon (my )?(phone|mobile)\b/.test(low);
+  if (!onPhone) {
+    if ((m = low.match(/^(?:open|show|go to|take me to)\s+(?:me\s+)?(?:my\s+|the\s+)?([a-z ]+?)(?:\s+folder)?$/)) && FOLDER_NAMES.includes(m[1].trim())) return { kind: 'open-folder', name: m[1].trim() };
+    if (/^(?:show |open |list )?(?:me )?(?:my )?(?:recent|latest|last|new)\s+(?:downloads?|downloaded files)$|^what did i (?:just )?download$/.test(low)) return { kind: 'recent', where: 'downloads' };
+    if (/^(?:show |open |list )?(?:me )?(?:my )?(?:recent|latest|last)\s+(?:files|documents|docs)$/.test(low)) return { kind: 'recent', where: 'all' };
+    if ((m = low.match(/^(?:create|make|add)\s+(?:a\s+)?(?:new\s+)?folder\s+(?:called\s+|named\s+)?(.+?)(?:\s+(?:in|on)\s+(?:my\s+|the\s+)?([a-z ]+?))?$/))) return { kind: 'make-folder', name: t.slice(t.toLowerCase().indexOf(m[1]), t.toLowerCase().indexOf(m[1]) + m[1].length), where: m[2] || '' };
+    if ((m = low.match(/^(?:find|locate|where(?:'s| is| are))\s+(?:my\s+|the\s+|a\s+)?(.+?)(?:\s+(file|folder|document|doc|pdf|photo|picture|video|song|spreadsheet|sheet|presentation|slides))?(?:\s+(?:on|in) (?:my |this )?(?:pc|computer|laptop|files))?\??$/))) {
+      return { kind: 'find', query: m[1], type: m[2] === 'folder' ? 'folder' : m[2] ? 'file' : undefined };
+    }
+    if ((m = low.match(/^search\s+(?:my\s+|the\s+)?(?:files|pc|computer|laptop|documents)\s+for\s+(.+)$/))) return { kind: 'find', query: m[1] };
+    if ((m = low.match(/^open\s+(?:my\s+|the\s+)?(.+?\.[a-z0-9]{2,5})$/)) && !/\.(com|org|net|in|io|ai|app|dev|co)$/.test(m[1])) return { kind: 'open-file', query: m[1] };
+    if ((m = low.match(/^open\s+(?:my\s+|the\s+)?(.+?)\s+(file|document|doc|pdf|presentation|spreadsheet|sheet|photo|picture|video|folder)$/))) return { kind: 'open-file', query: m[1], type: m[2] === 'folder' ? 'folder' : 'file' };
+  }
+
+  // --- the web (needs internet) ---
+  if ((m = low.match(/^(?:search|google|look up)\s+(?:on\s+)?(?:google|the web|the internet|online)?\s*(?:for\s+)?(.+)$/)) && !/^(?:my|the)\s+(?:files|pc|computer)/.test(m[1])) return { kind: 'web', query: m[1] };
+  if ((m = low.match(/^(?:open|go to|visit)\s+((?:https?:\/\/)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/\S*)?)$/))) return { kind: 'url', url: /^https?:/.test(m[1]) ? m[1] : `https://${m[1]}` };
+  if ((m = low.match(/^(?:open|go to)\s+(youtube|gmail|google|google drive|google docs|chatgpt|github|netflix|instagram|whatsapp web|facebook|twitter|x|linkedin|amazon)$/))) return { kind: 'url', url: SITES[m[1]] };
+
+  // "open spotify" / "launch calculator" — apps on this PC, opened directly.
+  if ((m = low.match(/^(?:open|launch|start|run)\s+(?:the\s+)?(?:app\s+)?([a-z0-9][a-z0-9 .+'&-]{1,40})$/)) && !/\b(website|site|page|tab|new)\b/.test(m[1]) && !onPhone) {
     return { kind: 'open-app', app: m[1].replace(/\s+(app|application)$/, '') };
   }
 

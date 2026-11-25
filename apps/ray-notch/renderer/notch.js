@@ -79,6 +79,18 @@
   });
   const faceHtml = () => `<div class="face card-face" aria-hidden="true"><span class="eye"></span><span class="eye"></span><span class="ring"></span><span class="bars"><i></i><i></i><i></i><i></i></span></div>`;
 
+  const fileIcon = (n) => {
+    const x = (n.match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase() || '';
+    if (/^(png|jpe?g|gif|webp|heic|bmp|svg)$/.test(x)) return '🖼';
+    if (/^(mp4|mkv|mov|avi|webm)$/.test(x)) return '🎬';
+    if (/^(mp3|wav|flac|m4a|aac|ogg)$/.test(x)) return '🎵';
+    if (/^(zip|rar|7z|tar|gz)$/.test(x)) return '🗜';
+    if (/^(exe|msi|lnk|appx)$/.test(x)) return '⚙';
+    if (/^(xlsx?|csv)$/.test(x)) return '📊';
+    if (/^(pptx?|key)$/.test(x)) return '📽';
+    return '📄';
+  };
+
   // ---------------- states from the app ----------------
   N.on.state((st) => {
     switch (st.phase) {
@@ -117,6 +129,35 @@
           if (a === 'close') idle();
         };
         break;
+      case 'files': {
+        setNotch('done', '', '');
+        card.dataset.auto = '1';
+        const ago = (t) => {
+          const m = Math.round((Date.now() - t) / 60000);
+          return m < 1 ? 'now' : m < 60 ? `${m}m` : m < 1440 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`;
+        };
+        const rows = st.items
+          .map(
+            (f, i) => `<div class="file" data-i="${i}" role="button" tabindex="0" title="${esc(f.path)}">
+              <span class="ico">${f.dir ? '📁' : fileIcon(f.name)}</span>
+              <span class="fname">${esc(f.name)}<small>${esc(f.folder)}</small></span>
+              <span class="when">${f.mtime ? ago(f.mtime) : ''}</span>
+              <button class="pill tiny" data-r="${i}" aria-label="Show ${esc(f.name)} in folder">Show</button>
+            </div>`
+          )
+          .join('');
+        showCard(`<div class="q">${esc(st.title)}</div><div class="files">${rows}</div>`, { autoHideMs: 30000 });
+        card.onclick = async (e) => {
+          const r = e.target.closest('[data-r]');
+          const row = e.target.closest('[data-i]');
+          if (!row) return;
+          const f = st.items[Number(r ? r.dataset.r : row.dataset.i)];
+          const err = await N.openPath(f.path, Boolean(r));
+          if (err) toast('RAY', err);
+          else idle();
+        };
+        break;
+      }
       case 'approve':
         delete card.dataset.auto;
         setNotch('working', '<span class="dim">Waiting for you</span>', 'mid');

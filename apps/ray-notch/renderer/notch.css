@@ -689,3 +689,60 @@ body.style-bars .bars { display: flex; gap: 2.5px; align-items: center; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* File results: compact rows, open on click, "Show" reveals in Explorer. */
+.files {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 300px;
+  overflow-y: auto;
+  margin-top: 6px;
+}
+.file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background var(--fast) var(--ease);
+}
+.file:hover,
+.file:focus-visible {
+  background: var(--surface-hover);
+  outline: none;
+}
+.file .ico {
+  width: 18px;
+  text-align: center;
+  flex: none;
+}
+.file .fname {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file .fname small {
+  margin-left: 8px;
+  color: var(--mute);
+  font-size: 11px;
+}
+.file .when {
+  color: var(--mute);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.pill.tiny {
+  padding: 3px 9px;
+  font-size: 11px;
+  opacity: 0;
+  transition: opacity var(--fast) var(--ease);
+}
+.file:hover .pill.tiny,
+.file:focus-visible .pill.tiny {
+  opacity: 1;
+}
