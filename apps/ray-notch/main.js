@@ -182,11 +182,14 @@ async function typeIntoApp(text) {
 async function handleCommand(text, { spoken = false } = {}) {
   ui({ phase: 'working', text });
   const intent = parseIntent(text);
+  const t0 = Date.now();
+  const took = (route) => console.log(`[RAY Notch] "${text}" -> ${route} in ${Date.now() - t0} ms`);
   try {
     if (intent) {
       filesShown = false;
       const said = await runIntent(intent, text);
       if (said !== null) {
+        took(`this PC (${intent.kind})`);
         if (filesShown) return; // the file list card is the answer
         ui({ phase: 'done', text: said });
         if (spoken) followUp(speak(said));
@@ -195,6 +198,7 @@ async function handleCommand(text, { spoken = false } = {}) {
     }
     approvalPending = false;
     const answer = await askRay(text, intent);
+    took(ray && ray.online ? 'RAY online' : 'offline answer');
     if (approvalPending) {
       // The Yes / Not now card stays up until Ray answers it.
       if (spoken) speak('I need your OK for that.');
@@ -533,6 +537,7 @@ async function askRay(text, intent) {
       ui({ phase: 'working', text, step: 'Offline — answering on this PC' });
       return (await ray.askOffline(text)) || OFFLINE_HELP;
     }
+    ui({ phase: 'working', text, step: 'Asking RAY online' });
     let attachments;
     if (wantsScreen(text)) {
       ui({ phase: 'working', text, step: 'Looking at your screen' });

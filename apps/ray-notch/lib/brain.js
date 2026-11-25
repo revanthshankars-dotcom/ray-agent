@@ -42,8 +42,29 @@ function parseDuration(text) {
  * Understand a quick command without any AI. Returns null when RAY should handle it.
  * Result: { kind, ... } — executed by the notch (widgets) or system.js.
  */
+/** "Hey Ray, can you please pause the video for me?" -> "pause the video" */
+function stripPolite(text) {
+  let t = String(text || '').trim().replace(/[.!?,]+$/, '');
+  for (let i = 0; i < 4; i++) {
+    const before = t;
+    t = t
+      .replace(/^(?:hey|hi|ok(?:ay)?|so|um+|uh+|yeah|yes|now|and|then|alright)[\s,]+/i, '')
+      .replace(/^(?:ray|jarvis|nixi)[\s,]+/i, '')
+      .replace(/^(?:please|pls|kindly)[\s,]+/i, '')
+      .replace(/^(?:can|could|would|will) you(?: please)?[\s,]+/i, '')
+      .replace(/^(?:i want you to|i'd like you to|i need you to|go ahead and|just)[\s,]+/i, '')
+      .replace(/[\s,]+(?:please|for me|right now|now|quickly|thanks|thank you)$/i, '')
+      .trim();
+    if (t === before) break;
+  }
+  return t;
+}
+
+// Words that can follow play/pause/skip without changing what to do ("pause the youtube video").
+const MEDIA_NOUNS = /^\s*(?:(?:the|this|that|my|current|currently|playing|it|music|song|songs|video|videos|youtube|yt|spotify|audio|track|playback|player|media|sound|movie|episode|podcast|clip|one)\s*)*$/;
+
 function parseIntent(raw) {
-  const t = String(raw || '').trim().replace(/[.!?]+$/, '');
+  const t = stripPolite(raw);
   const low = t.toLowerCase();
   let m;
   if (!low) return null;
@@ -80,14 +101,15 @@ function parseIntent(raw) {
   if (/^(?:show|open|what'?s on)\s+(?:me\s+)?(?:my\s+)?(?:to-?do|todo|shopping)?\s*list$/.test(low) || /^my list$/.test(low)) return { kind: 'todo-show' };
 
   if ((m = low.match(/\bvolume\b.*?\b(\d{1,3})\s*(?:%|percent)?/)) || (m = low.match(/\b(?:set|turn)\b.*\b(\d{1,3})\s*(?:%|percent)\b.*\bvolume\b/))) return { kind: 'volume', level: Number(m[1]) };
-  if (/\b(volume up|louder|turn it up|turn up the volume)\b/.test(low)) return { kind: 'volume-step', dir: 1 };
-  if (/\b(volume down|quieter|turn it down|turn down the volume)\b/.test(low)) return { kind: 'volume-step', dir: -1 };
+  if (/\b(volume up|louder|turn it up|turn up the (?:volume|sound|music)|(?:increase|raise|boost) (?:the )?(?:volume|sound))\b/.test(low)) return { kind: 'volume-step', dir: 1 };
+  if (/\b(volume down|quieter|softer|turn it down|turn down the (?:volume|sound|music)|(?:decrease|lower|reduce) (?:the )?(?:volume|sound))\b/.test(low)) return { kind: 'volume-step', dir: -1 };
   if (/^(mute|unmute)( the)?( (sound|volume|audio|pc))?$/.test(low)) return { kind: 'mute' };
 
-  if (/^(pause|stop)( the| this)?( music| song| playback| it| video| youtube| audio| spotify| track)?$/.test(low)) return { kind: 'media', action: 'pause' };
-  if (/^(resume|unpause|continue|play)( the| this)?( music| song| playback| video| youtube| audio| spotify| track)?$/.test(low)) return { kind: 'media', action: 'play' };
-  if (/^(next|skip)( the)?( song| track)?$|^skip (this|it)$/.test(low)) return { kind: 'media', action: 'next' };
-  if (/^(previous|go back|last)( the)?( song| track)$/.test(low)) return { kind: 'media', action: 'prev' };
+  if ((m = low.match(/^(pause|stop|hold|freeze|halt)\b\s*(.*)$/)) && MEDIA_NOUNS.test(m[2])) return { kind: 'media', action: 'pause' };
+  if ((m = low.match(/^(resume|unpause|continue|play|start)\b\s*(?:playing\s*)?(.*?)(?:\s+again)?$/)) && MEDIA_NOUNS.test(m[2]) && !(m[1] === 'start' && !m[2])) return { kind: 'media', action: 'play' };
+  if ((m = low.match(/^(?:next|skip)\b\s*(.*)$/)) && MEDIA_NOUNS.test(m[1].replace(/\b(to|the next|next)\b/g, '').trim())) return { kind: 'media', action: 'next' };
+  if ((m = low.match(/^(?:previous|go back|last|back)\b\s*(.*)$/)) && m[1] && MEDIA_NOUNS.test(m[1].replace(/\b(to|the previous|previous)\b/g, '').trim())) return { kind: 'media', action: 'prev' };
+  if (/^(?:play )?(?:the )?previous(?: one)?$/.test(low)) return { kind: 'media', action: 'prev' };
   if (/^play (?:my )?(?:liked|favou?rite) songs$/.test(low)) return { kind: 'liked-songs' };
   if ((m = low.match(/^play\s+(.+?)(?:\s+(?:on|in)\s+(youtube|yt|spotify))?$/)) && !/\bon (my )?(phone|mobile|tv)\b/.test(low)) {
     const query = m[1].replace(/^(?:the\s+)?(?:song|video|track|music)\s+/, '').trim();
@@ -161,4 +183,4 @@ function wantsScreen(text) {
     || /^screen$/i.test(String(text || '').trim());
 }
 
-module.exports = { parseIntent, parseDuration, wantsScreen };
+module.exports = { stripPolite, parseIntent, parseDuration, wantsScreen };
