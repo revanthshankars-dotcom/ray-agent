@@ -11,9 +11,10 @@
   --border-mid: rgba(255, 255, 255, 0.11);
   --font: -apple-system, 'Segoe UI Variable', 'Segoe UI', BlinkMacSystemFont, 'Inter', system-ui, sans-serif;
   --blur: blur(28px) saturate(200%);
-  --spring: cubic-bezier(0.3, 0, 0, 1);
-  --fast: 0.17s;
-  --med: 0.24s;
+  --spring: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease: cubic-bezier(0.3, 0, 0, 1);
+  --fast: 0.12s;
+  --med: 0.15s;
   --accent-dim: rgba(34, 211, 238, 0.18);
   --accent-glow: rgba(34, 211, 238, 0.5);
 }
@@ -77,8 +78,10 @@ svg {
   transition:
     width var(--fast) var(--spring),
     height var(--fast) var(--spring),
-    background var(--fast) ease,
-    border-color var(--fast) ease;
+    border-radius var(--fast) var(--spring),
+    background var(--fast) var(--ease),
+    border-color var(--fast) var(--ease),
+    box-shadow var(--fast) var(--ease);
   cursor: pointer;
   outline: none;
 }
@@ -94,6 +97,27 @@ svg {
 
 .notch.mid  { width: 250px; height: 34px; }
 .notch.wide { width: 420px; height: 36px; }
+
+/* seamless pill expansion when card or panel is open */
+.notch.card-open {
+  width: 460px;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom-color: transparent;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.5),
+    0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.notch.panel-open {
+  width: 600px;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom-color: transparent;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.5),
+    0 2px 8px rgba(0, 0, 0, 0.3);
+}
 
 /* ── face indicator ── */
 .face {
@@ -216,9 +240,10 @@ body.style-bars .bars { display: flex; gap: 2.5px; align-items: center; }
 
 .side .t { color: var(--accent); font-weight: 600; }
 
-/* ── shared drop animation ── */
-@keyframes drop {
-  from { transform: translateY(-6px) scaleY(0.92); opacity: 0; }
+/* ── card/panel appear: notch expands first (0.12s), then content fades in ── */
+@keyframes appear {
+  from { opacity: 0; transform: translateY(-2px); }
+  to   { opacity: 1; transform: none; }
 }
 
 /* ── card ── */
@@ -234,7 +259,7 @@ body.style-bars .bars { display: flex; gap: 2.5px; align-items: center; }
   box-shadow:
     0 16px 48px rgba(0, 0, 0, 0.55),
     0 4px 16px rgba(0, 0, 0, 0.35);
-  animation: drop var(--med) var(--spring);
+  animation: appear 0.1s var(--ease) 0.07s both;
 }
 
 .card {
@@ -656,7 +681,7 @@ body.style-bars .bars { display: flex; gap: 2.5px; align-items: center; }
   border: 1px solid var(--border);
   font-size: 11px;
   color: var(--ink);
-  animation: drop var(--fast) var(--spring);
+  animation: appear 0.1s var(--ease) both;
 }
 
 .banner b { color: var(--accent); margin-right: 3px; }

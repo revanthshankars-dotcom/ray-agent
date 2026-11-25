@@ -58,12 +58,15 @@
   function hideCard() {
     card.classList.add('hidden');
     card.innerHTML = '';
+    notch.classList.remove('card-open');
     clearTimeout(cardTimer);
   }
   function showCard(html, { autoHideMs = 0 } = {}) {
     card.innerHTML = `<div class="inner">${faceHtml()}<div style="flex:1;min-width:0">${html}</div></div>`;
     card.classList.remove('hidden');
     panel.classList.add('hidden');
+    notch.classList.add('card-open');
+    notch.classList.remove('panel-open');
     clearTimeout(cardTimer);
     if (autoHideMs) cardTimer = setTimeout(() => !hoverCard && idle(), autoHideMs);
   }
@@ -189,14 +192,18 @@
     hideCard();
     panel.classList.toggle('hidden', !open);
     if (open) {
+      notch.classList.add('panel-open');
       renderAll();
       $('#askInput').focus();
+    } else {
+      notch.classList.remove('panel-open');
     }
   });
   notch.addEventListener('keydown', (e) => (e.key === 'Enter' || e.key === ' ') && notch.click());
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       panel.classList.add('hidden');
+      notch.classList.remove('panel-open');
       idle();
       N.cancel();
     }
@@ -204,6 +211,8 @@
   notch.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     panel.classList.remove('hidden');
+    notch.classList.add('panel-open');
+    notch.classList.remove('card-open');
     openTab('settings');
   });
 
@@ -261,6 +270,7 @@
     if (w.type === 'battery') batteryToast();
     if (w.type === 'show') {
       panel.classList.remove('hidden');
+      notch.classList.add('panel-open');
       hideCard();
       openTab(w.panel === 'list' ? 'list' : 'home');
       if (w.lyrics) {
