@@ -63,6 +63,10 @@ function parseIntent(raw) {
   if (/^(resume|unpause|continue|play)( the)?( music| song| playback)?$/.test(low)) return { kind: 'media', action: 'play' };
   if (/^(next|skip)( the)?( song| track)?$|^skip (this|it)$/.test(low)) return { kind: 'media', action: 'next' };
   if (/^(previous|go back|last)( the)?( song| track)$/.test(low)) return { kind: 'media', action: 'prev' };
+  if ((m = low.match(/^play\s+(.+?)(?:\s+(?:on|in)\s+(youtube|yt|spotify))?$/)) && !/\bon (my )?(phone|mobile|tv)\b/.test(low)) {
+    const query = m[1].replace(/^(?:the\s+)?(?:song|video|track|music)\s+/, '').trim();
+    if (query) return { kind: 'play', query, where: m[2] === 'spotify' ? 'spotify' : 'youtube' };
+  }
   if (/\b(show|open)\b.*\blyrics\b|^lyrics$/.test(low)) return { kind: 'lyrics' };
 
   if (/^lock( my| the)?( pc| computer| screen| laptop)?$/.test(low)) return { kind: 'lock' };

@@ -7,37 +7,148 @@ const { EventEmitter } = require('events');
 const P = process.platform;
 const run = (cmd, args, timeout = 8000) =>
   new Promise((res) => execFile(cmd, args, { timeout, windowsHide: true }, (e, out, err) => res({ ok: !e, out: String(out || ''), err: String(err || (e && e.message) || '') })));
-const ps = (script) => run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], 15000);
 const osa = (script) => run('osascript', ['-e', script]);
 
-// Windows virtual-key media/volume keys, sent through WScript.Shell.
-const VK = { mute: 173, down: 174, up: 175, next: 176, prev: 177, stop: 178, playpause: 179 };
-const winKey = (code, times = 1) => ps(`$w=New-Object -ComObject WScript.Shell; 1..${times} | % { $w.SendKeys([char]${code}) }`);
+// Windows: one PowerShell started once and kept warm. A fresh powershell.exe per click costs 1-5 s
+// (more while antivirus scans it); through the warm worker a command takes a few milliseconds.
+const WIN_CS = String.raw`
+using System; using System.Runtime.InteropServices;
+[Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IAudioEndpointVolume { int a(); int b(); int c(); int d();
+  int SetMasterVolumeLevelScalar(float level, Guid ctx); int e();
+  int GetMasterVolumeLevelScalar(out float level); int f(); int g(); int h(); int i();
+  int SetMute([MarshalAs(UnmanagedType.Bool)] bool mute, Guid ctx);
+  int GetMute([MarshalAs(UnmanagedType.Bool)] out bool mute); }
+[Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDevice { int Activate(ref Guid id, int ctx, IntPtr p, [MarshalAs(UnmanagedType.IUnknown)] out object o); }
+[Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDeviceEnumerator { int a(); int GetDefaultAudioEndpoint(int flow, int role, out IMMDevice d); }
+[ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] class MMDeviceEnumerator { }
+public static class RayPc {
+  static IAudioEndpointVolume Ep() {
+    var en = (IMMDeviceEnumerator)new MMDeviceEnumerator(); IMMDevice d;
+    Marshal.ThrowExceptionForHR(en.GetDefaultAudioEndpoint(0, 1, out d));
+    var iid = typeof(IAudioEndpointVolume).GUID; object o;
+    Marshal.ThrowExceptionForHR(d.Activate(ref iid, 23, IntPtr.Zero, out o));
+    return (IAudioEndpointVolume)o; }
+  public static int GetVolume() { float v; Ep().GetMasterVolumeLevelScalar(out v); return (int)Math.Round(v * 100); }
+  public static void SetVolume(int v) { var e = Ep(); e.SetMute(false, Guid.Empty); e.SetMasterVolumeLevelScalar(Math.Max(0, Math.Min(100, v)) / 100f, Guid.Empty); }
+  public static bool ToggleMute() { var e = Ep(); bool m; e.GetMute(out m); e.SetMute(!m, Guid.Empty); return !m; }
+  [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+  public static void Key(byte vk) { keybd_event(vk, 0, 1, UIntPtr.Zero); keybd_event(vk, 0, 3, UIntPtr.Zero); }
+}`;
+// Sent as one line: C# needs no newlines, and multi-line input over stdin is unreliable.
+const WIN_PRELUDE = `Add-Type -TypeDefinition '${WIN_CS.replace(/\s*\r?\n\s*/g, ' ').trim()}'`;
 
+class PsWorker {
+  constructor() {
+    this.proc = null;
+    this.queue = new Map();
+    this.seq = 0;
+    this.buf = '';
+  }
+  ensure() {
+    if (this.proc) return;
+    this.proc = spawn('powershell.exe', ['-NoProfile', '-NoLogo', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', '-'], { windowsHide: true });
+    this.proc.stdout.setEncoding('utf8');
+    this.proc.stdout.on('data', (d) => this.onData(d));
+    this.proc.stderr.on('data', () => {});
+    this.proc.on('exit', () => {
+      this.proc = null;
+      for (const [, q] of this.queue) q.done({ ok: false, out: '', err: 'worker exited' });
+      this.queue.clear();
+    });
+    this.write(WIN_PRELUDE + '\n');
+  }
+  write(s) {
+    try {
+      this.proc.stdin.write(s);
+    } catch {
+      /* exit handler resolves pending calls */
+    }
+  }
+  onData(d) {
+    this.buf += d;
+    let m;
+    while ((m = this.buf.match(/__RAY_(OK|ERR)_(\d+)__([^\r\n]*)\r?\n/))) {
+      const before = this.buf.slice(0, m.index);
+      this.buf = this.buf.slice(m.index + m[0].length);
+      const q = this.queue.get(Number(m[2]));
+      if (!q) continue;
+      this.queue.delete(Number(m[2]));
+      q.done({ ok: m[1] === 'OK', out: (before + m[3]).trim(), err: m[1] === 'ERR' ? m[3] : '' });
+    }
+  }
+  exec(script, timeout = 8000) {
+    this.ensure();
+    const id = ++this.seq;
+    return new Promise((res) => {
+      const t = setTimeout(() => {
+        this.queue.delete(id);
+        res({ ok: false, out: '', err: 'timeout' });
+      }, timeout);
+      this.queue.set(id, { done: (r) => (clearTimeout(t), res(r)) });
+      const one = script.replace(/\r?\n/g, '; ');
+      this.write(`try { $__o = & { ${one} } | Out-String; [Console]::Out.WriteLine($__o.Trim() + '__RAY_OK_${id}__') } catch { [Console]::Out.WriteLine('__RAY_ERR_${id}__' + ($_.Exception.Message -replace '\r?\n',' ')) }; [Console]::Out.Flush()\n`);
+    });
+  }
+  stop() {
+    if (this.proc) this.proc.kill();
+  }
+}
+const worker = P === 'win32' ? new PsWorker() : null;
+const ps = (script, timeout) => worker.exec(script, timeout);
+/** Start the Windows worker early so the first click is instant too. */
+function warmUp() {
+  if (worker) void worker.exec('1', 20000);
+}
+
+// Windows virtual-key codes for media keys.
+const VK = { next: 176, prev: 177, stop: 178, playpause: 179 };
+
+async function getVolume() {
+  if (P === 'win32') {
+    const r = await ps('[RayPc]::GetVolume()');
+    return r.ok ? Number(r.out) : null;
+  }
+  if (P === 'darwin') {
+    const r = await osa('output volume of (get volume settings)');
+    return r.ok ? Number(r.out.trim()) : null;
+  }
+  const r = await run('pactl', ['get-sink-volume', '@DEFAULT_SINK@']);
+  const m = r.out.match(/(\d+)%/);
+  return m ? Number(m[1]) : null;
+}
 async function setVolume(level) {
   const v = Math.max(0, Math.min(100, Math.round(level)));
   if (P === 'win32') {
-    await winKey(VK.down, 50);
-    if (v) await winKey(VK.up, Math.round(v / 2));
+    const r = await ps(`[RayPc]::SetVolume(${v})`);
+    if (!r.ok) return 'Could not change the volume.';
   } else if (P === 'darwin') await osa(`set volume output volume ${v}`);
   else await run('pactl', ['set-sink-volume', '@DEFAULT_SINK@', `${v}%`]);
-  return `Volume set to ${v}%.`;
+  return `Volume ${v}%.`;
 }
 async function volumeStep(dir) {
-  if (P === 'win32') await winKey(dir > 0 ? VK.up : VK.down, 5);
-  else if (P === 'darwin') await osa(`set volume output volume ((output volume of (get volume settings)) ${dir > 0 ? '+' : '-'} 10)`);
+  if (P === 'win32') {
+    const r = await ps(`$v=[RayPc]::GetVolume() + ${dir > 0 ? 10 : -10}; [RayPc]::SetVolume($v); [RayPc]::GetVolume()`);
+    return r.ok ? `Volume ${r.out}%.` : 'Could not change the volume.';
+  }
+  if (P === 'darwin') await osa(`set volume output volume ((output volume of (get volume settings)) ${dir > 0 ? '+' : '-'} 10)`);
   else await run('pactl', ['set-sink-volume', '@DEFAULT_SINK@', `${dir > 0 ? '+' : '-'}10%`]);
   return dir > 0 ? 'Volume up.' : 'Volume down.';
 }
 async function mute() {
-  if (P === 'win32') await winKey(VK.mute);
-  else if (P === 'darwin') await osa('set volume with output muted');
+  if (P === 'win32') {
+    const r = await ps('[RayPc]::ToggleMute()');
+    return r.ok ? (/true/i.test(r.out) ? 'Muted.' : 'Sound on.') : 'Could not mute.';
+  }
+  if (P === 'darwin') await osa('set volume output muted (not (output muted of (get volume settings)))');
   else await run('pactl', ['set-sink-mute', '@DEFAULT_SINK@', 'toggle']);
-  return 'Muted.';
+  return 'Mute toggled.';
 }
 async function media(action) {
   // action: playpause | next | prev | pause | play
-  if (P === 'win32') await winKey(VK[action === 'pause' || action === 'play' ? 'playpause' : action]);
+  if (P === 'win32') await ps(`[RayPc]::Key(${VK[action === 'pause' || action === 'play' ? 'playpause' : action]})`);
   else if (P === 'darwin') {
     const verb = { playpause: 'playpause', play: 'play', pause: 'pause', next: 'next track', prev: 'previous track' }[action];
     await osa(`if application "Spotify" is running then tell application "Spotify" to ${verb}\nif application "Music" is running then tell application "Music" to ${verb}`);
@@ -61,7 +172,7 @@ async function darkMode(on) {
 async function brightness(level) {
   const v = Math.max(5, Math.min(100, Math.round(level)));
   if (P === 'win32') {
-    const r = await ps(`(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1,${v})`);
+    const r = await ps(`$m = Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods -ErrorAction Stop; Invoke-CimMethod -InputObject $m -MethodName WmiSetBrightness -Arguments @{Timeout=1; Brightness=${v}} -ErrorAction Stop | Out-Null`);
     return r.ok ? `Brightness ${v}%.` : 'This screen does not let apps change brightness (external monitors usually don’t).';
   }
   if (P === 'linux') {
@@ -193,4 +304,22 @@ function parseLrc(text) {
   return out.length ? out : null;
 }
 
-module.exports = { setVolume, volumeStep, mute, media, lock, darkMode, brightness, openSettings, NowPlaying, fetchLyrics, parseLrc };
+/** "play believer" -> a YouTube watch link for the top result (so it starts playing), or null. */
+async function youtubeTop(query) {
+  try {
+    const r = await fetch(`https://www.youtube.com/results?${new URLSearchParams({ search_query: query })}`, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36', 'Accept-Language': 'en' },
+      signal: AbortSignal.timeout(4000),
+    });
+    const m = r.ok ? (await r.text()).match(/"videoId":"([\w-]{11})"/) : null;
+    return m ? `https://www.youtube.com/watch?v=${m[1]}` : null;
+  } catch {
+    return null;
+  }
+}
+
+function stopWorker() {
+  if (worker) worker.stop();
+}
+
+module.exports = { warmUp, stopWorker, getVolume, setVolume, volumeStep, mute, media, lock, darkMode, brightness, openSettings, NowPlaying, fetchLyrics, parseLrc, youtubeTop };

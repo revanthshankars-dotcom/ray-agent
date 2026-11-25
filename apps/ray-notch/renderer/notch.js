@@ -390,12 +390,19 @@
       <div class="row" style="justify-content:space-between"><div class="row"><button class="round" data-m="prev" aria-label="Previous">⏮</button><button class="round" data-m="playpause" aria-label="${playing.playing ? 'Pause' : 'Play'}">${playing.playing ? '⏸' : '▶'}</button><button class="round" data-m="next" aria-label="Next">⏭</button></div><button class="chip ${showLyrics ? 'on' : ''}" data-m="lyrics">Lyrics</button></div>
       <div class="lyrics">${ly}</div>`;
     el.onclick = async (e) => {
-      const m = e.target.dataset && e.target.dataset.m;
+      const m = e.target.closest('[data-m]')?.dataset.m;
       if (m === 'lyrics') {
         showLyrics = !showLyrics;
-        if (showLyrics) await loadLyrics();
         renderMusic(true);
-      } else if (m) N.media(m);
+        if (showLyrics) await loadLyrics();
+      } else if (m) {
+        if (m === 'playpause' && playing) {
+          // Flip the button now; the media session confirms a moment later.
+          playing = { ...playing, playing: !playing.playing, position: pos, at: Date.now() };
+          renderMusic(true);
+        }
+        void N.media(m);
+      }
     };
   }
   async function loadLyrics() {
@@ -404,13 +411,20 @@
   }
   let ctrlMuted = false;
   let ctrlDark = matchMedia('(prefers-color-scheme: dark)').matches;
-  async function ctrlFeedback(kind, value) {
+  let volRead = false;
+  async function ctrlFeedback(kind, value, quiet) {
     const msg = await N.control(kind, value);
-    if (msg) toast('RAY', msg);
+    if (msg && (!quiet || /could not|doesn|does not|install/i.test(msg))) toast('RAY', msg);
     return msg;
   }
   function renderControls() {
     const awake = awakeUntil > Date.now();
+    if (!volRead) {
+      volRead = true;
+      N.control('get-volume').then((v) => {
+        if (typeof v === 'number' && v >= 0 && $('#vol')) $('#vol').value = ctrlVol = v;
+      });
+    }
     $('#controlsTile').innerHTML = `<h4>Controls</h4>
       <div class="slider">🔊<input type="range" min="0" max="100" step="1" value="${ctrlVol}" id="vol" aria-label="Volume" /></div>
       <div class="slider">☀<input type="range" min="10" max="100" step="10" value="${ctrlBri}" id="bri" aria-label="Brightness" /></div>
@@ -427,21 +441,22 @@
     $('#vol').oninput = (e) => {
       ctrlVol = Number(e.target.value);
       clearTimeout(volTimer);
-      volTimer = setTimeout(() => void ctrlFeedback('volume', ctrlVol), 220);
+      volTimer = setTimeout(() => void ctrlFeedback('volume', ctrlVol, true), 60);
     };
     $('#bri').oninput = (e) => {
       ctrlBri = Number(e.target.value);
       clearTimeout(briTimer);
-      briTimer = setTimeout(() => void ctrlFeedback('brightness', ctrlBri), 220);
+      briTimer = setTimeout(() => void ctrlFeedback('brightness', ctrlBri, true), 120);
     };
-    $('#controlsTile').onclick = async (e) => {
+    $('#controlsTile').onclick = (e) => {
       const c = e.target.closest('[data-c]')?.dataset.c;
       if (!c) return;
-      e.target.closest('[data-c]').style.opacity = '0.6';
-      if (c === 'awake') await ctrlFeedback('awake', awake ? 0 : 60);
-      else if (c === 'dark') { ctrlDark = !ctrlDark; await ctrlFeedback('dark', ctrlDark); }
-      else if (c === 'mute') { ctrlMuted = !ctrlMuted; await ctrlFeedback('mute'); }
-      else await ctrlFeedback(c);
+      // Toggle the chip immediately; the PC catches up in the background.
+      if (c === 'awake') void ctrlFeedback('awake', awake ? 0 : 60);
+      else if (c === 'dark') { ctrlDark = !ctrlDark; void ctrlFeedback('dark', ctrlDark); }
+      else if (c === 'mute') { ctrlMuted = !ctrlMuted; void ctrlFeedback('mute'); }
+      else void ctrlFeedback(c);
+      if (c === 'awake') awakeUntil = awake ? 0 : Date.now() + 60 * 60_000;
       renderControls();
     };
   }

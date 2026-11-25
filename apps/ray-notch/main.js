@@ -215,6 +215,15 @@ async function runIntent(i, text) {
       return sys.mute();
     case 'media':
       return sys.media(i.action);
+    case 'play': {
+      if (i.where === 'spotify') {
+        await shell.openExternal(`spotify:search:${encodeURIComponent(i.query)}`).catch(() => shell.openExternal(`https://open.spotify.com/search/${encodeURIComponent(i.query)}`));
+        return `Opening ${i.query} in Spotify.`;
+      }
+      const url = (await sys.youtubeTop(i.query)) || `https://www.youtube.com/results?${new URLSearchParams({ search_query: i.query })}`;
+      await shell.openExternal(url);
+      return `Playing ${i.query}.`;
+    }
     case 'lyrics':
       send('widget', { type: 'show', panel: 'music', lyrics: true });
       return nowPlaying.current ? '' : 'Nothing is playing right now.';
@@ -586,6 +595,7 @@ function wireIpc() {
   ipcMain.handle('image-op', (_e, { file, op }) => imageOp(file, op));
   ipcMain.handle('media', (_e, action) => sys.media(action));
   ipcMain.handle('control', async (_e, { kind, value }) => {
+    if (kind === 'get-volume') return sys.getVolume();
     if (kind === 'volume') return sys.setVolume(value);
     if (kind === 'mute') return sys.mute();
     if (kind === 'brightness') return sys.brightness(value);
@@ -622,6 +632,7 @@ app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   createWindow();
   wireIpc();
+  sys.warmUp();
   startRay();
   nowPlaying.on('change', (c) => send('playing', c));
   nowPlaying.start();
@@ -641,5 +652,6 @@ app.on('before-quit', () => {
     // already stopped
   }
   nowPlaying.stop();
+  sys.stopWorker();
 });
 app.on('window-all-closed', () => app.quit());
