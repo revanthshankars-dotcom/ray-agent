@@ -22,6 +22,8 @@
   let online = false;
   let water = { glasses: 0 };
   let awakeUntil = 0;
+  let ctrlVol = 50;
+  let ctrlBri = 70;
   let mode = 'command';
   let cardTimer = null;
   let hoverCard = false;
@@ -400,19 +402,47 @@
     lyricLines = await N.lyrics();
     renderMusic(true);
   }
+  let ctrlMuted = false;
+  let ctrlDark = matchMedia('(prefers-color-scheme: dark)').matches;
+  async function ctrlFeedback(kind, value) {
+    const msg = await N.control(kind, value);
+    if (msg) toast('RAY', msg);
+    return msg;
+  }
   function renderControls() {
+    const awake = awakeUntil > Date.now();
     $('#controlsTile').innerHTML = `<h4>Controls</h4>
-      <div class="slider">🔊<input type="range" min="0" max="100" step="5" value="50" id="vol" aria-label="Volume" /></div>
-      <div class="slider">☀<input type="range" min="10" max="100" step="10" value="70" id="bri" aria-label="Brightness" /></div>
-      <div class="chips"><button class="chip" data-c="mute">Mute</button><button class="chip" data-c="wifi">Wi-Fi</button><button class="chip" data-c="bluetooth">Bluetooth</button><button class="chip" data-c="nightlight">Night light</button><button class="chip" data-c="dark">Dark mode</button><button class="chip ${awakeUntil > Date.now() ? 'on' : ''}" data-c="awake">Keep awake</button><button class="chip" data-c="lock">Lock</button></div>`;
-    $('#vol').onchange = (e) => N.control('volume', Number(e.target.value));
-    $('#bri').onchange = (e) => N.control('brightness', Number(e.target.value));
-    $('#controlsTile').onclick = (e) => {
-      const c = e.target.dataset && e.target.dataset.c;
+      <div class="slider">🔊<input type="range" min="0" max="100" step="1" value="${ctrlVol}" id="vol" aria-label="Volume" /></div>
+      <div class="slider">☀<input type="range" min="10" max="100" step="10" value="${ctrlBri}" id="bri" aria-label="Brightness" /></div>
+      <div class="chips">
+        <button class="chip ${ctrlMuted ? 'on' : ''}" data-c="mute">Mute</button>
+        <button class="chip" data-c="wifi">Wi-Fi</button>
+        <button class="chip" data-c="bluetooth">Bluetooth</button>
+        <button class="chip" data-c="nightlight">Night light</button>
+        <button class="chip ${ctrlDark ? 'on' : ''}" data-c="dark">Dark mode</button>
+        <button class="chip ${awake ? 'on' : ''}" data-c="awake">Keep awake</button>
+        <button class="chip" data-c="lock">Lock</button>
+      </div>`;
+    let volTimer, briTimer;
+    $('#vol').oninput = (e) => {
+      ctrlVol = Number(e.target.value);
+      clearTimeout(volTimer);
+      volTimer = setTimeout(() => void ctrlFeedback('volume', ctrlVol), 220);
+    };
+    $('#bri').oninput = (e) => {
+      ctrlBri = Number(e.target.value);
+      clearTimeout(briTimer);
+      briTimer = setTimeout(() => void ctrlFeedback('brightness', ctrlBri), 220);
+    };
+    $('#controlsTile').onclick = async (e) => {
+      const c = e.target.closest('[data-c]')?.dataset.c;
       if (!c) return;
-      if (c === 'awake') N.control('awake', awakeUntil > Date.now() ? 0 : 60);
-      else if (c === 'dark') N.control('dark', !matchMedia('(prefers-color-scheme: dark)').matches);
-      else N.control(c);
+      e.target.closest('[data-c]').style.opacity = '0.6';
+      if (c === 'awake') await ctrlFeedback('awake', awake ? 0 : 60);
+      else if (c === 'dark') { ctrlDark = !ctrlDark; await ctrlFeedback('dark', ctrlDark); }
+      else if (c === 'mute') { ctrlMuted = !ctrlMuted; await ctrlFeedback('mute'); }
+      else await ctrlFeedback(c);
+      renderControls();
     };
   }
   async function renderStatus() {

@@ -365,7 +365,11 @@ function keepAwake(minutes) {
     awakeId = powerSaveBlocker.start('prevent-display-sleep');
     awakeTimer = setTimeout(() => keepAwake(0), minutes * 60_000);
     send('awake', Date.now() + minutes * 60_000);
-  } else send('awake', 0);
+    return `Keeping your PC awake for ${minutes >= 60 ? Math.round(minutes / 60) + ' h' : minutes + ' min'}.`;
+  } else {
+    send('awake', 0);
+    return 'Sleep allowed.';
+  }
 }
 
 function logWater() {
