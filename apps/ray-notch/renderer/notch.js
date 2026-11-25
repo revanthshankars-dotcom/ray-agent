@@ -455,7 +455,7 @@
   let volRead = false;
   async function ctrlFeedback(kind, value, quiet) {
     const msg = await N.control(kind, value);
-    if (msg && (!quiet || /could not|doesn|does not|install/i.test(msg))) toast('RAY', msg);
+    if (msg && (!quiet || /could not|couldn|didn|doesn|does not|install/i.test(msg))) toast('RAY', msg);
     return msg;
   }
   function renderControls() {

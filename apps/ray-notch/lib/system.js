@@ -40,6 +40,40 @@ public static class RayPc {
   [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
   public static void Key(byte vk) { keybd_event(vk, 0, 1, UIntPtr.Zero); keybd_event(vk, 0, 3, UIntPtr.Zero); }
 }`;
+// Separate so a problem here can never take the volume and media controls down with it.
+const WIN_DDC = String.raw`
+using System; using System.Runtime.InteropServices;
+public static class RayDdc {
+  delegate bool MonitorEnumProc(IntPtr hMon, IntPtr hdc, IntPtr rc, IntPtr data);
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct PHYSICAL_MONITOR { public IntPtr h; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string d; }
+  [DllImport("user32.dll")] static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr rc, MonitorEnumProc cb, IntPtr data);
+  [DllImport("dxva2.dll")] static extern bool GetNumberOfPhysicalMonitorsFromHMONITOR(IntPtr h, out uint n);
+  [DllImport("dxva2.dll")] static extern bool GetPhysicalMonitorsFromHMONITOR(IntPtr h, uint n, [Out] PHYSICAL_MONITOR[] a);
+  [DllImport("dxva2.dll")] static extern bool GetMonitorBrightness(IntPtr h, out uint mn, out uint cur, out uint mx);
+  [DllImport("dxva2.dll")] static extern bool SetMonitorBrightness(IntPtr h, uint v);
+  [DllImport("dxva2.dll")] static extern bool DestroyPhysicalMonitors(uint n, PHYSICAL_MONITOR[] a);
+  // External monitors: DDC/CI (the monitor's own brightness, set over the video cable).
+  public static int SetDdcBrightness(int pct) {
+    int ok = 0;
+    var mons = new System.Collections.Generic.List<IntPtr>();
+    MonitorEnumProc cb = (h, dc, r, d) => { mons.Add(h); return true; };
+    EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, cb, IntPtr.Zero);
+    foreach (var m in mons) {
+      uint n;
+      if (!GetNumberOfPhysicalMonitorsFromHMONITOR(m, out n) || n == 0) continue;
+      var a = new PHYSICAL_MONITOR[n];
+      if (!GetPhysicalMonitorsFromHMONITOR(m, n, a)) continue;
+      foreach (var p in a) {
+        uint mn, cur, mx;
+        if (GetMonitorBrightness(p.h, out mn, out cur, out mx) && mx > mn && SetMonitorBrightness(p.h, (uint)(mn + (mx - mn) * Math.Max(0, Math.Min(100, pct)) / 100))) ok++;
+      }
+      DestroyPhysicalMonitors(n, a);
+    }
+    GC.KeepAlive(cb);
+    return ok;
+  }
+}
+`;
 // The worker is a small script file that reads one command per line from stdin and answers with a
 // marker. Media goes through Windows' media session (the same one that shows "now playing", so it
 // reaches YouTube in a browser and Spotify alike), with real media keys as the fallback.
@@ -51,6 +85,11 @@ const WIN_WORKER = [
   WIN_CS.trim(),
   "'@",
   "} catch { $ready = 'audio helper failed: ' + $_.Exception.Message }",
+  "try {",
+  "Add-Type -TypeDefinition @'",
+  WIN_DDC.trim(),
+  "'@",
+  "} catch { }",
   "$script:mgr = $null",
   "$script:asTask = $null",
   "try {",
@@ -190,7 +229,7 @@ const fast = P === 'win32' ? new PsWorker('fast') : null;
 const slow = P === 'win32' ? new PsWorker('slow') : null;
 const CLICK = { maxWait: 3000 };
 const ps = (script, timeout = 4000, opts = CLICK) => fast.exec(script, timeout, opts);
-const psSlow = (script, timeout = 15000) => slow.exec(script, timeout);
+const psSlow = (script, timeout = 15000, opts) => slow.exec(script, timeout, opts);
 /** Start both helpers early so the first click is instant too. */
 function warmUp() {
   if (fast) void fast.exec('1', 30000);
@@ -271,8 +310,14 @@ async function darkMode(on) {
 async function brightness(level) {
   const v = Math.max(5, Math.min(100, Math.round(level)));
   if (P === 'win32') {
-    const r = await psSlow(`$m = Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods -ErrorAction Stop; Invoke-CimMethod -InputObject $m -MethodName WmiSetBrightness -Arguments @{Timeout=1; Brightness=${v}} -ErrorAction Stop | Out-Null`);
-    return r.ok ? `Brightness ${v}%.` : 'This screen does not let apps change brightness (external monitors usually don’t).';
+    // Laptop screens: Windows' brightness (WMI). External monitors: DDC/CI. Both are tried.
+    const r = await psSlow(
+      `$n = 0; try { foreach ($i in @(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods -ErrorAction Stop)) { $i.WmiSetBrightness(1, [byte]${v}) | Out-Null; $n++ } } catch { }; try { $n += [RayDdc]::SetDdcBrightness(${v}) } catch { }; $n`,
+      15000,
+      { key: 'brightness' }
+    );
+    if (r.ok && Number(r.out) > 0) return `Brightness ${v}%.`;
+    return 'Your monitor didn’t accept the change. Turn on “DDC/CI” in the monitor’s own menu (its buttons), then try again.';
   }
   if (P === 'linux') {
     const r = await run('brightnessctl', ['set', `${v}%`]);
